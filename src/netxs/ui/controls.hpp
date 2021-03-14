@@ -1,10 +1,10 @@
 // Copyright (c) NetXS Group.
 // Licensed under the MIT license.
 
-#ifndef NETXS_CONTROLS_H
-#define NETXS_CONTROLS_H
+#ifndef NETXS_CONTROLS_HPP
+#define NETXS_CONTROLS_HPP
 
-#include "../console/console.h"
+#include "../console/console.hpp"
 
 #include <vector>
 #include <mutex>
@@ -110,7 +110,7 @@ namespace netxs::ui
 
                 return levels(sector * s);
             }
-            // sock: 
+            // sock: .
             void drag(twod const& coord)
             {
                 auto delta = coord - origin;
@@ -284,7 +284,7 @@ namespace netxs::ui
                 middle.size = size - (middle.coor * 2);
                 if (client)
                     client->SIGNAL(e2::release, e2::form::layout::size, region.size);
-                
+
                 if (!nosize && client)
                 {
                     auto& size = client->base::size.get();
@@ -413,7 +413,7 @@ namespace netxs::ui
                 auto shadow = skin::color(tone::shadower);
                 shadow.alpha(bright.bga());
 
-                bool isnorm = 
+                bool isnorm =
                     !active && states.end() == std::find_if(states.begin(), states.end(),
                                                 [](auto& a) { return a.wholly; });
                 auto guides = [&](auto bright)
@@ -867,7 +867,7 @@ namespace netxs::ui
             };
             SUBMIT(e2::release, e2::form::layout::size, new_sz)
             {
-                //todo optimize avoid SIGNAL if size/coor is unchanged 
+                //todo optimize avoid SIGNAL if size/coor is unchanged
                 auto& y_size = up_down ? new_sz.y : new_sz.x;
                 auto& x_size = up_down ? new_sz.x : new_sz.y;
                 twod  new_xy;
@@ -1205,23 +1205,20 @@ namespace netxs::ui
                 if (client)
                 {
                     auto& item = *client;
-                    if (auto deal = bell::protos(e2::preview))
+                    switch (bell::protos<e2::preview>())
                     {
-                        switch (deal.value())
-                        {
-                            case events[X]:
-                                scroll<X>(scinfo.window.coor.x - info.window.coor.x);
-                                break;
-                            case events[Y]:
-                                scroll<Y>(scinfo.window.coor.y - info.window.coor.y);
-                                break;
-                            case events[X + 2]:
-                                cancel<X, true>();
-                                break;
-                            case events[Y + 2]:
-                                cancel<Y, true>();
-                                break;
-                        }
+                        case events[X]:
+                            scroll<X>(scinfo.window.coor.x - info.window.coor.x);
+                            break;
+                        case events[Y]:
+                            scroll<Y>(scinfo.window.coor.y - info.window.coor.y);
+                            break;
+                        case events[X + 2]:
+                            cancel<X, true>();
+                            break;
+                        case events[Y + 2]:
+                            cancel<Y, true>();
+                            break;
                     }
                 }
             };
@@ -1246,9 +1243,8 @@ namespace netxs::ui
             SUBMIT(e2::release, e2::hids::mouse::scroll::any, gear)
             {
                 auto dir = gear.whldt > 0;
-                if (permit == axes::ONLY_X || gear.meta(hids::SHIFT |
-                                                        hids::CTRL  |
-                                                        hids::RCTRL))
+                if (permit == axes::ONLY_X || gear.meta(hids::ANYCTRL |
+                                                        hids::SHIFT ))
                      wheels<X>(dir);
                 else wheels<Y>(dir);
 
@@ -1674,7 +1670,7 @@ namespace netxs::ui
         {
             if (on_pager && calc.follow())
             {
-                send();
+                send<events[AXIS]>();
             }
             return on_pager;
         }
@@ -1707,7 +1703,7 @@ namespace netxs::ui
                 {
                     auto dir = gear.whldt < 0 ? 1 : -1;
                     calc.pager(dir);
-                    send();
+                    send<events[AXIS]>();
                     gear.dismiss();
                 }
             };
@@ -1723,8 +1719,8 @@ namespace netxs::ui
             SUBMIT(e2::release, bttn::down::any, gear)
             {
                 if (!on_pager)
-                if (bell::protos(e2::release, bttn::down::left) ||
-                    bell::protos(e2::release, bttn::down::right))
+                if (bell::protos<e2::release>(bttn::down::left ) ||
+                    bell::protos<e2::release>(bttn::down::right))
                 if (auto dir = calc.inside(xy(gear.mouse::coord)))
                 {
                     if (gear.capture(bell::id))
@@ -1734,7 +1730,7 @@ namespace netxs::ui
                         gear.dismiss();
 
                         timer.template actify<activity::pager_first>(REPEAT_DELAY, [&](auto p)
-                        { 
+                        {
                             if (pager_repeat())
                             {
                                 timer.template actify<activity::pager_next>(REPEAT_RATE, [&](auto d)
@@ -1751,8 +1747,8 @@ namespace netxs::ui
             {
                 if (on_pager && gear.captured(bell::id))
                 {
-                    if (bell::protos(e2::release, bttn::up::left) ||
-                        bell::protos(e2::release, bttn::up::right))
+                    if (bell::protos<e2::release>(bttn::up::left) ||
+                        bell::protos<e2::release>(bttn::up::right))
                     {
                         gear.release();
                         gear.dismiss();
@@ -1792,7 +1788,7 @@ namespace netxs::ui
                         if (auto delta = xy(gear.mouse::delta.get()))
                         {
                             calc.stepby(delta);
-                            send();
+                            send<events[AXIS]>();
                             gear.dismiss();
                         }
                     }
@@ -1805,11 +1801,10 @@ namespace netxs::ui
                 {
                     if (gear.captured(bell::id))
                     {
-                        if (bell::protos(e2::release, bttn::drag::cancel::right))
+                        if (bell::protos<e2::release>(bttn::drag::cancel::right))
                         {
                             gohome();
                         }
-                        
                         base::deface();
                         gear.release();
                         gear.dismiss();
@@ -1823,11 +1818,10 @@ namespace netxs::ui
                 {
                     if (gear.captured(bell::id))
                     {
-                        if (bell::protos(e2::release, bttn::drag::stop::right))
+                        if (bell::protos<e2::release>(bttn::drag::stop::right))
                         {
                             gohome();
                         }
-
                         base::deface();
                         gear.release();
                         gear.dismiss();
@@ -1844,9 +1838,9 @@ namespace netxs::ui
                     base::reflow();
                     return faux; // One shot call
                 };
-            
+
                 timer.pacify(activity::mouse_leave);
-            
+
                 if (active)          apply(activity::mouse_hover);
                 else timer.template actify<activity::mouse_leave>(ACTIVE_TIMEOUT, apply);
             };
@@ -2169,7 +2163,7 @@ namespace netxs::ui
         {
             canvas.reflow(topic);
 
-            /// In order to update mutable vars in the topic 
+            /// In order to update mutable vars in the topic
             SIGNAL(e2::release, e2::form::upon::wiped, canvas);
 
             canvas.output(topic, true);
@@ -2235,7 +2229,7 @@ namespace netxs::ui
         }
     };
 
-    class chat 
+    class chat
         : public pane
     {
         using self = pane;
@@ -2293,7 +2287,7 @@ namespace netxs::ui
 
     };
 
-    class button 
+    class button
         : public form
     {
         using self = button;
@@ -2891,7 +2885,7 @@ namespace netxs::ui
         }
     };
 
-    struct ticker 
+    struct ticker
         : public form
     {
         twod	offset; // ticker: Ticker position.
@@ -2899,7 +2893,7 @@ namespace netxs::ui
 
         //todo unspecial!
         //pro::print cursor; // ticker: Cursor controller.
-        //pro::align<ticker> 
+        //pro::align<ticker>
 
         virtual void render(face& parent_canvas)
         {
@@ -2939,8 +2933,8 @@ namespace netxs::ui
                 ///auto outs = utf::adjust(utf::format(counters.frsize), 9, " ", true);
                 ///
                 /////statline.edit(" process:" + rend + "ns, render:" + outp + "ns ");
-                ///statline = " process:" + rend 
-                ///		 + "ns, render:" + outp 
+                ///statline = " process:" + rend
+                ///		 + "ns, render:" + outp
                 ///		 + "ns, frame size:" + outs + " bytes ";
                 ///statline.locus.jet(bias::center).wrp(false).cpp({ 50,0 });
                 ///
@@ -3109,7 +3103,7 @@ namespace netxs::ui
 //	datetime::moment	present;
 //
 //	datasrc(utils::iota count, datetime::period speed, period delay = period::zero())
-//		:	balls(count), 
+//		:	balls(count),
 //			clock(router(e2::release), e2::timer::tick),
 //			pause(delay)
 //	{
@@ -3153,7 +3147,7 @@ namespace netxs::ui
 //
 //	chaos(data_ptr datasrc)
 //		:	data(datasrc)
-//	{ 
+//	{
 //		base.txt("█").bgc(0x00u).fgc(0x00u);
 //
 //		data->SUBMIT_T(e2::release, e2::data::changed, logic, p)
@@ -3185,4 +3179,4 @@ namespace netxs::ui
 //	}
 //};
 
-#endif // NETXS_CONTROLS_H
+#endif // NETXS_CONTROLS_HPP

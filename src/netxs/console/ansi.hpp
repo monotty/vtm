@@ -1,12 +1,12 @@
 // Copyright (c) NetXS Group.
 // Licensed under the MIT license.
 
-#ifndef NETXS_ANSI_H
-#define NETXS_ANSI_H
+#ifndef NETXS_ANSI_HPP
+#define NETXS_ANSI_HPP
 
-#include "../ui/layout.h"
-#include "../text/utf.h"
-#include "../abstract/tree.h"
+#include "../ui/layout.hpp"
+#include "../text/utf.hpp"
+#include "../abstract/tree.hpp"
 
 #include <mutex>
 #include <array>
@@ -41,18 +41,26 @@ namespace netxs::console::ansi
     static const char CSI_CUP = 'H'; // CSI n ; m  H  — Cursor Position
     static const char CSI_HVP = 'f'; // CSI n ; m  f  — Horizontal and Vertical Position
     static const char CSI_SGR = 'm'; // CSI n [;k] m  — Select Graphic Rendition
+    static const char DECSTBM = 'r'; // CSI t ; b  r  — Set scrolling region (t/b: top + bottom)
     static const char CSI_SCP = 's'; // CSI        s  — Save Cursor Position
     static const char CSI_RCP = 'u'; // CSI        u  — Restore Cursor Position
     static const char CSI__EL = 'K'; // CSI n      K  — Erase 0: from cursor to end, 1: from begin to cursor, 2: all line
+    static const char CSI__IL = 'L'; // CSI n      L  — Insert n blank lines
     static const char CSI__ED = 'J'; // CSI n      J  — Erase 0: from cursor to end of screen, 1: from begin to cursor, 2: all screen
-    static const char CSI_DCH = 'P'; // CSI n      P  — Delete n Character(s)
-    static const char CSI_ECH = 'X'; // CSI n      X  — Erase n Character(s) ? difference with delete ?
+    static const char CSI__DL = 'M'; // CSI n      M  — Delete n lines
+    static const char CSI_DCH = 'P'; // CSI n      P  — Delete n character(s)
+    static const char CSI__SD = 'T'; // CSI n      T  — Scroll down by n lines, scrolled out lines are lost
+    static const char CSI_WIN = 't'; // CSI n;m;k  t  — XTWINOPS, Terminal window props
+    static const char CSI__SU = 'S'; // CSI n      S  — Scroll   up by n lines, scrolled out lines are lost
+    static const char CSI_ECH = 'X'; // CSI n      X  — Erase n character(s) ? difference with delete ?
+    static const char CSI_ICH = '@'; // CSI n      @  — Insert/wedge n character(s)
     static const char DECSET  = 'h'; // CSI ? n    h  — DECSET
     static const char DECRST  = 'l'; // CSI ? n    l  — DECRST
+    static const char CSI_IRM = 'l'; // CSI 4      l  — Reset mode (always Replace mode 4)
     static const char DECSTR  = 'p'; // CSI !      p  — Reset terminal to initial state
     static const char CSI_CCC = 'p'; // CSI n [; x1; x2; ...; xn ] p — Custom Cursor Command
     static const char W32_INP = '_'; // CSI EVENT_TYPEn [; x1; x2; ...; xn ] _ — win32-input-mode
-    
+
     static const char C0_NUL = '\x00'; // Null                - Originally used to allow gaps to be left on paper tape for edits. Later used for padding after a code that might take a terminal some time to process (e.g. a carriage return or line feed on a printing terminal). Now often used as a string terminator, especially in the programming language C.
     static const char C0_SOH = '\x01'; // Start of Heading    - First character of a message header. In Hadoop, it is often used as a field separator.
     static const char C0_STX = '\x02'; // Start of Text       - First character of message text, and may be used to terminate the message heading.
@@ -85,7 +93,7 @@ namespace netxs::console::ansi
     static const char C0_GS  = '\x1D'; // Group Separator
     static const char C0_RS  = '\x1E'; // Record Separator
     static const char C0_US  = '\x1F'; // Unit Separator
-    
+
     static const iota W32_START_EVENT = 10000; // for quick recognition
     static const iota W32_KEYBD_EVENT = 10001;
     static const iota W32_MOUSE_EVENT = 10002;
@@ -93,11 +101,13 @@ namespace netxs::console::ansi
     static const iota W32_FOCUS_EVENT = 10004;
     static const iota W32_FINAL_EVENT = 10005; // for quick recognition
 
-    static const iota OSC_0  = 0;  // set icon and title
-    static const iota OSC_1  = 1;  // set icon
-    static const iota OSC_2  = 2;  // set title
-    static const iota OSC_3  = 3;  // set xprop
-    static const iota OSC_52 = 52; // set clipboard
+    static const auto OSC_LABEL_TITLE  = "0" ; // set icon label and title
+    static const auto OSC_LABEL        = "1" ; // set icon label
+    static const auto OSC_TITLE        = "2" ; // set title
+    static const auto OSC_XPROP        = "3" ; // set xprop
+    static const auto OSC_CLIPBRD      = "52"; // set clipboard
+    static const auto OSC_TITLE_REPORT = "l" ; // Get terminal window title
+    static const auto OSC_LABEL_REPORT = "L" ; // Get terminal window icon label
 
     static const iota SGR_RST       = 0;
     static const iota SGR_SAV       = 10;
@@ -108,7 +118,12 @@ namespace netxs::console::ansi
     static const iota SGR_INV       = 7;
     static const iota SGR_NOINV     = 27;
     static const iota SGR_UND       = 4;
+    static const iota SGR_DOUBLEUND = 21;
     static const iota SGR_NOUND     = 24;
+    static const iota SGR_STRIKE    = 9;
+    static const iota SGR_NOSTRIKE  = 29;
+    static const iota SGR_OVERLN    = 53;
+    static const iota SGR_NOOVERLN  = 55;
     static const iota SGR_FG_BLK    = 30;
     static const iota SGR_FG_RED    = 31;
     static const iota SGR_FG_GRN    = 32;
@@ -148,27 +163,27 @@ namespace netxs::console::ansi
 
     static const iota CCC_NOP = 0  ; // CSI             p  - no operation
     static const iota CCC_RST = 1  ; // CSI 1           p  - reset to zero all params (zz)
-    static const iota CCC_CPP = 2  ; // CSI 2 ; x [; y] p  — cursor percent position
-    static const iota CCC_CPX = 3  ; // CSI 3 ; x       p  — cursor H percent position
-    static const iota CCC_CPY = 4  ; // CSI 4 ; y       p  — cursor V percent position
-    static const iota CCC_TBS = 5  ; // CSI 5 ; n       p  — tab step length
-    static const iota CCC_JET = 6  ; // CSI 6 ; n       p  — text alignment (bias)
-    static const iota CCC_MGN = 7  ; // CSI 7 ; l;r;t;b p  — margin left, right, top, bottom
-    static const iota CCC_MGL = 8  ; // CSI 8 ; n       p  — margin left   ╮
-    static const iota CCC_MGR = 9  ; // CSI 9 ; n       p  — margin right  │ positive - native binding
-    static const iota CCC_MGT = 10 ; // CSI 10; n       p  — margin top    │ negative - oppisite binding
-    static const iota CCC_MGB = 11 ; // CSI 11; n       p  — margin bottom ╯
-    static const iota CCC_WRP = 12 ; // CSI 12; {0,1}   p  - text wrapping on/off
-    static const iota CCC_RTL = 13 ; // CSI 13; {0,1}   p  - text right-to-left on/off
-    static const iota CCC_RLF = 14 ; // CSI 14; {0,1}   p  - reverse line feed on/off
-    static const iota CCC_IDX = 15 ; // CSI 15; id      p  - Split the text run and associate the fragment with an id
-    static const iota CCC_CUP = 16 ; // CSI 16; x [; y] p  — cursor absolute position 0-based
-    static const iota CCC_CHX = 17 ; // CSI 17; x       p  — cursor H absolute position 0-based
-    static const iota CCC_CHY = 18 ; // CSI 18; y       p  — cursor V absolute position 0-based
-    static const iota CCC_REF = 19 ; // CSI 19; id      p  — create the reference to the existing paragraph
-    //static const iota CCC_WIN = 20 ; // CSI 20; x; y    p  — terminal window resize
+    static const iota CCC_CPP = 2  ; // CSI 2 : x [: y] p  — cursor percent position
+    static const iota CCC_CPX = 3  ; // CSI 3 : x       p  — cursor H percent position
+    static const iota CCC_CPY = 4  ; // CSI 4 : y       p  — cursor V percent position
+    static const iota CCC_TBS = 5  ; // CSI 5 : n       p  — tab step length
+    static const iota CCC_JET = 6  ; // CSI 6 : n       p  — text alignment (bias)
+    static const iota CCC_MGN = 7  ; // CSI 7 : l:r:t:b p  — margin left, right, top, bottom
+    static const iota CCC_MGL = 8  ; // CSI 8 : n       p  — margin left   ╮
+    static const iota CCC_MGR = 9  ; // CSI 9 : n       p  — margin right  │ positive - native binding
+    static const iota CCC_MGT = 10 ; // CSI 10: n       p  — margin top    │ negative - oppisite binding
+    static const iota CCC_MGB = 11 ; // CSI 11: n       p  — margin bottom ╯
+    static const iota CCC_WRP = 12 ; // CSI 12: {0,1}   p  - text wrapping on/off
+    static const iota CCC_RTL = 13 ; // CSI 13: {0,1}   p  - text right-to-left on/off
+    static const iota CCC_RLF = 14 ; // CSI 14: {0,1}   p  - reverse line feed on/off
+    static const iota CCC_IDX = 15 ; // CSI 15: id      p  - Split the text run and associate the fragment with an id
+    static const iota CCC_CUP = 16 ; // CSI 16: x [: y] p  — cursor absolute position 0-based
+    static const iota CCC_CHX = 17 ; // CSI 17: x       p  — cursor H absolute position 0-based
+    static const iota CCC_CHY = 18 ; // CSI 18: y       p  — cursor V absolute position 0-based
+    static const iota CCC_REF = 19 ; // CSI 19: id      p  — create the reference to the existing paragraph
+    //static const iota CCC_WIN = 20 ; // CSI 20: x: y    p  — terminal window resize
 
-    struct esc 
+    struct esc
         : public text // ansi: Escaped sequences accumulator.
     {
         inline text str(iota n) { return std::to_string(n); }
@@ -183,12 +198,12 @@ namespace netxs::console::ansi
         add(T t) { operator+=(std::to_string(t)); return *this; }
 
         auto& add(char t) { operator+=(t); return *this; }
-        
+
         esc& locate(iota x, iota y) { add("\033[" + str(y) + ";" // esc: 1-Based cursor position.
                                                   + str(x) + "H");    return *this; }
         esc& locate(twod const& p)  { add("\033[" + str(p.y + 1) + ";" // esc: 0-Based cursor position.
                                                   + str(p.x + 1) + "H"); return *this; }
-        esc& vmouse (bool b) { add(b ? "\033[?1002;1003;1004;1006h" : "\033[?1002;1003;1004;1006l"); return *this; } // esc: Focus and Mouse position reporting/tracking.
+        esc& vmouse (bool b) { add(b ? "\033[?1002;1003;1004;1006;10060h" : "\033[?1002;1003;1004;1006;10060l"); return *this; } // esc: Focus and Mouse position reporting/tracking.
         esc& locate_wipe ()  { add("\033[r");                           return *this; } // esc: Enable scrolling for entire display (clear screen).
         esc& locate_call ()  { add("\033[6n");                          return *this; } // esc: Report cursor position.
         esc& screen_wipe ()  { add("\033[!p");                          return *this; } // esc: Reset certain terminal settings to their defaults. Also resets the mouse tracking mode in VTE.
@@ -197,12 +212,15 @@ namespace netxs::console::ansi
         esc& altbuf (bool b) { add(b ? "\033[?1049h" : "\033[?1049l");  return *this; } // esc: Alternative buffer.
         esc& cursor (bool b) { add(b ? "\033[?25h" : "\033[?25l");      return *this; } // esc: Cursor visibility.
         esc& appkey (bool b) { add(b ? "\033[?1h" : "\033[?1l");        return *this; } // ansi: Application(=on)/ANSI(=off) Cursor Keys (DECCKM).
-        esc& setbuf (view utf8) { add("\033]52;;" + utf::base64(utf8) + C0_BEL);  return *this; } // esc: Set clipboard.
+        esc& setbuf (view t) { add("\033]52;;" + utf::base64(t) + C0_BEL);  return *this; } // esc: Set clipboard.
+        esc& bpmode (bool b) { add(b ? "\033[?2004h" : "\033[?2004l");  return *this; } // esc: Set bracketed paste mode.
+        esc& save_title ()   { add("\033[22;0t");                       return *this; } // esc: Save terminal window title.
+        esc& load_title ()   { add("\033[23;0t");                       return *this; } // esc: Restore terminal window title.
 
         esc& w32input (bool b) { add(b ? "\033[?9001h" : "\033[?9001l");        return *this; } // ansi: Application Cursor Keys (DECCKM).
         esc& w32begin () { clear(); add("\033["); return *this; }
         esc& w32close ()
-        { 
+        {
             if (back() == ';') back() = W32_INP;
             else push_back(W32_INP);
             return *this;
@@ -268,18 +286,20 @@ namespace netxs::console::ansi
         esc& und (bool b = true) { add(b ? "\033[4m" : "\033[24m");    return *this; } // esc: SGR 𝗨𝗻𝗱𝗲𝗿𝗹𝗶𝗻𝗲 attribute.
         esc& inv (bool b = true) { add(b ? "\033[7m" : "\033[27m");    return *this; } // esc: SGR 𝗡𝗲𝗴𝗮𝘁𝗶𝘃𝗲 attribute.
         esc& itc (bool b = true) { add(b ? "\033[3m" : "\033[23m");    return *this; } // esc: SGR 𝑰𝒕𝒂𝒍𝒊𝒄 attribute.
+        esc& stk (bool b = true) { add(b ? "\033[9m" : "\033[29m");    return *this; } // esc: SGR Strikethrough attribute.
+        esc& dnl (bool b = true) { add(b ? "\033[21m": "\033[24m");    return *this; } // esc: SGR Double underline attribute.
+        esc& ovr (bool b = true) { add(b ? "\033[53m": "\033[55m");    return *this; } // esc: SGR Overline attribute.
         esc& fgc ()              { add("\033[39m");                    return *this; } // esc: Set default foreground color.
         esc& bgc ()              { add("\033[49m");                    return *this; } // esc: Set default background color.
-        
-        // Colon-separated variant
 
+        // Colon-separated variant
         //esc& fgc (rgba const& c) { add("\033[38:2:" + str(c.channel.red  ) + ":"// esc: SGR Foreground color. RGB: red, green, blue.
         //                                            + str(c.channel.green) + ":"
         //                                            + str(c.channel.blue ) + "m"); return *this; }
         //esc& bgc (rgba const& c) { add("\033[48:2:" + str(c.channel.red  ) + ":"// esc: SGR Background color. RGB: red, green, blue and alpha.
         //                                            + str(c.channel.green) + ":"
         //                                            + str(c.channel.blue ) + "m"); return *this; }
-        
+
         esc& fgc (rgba const& c) { add("\033[38;2;" + str(c.chan.r  ) + ";" // esc: SGR Foreground color. RGB: red, green, blue.
                                                     + str(c.chan.g) + ";"
                                                     + str(c.chan.b ) + "m"); return *this; }
@@ -318,6 +338,22 @@ namespace netxs::console::ansi
         esc& fcs (bool b)       { add("\033["); add(b ? "I" : "O");return *this; } // ansi: Terminal window focus.
         esc& eol ()             { add("\n");                     return *this; } // esc: EOL.
         esc& edl ()             { add("\033[K");                 return *this; } // esc: EDL.
+
+        esc& mouse_sgr (iota ctrl, twod const& coor, bool ispressed) { add("\033[<"
+                                + str(ctrl)       + ";"
+                                + str(coor.x + 1) + ";"
+                                + str(coor.y + 1) + (ispressed ? 'M' : 'm')); return *this; } // esc: Mouse tracking report (SGR).
+        esc& mouse_x11 (iota ctrl, twod const& coor) { add("\033[M");
+                                push_back(static_cast<unsigned char>(std::clamp(ctrl,       0, 255-32) + 32));
+                                push_back(static_cast<unsigned char>(std::clamp(coor.x + 1, 1, 255-32) + 32));
+                                push_back(static_cast<unsigned char>(std::clamp(coor.y + 1, 1, 255-32) + 32));
+                                return *this; } // esc: Mouse tracking report (X11).
+        esc& osc (text const& cmd, text const& param) { add(ESCOCS);
+                                add(cmd);
+                                push_back(';');
+                                add(param);
+                                push_back(C0_BEL);
+                                return *this; } // esc: OSC report.
     };
 
     static esc screen_wipe ()        { return esc{}.screen_wipe(); } // esc: Reset certain terminal settings to their defaults. Also resets the mouse tracking mode in VTE.
@@ -356,10 +392,14 @@ namespace netxs::console::ansi
     static esc chx (iota n)          { return esc{}.chx (n); } // ansi: Cursor 0-based horizontal absolute.
     static esc chy (iota n)          { return esc{}.chy (n); } // ansi: Cursor 0-based vertical absolute.
 
-    static esc bld (bool n = true)   { return esc{}.bld (n); } // ansi: SGR 𝗕𝗼𝗹𝗱 attribute.
-    static esc und (bool n = true)   { return esc{}.und (n); } // ansi: SGR 𝗨𝗻𝗱𝗲𝗿𝗹𝗶𝗻𝗲 attribute.
-    static esc inv (bool n = true)   { return esc{}.inv (n); } // ansi: SGR 𝗡𝗲𝗴𝗮𝘁𝗶𝘃𝗲 attribute.
-    static esc itc (bool n = true)   { return esc{}.itc (n); } // ansi: SGR 𝑰𝒕𝒂𝒍𝒊𝒄 attribute.
+    static esc bld (bool b = true)   { return esc{}.bld (b); } // ansi: SGR 𝗕𝗼𝗹𝗱 attribute.
+    static esc und (bool b = true)   { return esc{}.und (b); } // ansi: SGR 𝗨𝗻𝗱𝗲𝗿𝗹𝗶𝗻𝗲 attribute.
+    static esc inv (bool b = true)   { return esc{}.inv (b); } // ansi: SGR 𝗡𝗲𝗴𝗮𝘁𝗶𝘃𝗲 attribute.
+    static esc itc (bool b = true)   { return esc{}.itc (b); } // ansi: SGR 𝑰𝒕𝒂𝒍𝒊𝒄 attribute.
+    static esc stk (bool b = true)   { return esc{}.stk (b); } // ansi: SGR Strikethrough attribute.
+    static esc dnl (bool b = true)   { return esc{}.dnl (b); } // ansi: SGR Double underline attribute.
+    static esc ovr (bool b = true)   { return esc{}.ovr (b); } // ansi: SGR Overline attribute.
+
     static esc fgc ()                { return esc{}.fgc ( ); } // ansi: Set default foreground color.
     static esc bgc ()                { return esc{}.bgc ( ); } // ansi: Set default background color.
     static esc fgc (rgba const& n)   { return esc{}.fgc (n); } // ansi: SGR Foreground color.
@@ -383,8 +423,8 @@ namespace netxs::console::ansi
     static esc rlf (bool n = true)   { return esc{}.rlf (n); } // ansi: Reverse line feed.
     static esc rst ()                { return esc{}.rst ( ); } // ansi: Reset formatting parameters.
     static esc nop ()                { return esc{}.nop ( ); } // ansi: No operation. Split the text run.
-    //ansi: Split the text run and associate the fragment with an id. 
-    //      All following text is under the IDX until the next command is issued. 
+    //ansi: Split the text run and associate the fragment with an id.
+    //      All following text is under the IDX until the next command is issued.
     //      Redefine if the id already exists.
     static esc win (twod const& p)   { return esc{}.win (p); } // ansi: Terminal window resize.
     static esc fcs (bool b)          { return esc{}.fcs (b); } // ansi: Terminal window focus.
@@ -393,7 +433,7 @@ namespace netxs::console::ansi
     static esc eol ()                { return esc{}.eol ( ); } // ansi: EOL.
     static esc edl ()                { return esc{}.edl ( ); } // ansi: EDL.
 
-    // ansi: Cursor forwarding instructions. 
+    // ansi: Cursor forwarding instructions.
     // The order is important (see the richtext::flow::exec constexpr).
 
     // todo tie with richtext::flow::exec
@@ -453,18 +493,36 @@ namespace netxs::console::ansi
     {
         using tree = func<fifo, T>;
 
-        tree table        { faux };
-        tree table_quest  { faux };
-        tree table_excl   { faux };
-        tree table_gt     { faux };
-        tree table_equals { faux };
-        tree table_hash   { faux };
+        tree table;
+        tree table_quest;
+        tree table_excl;
+        tree table_gt;
+        tree table_equals;
+        tree table_hash;
 
         csi_t()
         {
             #define F(t, q) p->task(rule{ fn::t, q })
 
-            table_quest .resize(0x100); 
+           /* Contract for client p
+            * Unicode
+            * - void post(utf::frag const& cluster); // Proceed grapheme cluster
+            * - void task(ansi::rule const& cmd);    // Proceed curses command
+            * - void cook();                         // Finalize paragraph
+            * SGR:
+            * - void nil();                          // Reset all SGR to default
+            * - void sav();                          // Set current SGR as default
+            * - void rfg();                          // Reset foreground color to default
+            * - void rbg();                          // Reset background color to default
+            * - void fgc(rgba const& c);             // Set foreground color
+            * - void bgc(rgba const& c);             // Set background color
+            * - void bld(bool b);                    // Set bold attribute
+            * - void itc(bool b);                    // Set italic attribute
+            * - void inv(bool b);                    // Set inverse attribute
+            * - void und(bool b);                    // Set underline attribute
+            */
+
+            table_quest .resize(0x100);
                 table_quest[DECSET] = nullptr; // decset
                 table_quest[DECRST] = nullptr; // decrst
 
@@ -487,12 +545,20 @@ namespace netxs::console::ansi
                 table[CSI_RCP] = VT_PROC{ F(rc,   0 ); };              // fx_rcp
                 table[CSI_CUP] = VT_PROC{ F(oy, q(1)); F(ox, q(1)); }; // fx_ocp
                 table[CSI_HVP] = VT_PROC{ F(oy, q(1)); F(ox, q(1)); }; // fx_ocp
+                table[CSI_IRM] = VT_PROC{ /*Nothing, Replace mode*/ }; // fx_irm
                 table[CSI__ED] = nullptr;
                 table[CSI__EL] = nullptr;
                 table[CSI_DCH] = nullptr;
                 table[CSI_ECH] = nullptr;
+                table[CSI_ICH] = nullptr;
+                table[CSI__DL] = nullptr;
+                table[DECSTBM] = nullptr;
+                table[CSI__SD] = nullptr;
+                table[CSI__SU] = nullptr;
+                table[CSI_WIN] = nullptr;
 
                 auto& csi_ccc = table[CSI_CCC].resize(0x100);
+                csi_ccc.enable_multi_arg();
                     csi_ccc[CCC_CUP] = VT_PROC{ F(ay, q(0)); F(ax, q(0)); }; // fx_ccc_cup
                     csi_ccc[CCC_CPP] = VT_PROC{ F(py, q(0)); F(px, q(0)); }; // fx_ccc_cpp
                     csi_ccc[CCC_MGN] = VT_PROC{ F(wl, q(0)); F(wr, q(0)); F(wt, q(0)); F(wb, q(0)); }; // fx_ccc_mgn
@@ -515,20 +581,26 @@ namespace netxs::console::ansi
                     csi_ccc[CCC_REF] = nullptr;
 
                 auto& csi_sgr = table[CSI_SGR].resize(0x100);
-                    csi_sgr[SGR_RST      ] = VT_PROC{ p->nil( );    }; // fx_sgr_rst       ;
-                    csi_sgr[SGR_SAV      ] = VT_PROC{ p->sav( );    }; // fx_sgr_sav       ;
-                    csi_sgr[SGR_BOLD     ] = VT_PROC{ p->bld(true); }; // fx_sgr_bld<true> ;
-                    csi_sgr[SGR_FAINT    ] = VT_PROC{ p->bld(faux); }; // fx_sgr_bld<faux> ;
-                    csi_sgr[SGR_ITALIC   ] = VT_PROC{ p->itc(true); }; // fx_sgr_itc<true> ;
-                    csi_sgr[SGR_NONITALIC] = VT_PROC{ p->itc(faux); }; // fx_sgr_itc<faux> ;
+                csi_sgr.enable_multi_arg();
+                    csi_sgr[SGR_RST      ] = VT_PROC{ p->nil( );    }; // fx_sgr_rst      ;
+                    csi_sgr[SGR_SAV      ] = VT_PROC{ p->sav( );    }; // fx_sgr_sav      ;
+                    csi_sgr[SGR_BOLD     ] = VT_PROC{ p->bld(true); }; // fx_sgr_bld<true>;
+                    csi_sgr[SGR_FAINT    ] = VT_PROC{ p->bld(faux); }; // fx_sgr_bld<faux>;
+                    csi_sgr[SGR_ITALIC   ] = VT_PROC{ p->itc(true); }; // fx_sgr_itc<true>;
+                    csi_sgr[SGR_NONITALIC] = VT_PROC{ p->itc(faux); }; // fx_sgr_itc<faux>;
                     csi_sgr[SGR_INV      ] = VT_PROC{ p->inv(true); }; // fx_sgr_inv<true>;
                     csi_sgr[SGR_NOINV    ] = VT_PROC{ p->inv(faux); }; // fx_sgr_inv<faux>;
-                    csi_sgr[SGR_UND      ] = VT_PROC{ p->und(true); }; // fx_sgr_und<true>;
-                    csi_sgr[SGR_NOUND    ] = VT_PROC{ p->und(faux); }; // fx_sgr_und<faux>;
-                    csi_sgr[SGR_FG       ] = VT_PROC{ p->rfg( );    }; // fx_sgr_fg_def    ;
-                    csi_sgr[SGR_BG       ] = VT_PROC{ p->rbg( );    }; // fx_sgr_bg_def    ;
-                    csi_sgr[SGR_FG_RGB   ] = VT_PROC{ p->fgc(q);    }; // fx_sgr_fg_rgb    ;
-                    csi_sgr[SGR_BG_RGB   ] = VT_PROC{ p->bgc(q);    }; // fx_sgr_bg_rgb    ;
+                    csi_sgr[SGR_UND      ] = VT_PROC{ p->und(true); }; // fx_sgr_und;
+                    csi_sgr[SGR_DOUBLEUND] = VT_PROC{ p->dnl(true); }; // fx_sgr_dnl;
+                    csi_sgr[SGR_NOUND    ] = VT_PROC{ p->und(faux); }; // fx_sgr_und;
+                    csi_sgr[SGR_STRIKE   ] = VT_PROC{ p->stk(true); }; // fx_sgr_stk<true>;
+                    csi_sgr[SGR_NOSTRIKE ] = VT_PROC{ p->stk(faux); }; // fx_sgr_stk<faux>;
+                    csi_sgr[SGR_OVERLN   ] = VT_PROC{ p->ovr(true); }; // fx_sgr_ovr<faux>;
+                    csi_sgr[SGR_NOOVERLN ] = VT_PROC{ p->ovr(faux); }; // fx_sgr_ovr<faux>;
+                    csi_sgr[SGR_FG       ] = VT_PROC{ p->rfg( );    }; // fx_sgr_fg_def   ;
+                    csi_sgr[SGR_BG       ] = VT_PROC{ p->rbg( );    }; // fx_sgr_bg_def   ;
+                    csi_sgr[SGR_FG_RGB   ] = VT_PROC{ p->fgc(q);    }; // fx_sgr_fg_rgb   ;
+                    csi_sgr[SGR_BG_RGB   ] = VT_PROC{ p->bgc(q);    }; // fx_sgr_bg_rgb   ;
                     csi_sgr[SGR_FG_BLK   ] = VT_PROC{ p->fgc(tint::blackdk  ); }; // fx_sgr_fg_16<tint::blackdk>  ;
                     csi_sgr[SGR_FG_RED   ] = VT_PROC{ p->fgc(tint::reddk    ); }; // fx_sgr_fg_16<tint::reddk>    ;
                     csi_sgr[SGR_FG_GRN   ] = VT_PROC{ p->fgc(tint::greendk  ); }; // fx_sgr_fg_16<tint::greendk>  ;
@@ -582,7 +654,7 @@ namespace netxs::console::ansi
 
     template<class T> using esc_t = func<qiew, T>;
     template<class T> using osc_h = std::function<void(view&, T*&)>;
-    template<class T> using osc_t = std::map<iota, osc_h<T>>;
+    template<class T> using osc_t = std::map<text, osc_h<T>>;
 
     template<class T>
     struct parser
@@ -600,11 +672,12 @@ namespace netxs::console::ansi
             //intro[ctrl::EOL] = exec <fn::nl, 1>;
 
             auto& esc = intro[ctrl::ESC].resize(0x100);
-                esc[CSI] = xcsi;
-                esc[OCS] = xosc;
+                esc[CSI  ] = xcsi;
+                esc[OCS  ] = xosc;
                 esc[KEY_A] = keym;
                 esc[KEY_N] = keym;
                 esc[G0SET] = g0__;
+                //esc['M'  ] = __ri;
         }
 
         // ansi: Static UTF-8/ANSI parser proc.
@@ -635,7 +708,7 @@ namespace netxs::console::ansi
             // Take the control sequence from the string until CSI (cmd >= 0x40 && cmd <= 0x7E) command occured
             // ESC [ n1 ; n2:p1:p2:...pi ; ... nx CSICMD
             //      [-----------------------]
-            
+
             static constexpr auto maxarg = 32_sz; // ansi: Maximal number of the parameters in one escaped sequence.
             using fifo = netxs::generics::bank <iota, maxarg>;
 
@@ -674,7 +747,7 @@ namespace netxs::console::ansi
 
                 auto& csier = _glb<T>::parser.csier;
                 auto c = ascii.front();
-                
+
                 if (nums(c))
                 {
                     fifo queue{ CCC_NOP }; // Reserve for the command type
@@ -706,64 +779,80 @@ namespace netxs::console::ansi
             // n: iota
             // ST: ESC \  (0x9C, ST = String Terminator)
             // BEL: 0x07
-            // 
+            //
             // ESC ] n ; _text_ BEL
             //      [--------------]
             // or
             // ESC ] n ; _text_ ST
             // ESC ] n ; _text_ ESC \
             //      [--------------]
-            // 
+            //
+            // ESC ] I ; _text_ ST  Set icon to file.
+            // ESC ] l ; _text_ ST  Set window title.
+            // ESC ] L ; _text_ ST  Set window icon label.
 
-            if (auto cmd = utf::to_int(ascii))
+            // Find ST and ';', if no ST or no ';' when drop
+            if (ascii)
             {
-                if (ascii)
+                auto base = ascii.data();
+                auto head = base;
+                auto tail = head + ascii.length();
+                auto delm = tail; // Semicolon ';' position
+                auto exec = [&](auto pad)
                 {
-                    ascii.pop_front(); // Take semicolon ';'
-
-                    auto base = ascii.data();
-                    auto head = base;
-                    auto tail = head + ascii.length();
-                    auto exec = [&](auto pad)
+                    auto& oscer = _glb<T>::parser.oscer;
+                    text cmd(base, delm);
+                    ++delm;
+                    auto size = head - delm;
+                    if (auto it = oscer.find(cmd); it != oscer.end())
                     {
-                        //auto& oscer = get_oscer<T>();
-                        //auto& oscer = get_parser().oscer;
-                        auto& oscer = _glb<T>::parser.oscer;
+                        auto data = view(delm, size);
+                        auto proc = (*it).second;
+                        proc(data, client);
+                    }
+                    ascii.remove_prefix(head - base + pad); // Take the text and BEL or ST too
+                };
 
-                        auto size = head - base;
-                        if (auto it = oscer.find(cmd.value()); it != oscer.end())
-                        {
-                            auto data = view(base, size);
-                            auto proc = (*it).second;
-                            proc(data, client);
-                        }
-                        ascii.remove_prefix(size + pad); // Take the text and BEL or ST too
-                    };
-
-                    while (head != tail)
+                while (head != tail)
+                {
+                    auto c = *head;
+                    if (c == ';')
                     {
-                        if (unsigned char c = *head; c < '\x1c')
+                        delm = head++;
+                        while (head != tail)
                         {
-                            if (c == '\x07')
+                            unsigned char c = *head;
+                            if (c <= C0_ESC) // To avoid double comparing
                             {
-                                exec(1);
-                                return;
-                            }
-                            else if (c == '\x1b')
-                            {
-                                auto next = head + 1;
-                                if (next != tail && *next == '\\')
+                                if (c == C0_BEL)
                                 {
-                                    exec(2);
+                                    exec(1);
                                     return;
                                 }
+                                else if (c == C0_ESC)
+                                {
+                                    auto next = std::next(head);
+                                    if (next != tail && *next == '\\')
+                                    {
+                                        exec(2);
+                                        return;
+                                    }
+                                }
                             }
+                            ++head;
                         }
-                        head++;
+                        return; // Drop bcuz no ST in the sequence
                     }
-
-                    //todo should we flush the queue without terminator
-                    // ascii.clear(); 
+                    else if (c == C0_BEL) return; // Drop bcuz no ';' in the sequence
+                    else if (c == C0_ESC)
+                    {
+                        auto next = std::next(head);
+                        if (next != tail && *next == '\\')
+                        {
+                            return; // Drop bcuz no ';' in the sequence
+                        }
+                    }
+                    ++head;
                 }
             }
         }
@@ -795,21 +884,21 @@ namespace netxs::console::ansi
         }
     };
 
-    //todo should we parse these controls as a C0-like? 
+    //todo should we parse these controls as a C0-like?
     //     split paragraphs when flow direction changes, for example
     template<class CELL>
     class marker
     {
         using changer = std::array<void (*)(CELL &), ctrl::COUNT>;
 
-        static void set_r_to_l	(CELL& p) { p.rtl(true); }
-        static void set_l_to_r	(CELL& p) { p.rtl(faux); }
-        static void set_hyphen	(CELL& p) { p.hyphen(true); }
-        static void set_fnappl	(CELL& p) { p.fnappl(true); }
-        static void set_invtms	(CELL& p) { p.itimes(true); }
-        static void set_invsep	(CELL& p) { p.isepar(true); }
-        static void set_invpls	(CELL& p) { p.inplus(true); }
-        static void set_zwnbsp	(CELL& p) { p.zwnbsp(true); }
+        static void set_r_to_l (CELL& p) { p.rtl(true); }
+        static void set_l_to_r (CELL& p) { p.rtl(faux); }
+        static void set_hyphen (CELL& p) { p.hyphen(true); }
+        static void set_fnappl (CELL& p) { p.fnappl(true); }
+        static void set_invtms (CELL& p) { p.itimes(true); }
+        static void set_invsep (CELL& p) { p.isepar(true); }
+        static void set_invpls (CELL& p) { p.inplus(true); }
+        static void set_zwnbsp (CELL& p) { p.zwnbsp(true); }
 
     public:
         changer	setter = {};
@@ -835,7 +924,7 @@ namespace netxs::console::ansi
 
         // Append multiple commands to the locus.
         //template <class ...Args> void push(Args... cmd) { locus.splice( std::end(locus), {cmd...} ); }
-        
+
         inline void  push(rule const& cmd)    { list::push_back(cmd); } // Append single command to the locus.
         inline void   pop()                   { list::pop_back();     } // Append single command to the locus.
         inline bool  bare()    const          { return list::empty(); } // Is it empty the list of commands?
@@ -860,7 +949,7 @@ namespace netxs::console::ansi
         writ& rtl (bool b)     { push({ fn::yx, b   }); return *this; } // Text right-to-left.
         writ& rlf (bool b)     { push({ fn::rf, b   }); return *this; } // Reverse line feed.
         writ& cup (twod p)     { push({ fn::ay, p.y });                 // 0-Based cursor position.
-                                 push({ fn::ax, p.x }); return *this; } 
+                                 push({ fn::ax, p.x }); return *this; }
         writ& cuu (iota n = 1) { push({ fn::dy,-n   }); return *this; } // Cursor up.
         writ& cud (iota n = 1) { push({ fn::dy, n   }); return *this; } // Cursor down.
         writ& cuf (iota n = 1) { push({ fn::dx, n   }); return *this; } // Cursor forward.
@@ -965,4 +1054,4 @@ namespace netxs::console::ansi
     }
 }
 
-#endif // NETXS_ANSI_H
+#endif // NETXS_ANSI_HPP

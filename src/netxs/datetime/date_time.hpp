@@ -1,10 +1,10 @@
 // Copyright (c) NetXS Group.
 // Licensed under the MIT license.
 
-#ifndef NETXS_DATE_TIME_H
-#define NETXS_DATE_TIME_H
+#ifndef NETXS_DATE_TIME_HPP
+#define NETXS_DATE_TIME_HPP
 
-#include "../text/utf.h"
+#include "../text/utf.hpp"
 
 #include <chrono>
 #include <ctime>
@@ -101,7 +101,7 @@ namespace netxs::datetime
             elapsed = std::to_string(days) + " day" + ((days) != 1 ? ("s") : "") + " ";
         }
         elapsed += padded_to_string(hours,   2_sz) + ":"
-                 + padded_to_string(minutes, 2_sz) + ":" 
+                 + padded_to_string(minutes, 2_sz) + ":"
                  + padded_to_string(seconds, 2_sz);
         return elapsed;
     }
@@ -164,4 +164,4 @@ namespace netxs::datetime
     }
 }
 
-#endif // NETXS_DATE_TIME_H
+#endif // NETXS_DATE_TIME_HPP

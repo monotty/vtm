@@ -2,7 +2,7 @@
 // Licensed under the MIT license.
 
 //#define DEMO
-#define MONOTTY_VER "Monotty Desktop Preview v0.2.8"
+#define MONOTTY_VER "Monotty Desktopio Preview v0.3.2"
 #define PROD
 
 // Terminal's default line wrapping mode
@@ -15,10 +15,17 @@
 // Enable to show all terminal input (keyboard/mouse etc)
 //#define KEYLOG
 
-#include "netxs/os/system.h"
-#include "netxs/text/utf.h"
-#include "netxs/console/terminal.h"
-#include "netxs/abstract/queue.h"
+// Show codepoint by the "logs"
+#define SHOW_CPOINTS faux
+//#define SHOW_CPOINTS true
+
+#pragma clang diagnostic ignored "-Wunused-variable"
+#pragma clang diagnostic ignored "-Wunused-function"
+
+#include "netxs/os/system.hpp"
+#include "netxs/text/utf.hpp"
+#include "netxs/console/terminal.hpp"
+#include "netxs/abstract/queue.hpp"
 
 #include <fstream>
 
@@ -33,7 +40,7 @@ text edit_menu = ansi::nil().wrp(faux)
 + " " + ansi::und(true) + "E" + ansi::nil() + "dit "
 + " " + ansi::und(true) + "V" + ansi::nil() + "iew "
 + " " + ansi::und(true) + "D" + ansi::nil() + "ata "
-+ ansi::jet(bias::right).chx(0) 
++ ansi::jet(bias::right).chx(0)
 + " " + ansi::und(true) + "H" + ansi::nil() + "elp "
 + "";
 
@@ -113,7 +120,7 @@ text appstore_head = ansi::nil().eol()
 //+ ansi::fgc(whitelt).bgc().jet(bias::left).wrp(true)
 + "A digital distribution platform, developed "
 "and maintained by NetXS Group, for terminal "
-"apps on its Monotty Desktop Environment. "
+"apps on its desktop environment. "
 "The store allows users to browse and download "
 "apps developed with Desktopio software "
 "development kit.\n"
@@ -132,7 +139,7 @@ std::list<text> appstore_body =
     "Terminal emulator."),
 
     item("Text", cyandk, "102", "Free ", "Get",
-    "A simple text editor for Monotty Desktop "
+    "A simple text editor for Monotty environment "
     "and a basic editing tool which enables "
     "desktop users to create documents that "
     "contain ANSI-formatted text."),
@@ -154,10 +161,10 @@ std::list<text> appstore_body =
     "code points and inspecting their metadata."),
 
     item(ansi::fgc(0xff0000) + "File", cyanlt, "4", "Free ", "Get",
-    "An orthodox file manager for Monotty Desktop."),
+    "An orthodox file manager for Monotty environment."),
 
     item("Time", bluedk, "4", "Free ", "Get",
-    "A calendar application made by NetXS Group for Monotty Desktop."),
+    "A calendar application made by NetXS Group for Monotty environment."),
 
     item("Goto", bluedk, "4", "Free ", "Get",
     "Internet/SSH browser."),
@@ -199,7 +206,7 @@ text desktopio_body = ansi::nil().eol()
 + " Monotty Desktop "
 + "\n\n"
 + ansi::fgc().bgc().jet(bias::left).wrp(true)
-+ "Monotty Desktop is a cross-platform, full-featured desktop environment."
++ "Monotty Desktopio is a cross-platform, full-featured desktop environment."
 + " A user interface where by all output is presented in the form of text.\n"
 + "The first biggest advantage of this desktop environment concept that "
 + "it can be used directly over SSH connections, no additional protocol needed.\n"
@@ -226,7 +233,7 @@ enum topic_vars
     object1,
     object2,
     object3,
-    
+
     canvas1,
     canvas2,
 
@@ -282,6 +289,7 @@ class post_logs
         ansi::esc             yield;
         netxs::mt_queue<text> queue;
         bool                  alive = true;
+        bool show_codepoints = SHOW_CPOINTS; //todo unify
 
         ~log_parser()
         {
@@ -325,37 +333,39 @@ class post_logs
                                              .eol().bgc(ansi::whitedk).fgc(blackdk)
                                              .add(utf::debase(shadow))
                                              .fgc().bgc().eol().eol();
-            yield.wrp(faux);
-            yield.add("STDOUT: codepoints").eol();
-            auto f = [&](unsigned cp, view utf8, iota wide)
+            if (show_codepoints)
             {
-                yield.fgc(ansi::blackdk);
-                if (wide)
+                yield.wrp(faux);
+                yield.add("STDOUT: codepoints").eol();
+                auto f = [&](unsigned cp, view utf8, iota wide)
                 {
-                    yield.bgc(ansi::whitedk).add(' ').add(utf8);
-                    if (wide == 1) yield.add(' ');
-                }
-                else yield.bgc(ansi::redlt).add(" - ");
+                    yield.fgc(ansi::blackdk);
+                    if (wide)
+                    {
+                        yield.bgc(ansi::whitedk).add(' ').add(utf8);
+                        if (wide == 1) yield.add(' ');
+                    }
+                    else yield.bgc(ansi::redlt).add(" - ");
 
-                yield.bgc().fgc(ansi::greendk)
-                    .add(utf::adjust(utf::to_hex<true>(cp, (cp <= 0xFF   ? 2 :
-                                                            cp <= 0xFFFF ? 4 : 5)), wc, ' '))
-                    .fgc().bgc();
-                if (++w == max_col) { w = 0; yield.eol(); }
-            };
-            auto s = [&](utf::prop const& traits, view const& utf8)
-            {
-                f(traits.control, "", 0);
-                return utf8;
-            };
-            auto y = [&](utf::frag const& cluster)
-            {
-                f(cluster.attr.cdpoint, cluster.text, cluster.attr.wcwidth);
-            };
-            utf::decode<faux>(s, y, shadow);
-
-            yield.wrp(WRAPPING).eol().eol();
-
+                    yield.bgc().fgc(ansi::greendk)
+                        .add(utf::adjust(utf::to_hex<true>(cp, (cp <= 0xFF   ? 2 :
+                                                                cp <= 0xFFFF ? 4 : 5)), wc, ' '))
+                        .fgc().bgc();
+                    if (++w == max_col) { w = 0; yield.eol(); }
+                };
+                auto s = [&](utf::prop const& traits, view const& utf8)
+                {
+                    f(traits.control, "", 0);
+                    return utf8;
+                };
+                auto y = [&](utf::frag const& cluster)
+                {
+                    f(cluster.attr.cdpoint, cluster.text, cluster.attr.wcwidth);
+                };
+                utf::decode<faux>(s, y, shadow);
+                yield.wrp(WRAPPING).eol();
+            }
+            yield.eol();
             return page{ yield };
         }
     };
@@ -442,9 +452,9 @@ int main(int argc, char* argv[])
             }
             else buff += utf8;
         });
-    
+
     {
-        auto banner = [&]() { log("Monotty Desktop Environment Server"); };
+        auto banner = [&]() { log("Monotty Desktopio Environment Server"); };
         bool daemon = faux;
         auto getopt = os::args{ argc, argv };
         while (getopt)
@@ -480,7 +490,7 @@ int main(int argc, char* argv[])
         {
             std::getline(conf, region);
         }
-        
+
         if (region.empty())
         {
             region = "unknown region";
@@ -584,8 +594,8 @@ int main(int argc, char* argv[])
             + ansi::fgc(clr) + "DOS" + ansi::nil() + " and older versions of the "
             + ansi::fgc(clr) + "Win32 console" + ansi::nil() + " of "
             + ansi::fgc(clr) + "Microsoft Windows" + ansi::nil() + "."
-            + "";
-        
+            + "\n";
+
         text topic2;
         text topic;
         {
@@ -614,7 +624,6 @@ int main(int argc, char* argv[])
             auto c1 = bluelt;// 0xffff00;
             auto c2 = whitedk;//0xffffff;
             text intro = ansi::mgl(0).mgr(0)
-                
                 //+ ansi::jet(bias::right).mgl(1).mgr(1).wrp(true)
                 //+ "https://github.com/netxs-group/VTM\n\n"
                 + ansi::jet(bias::center).wrp(faux).fgc(whitelt).mgl(0).mgr(0).eol()
@@ -643,7 +652,7 @@ int main(int argc, char* argv[])
                 + ansi::wrp(faux).fgc(whitelt).mgl(1).mgr(0)
                 + "Controls\n"
                 + ansi::jet(bias::left).mgl(1).mgr(0).wrp(faux) + "\n"
-                + ansi::fgc(whitelt).bld(true) 
+                + ansi::fgc(whitelt).bld(true)
                 + "Mouse:" + ansi::nil() + "\n"
                 + l1 + ansi::wrp(faux)
                 + "left" + ansi::nil() + "\n"
@@ -716,8 +725,9 @@ int main(int argc, char* argv[])
 
                 + ansi::mgl(1).mgr(0)
                 + ansi::fgc(whitelt).bld(true) + "Keyboard:" + ansi::nil().wrp(faux) + "\n"
-                + "    " + ansi::fgc(whitelt).und(true) + "Esc" + ansi::nil().wrp(true) + " - quit/disconnect.\n"
-                + "    " + ansi::fgc(whitelt).und(true) + "Ctrl" + ansi::nil().wrp(true) + " - combine with the left mouse button to set/unset keyboard focus; combining with dragging right/middle mouse buttons copies the selected area to the clipboard.\n\n"
+                + "    " + ansi::fgc(whitelt).und(true) + "Esc" + ansi::nil().wrp(true) + " - Quit/disconnect.\n"
+                + "    " + ansi::fgc(whitelt).und(true) + "Ctrl" + ansi::nil().wrp(true) + " - Combine with the left mouse button to set/unset keyboard focus; combining with dragging right/middle mouse buttons copies the selected area to the clipboard.\n"
+                + "    " + ansi::fgc(whitelt).und(true) + "Ctrl + PgUp/PgDn" + ansi::nil().wrp(true) + " - Navigation between windows.\n\n"
 
                 + ansi::fgc(whitelt).bld(true) + "Menu:" + ansi::nil().wrp(faux) + "\n"
                 + "    " + ansi::fgc(whitelt).und(true) + "Midnight Commander" + ansi::nil().wrp(faux) + " - live instance of Midnight Commander.\n"
@@ -793,7 +803,7 @@ int main(int argc, char* argv[])
                                            .ref(topic_vars::canvas2).nop()
                 + ansi::nop().nil()
                 + "\n\n"
-                
+
                 + ansi::jet(bias::center).wrp(faux).fgc(clr)
                 + "Embedded content\n\n"
                 + ansi::jet(bias::left).wrp(true)
@@ -945,8 +955,8 @@ int main(int argc, char* argv[])
                 + "例で、キャラクタとグラフィックのどちらも扱うことができる。日本では、ヤマハ"
                 + "のYIS(YGT - 100)もよく知られている。また、コンピュータグラフィックスの黎"
                 + "明期には、多くのメインフレームにオプションとして専用のグラフィック端末が用意"
-                + "されていた。";
-            
+                + "されていた。\n";
+
             topic += intro;
             topic += data;
             topic += wiki;
@@ -1011,7 +1021,7 @@ int main(int argc, char* argv[])
                         c0 += step;
                     }
                     cellatix_text +=
-                        utf::repeat(cellatix_text_01, 25) 
+                        utf::repeat(cellatix_text_01, 26)
                         + (i == 99 ? ""s : ansi::eol());
                 }
                 else
@@ -1023,7 +1033,7 @@ int main(int argc, char* argv[])
                         c0 -= step;
                     }
                     cellatix_text +=
-                        utf::repeat(cellatix_text_00, 25) 
+                        utf::repeat(cellatix_text_00, 26)
                         + (i == 99 ? ""s : ansi::eol());
                 }
             }
@@ -1035,7 +1045,7 @@ int main(int argc, char* argv[])
 #ifdef ANSITEST
     { // ansi-parser performance test
         page e;
-        
+
         auto t = tempus::now();
         for (int i = 0; i < 10000; i++)
         {
@@ -1057,7 +1067,7 @@ int main(int argc, char* argv[])
             + "\t"s + mw_g_b
             + x_with_tilde
 
-            //+ "👯🏿‍♀️\u0001🏌🏻‍♀️❤z🐱z av\x1x᷉jj❤️o gh" 
+            //+ "👯🏿‍♀️\u0001🏌🏻‍♀️❤z🐱z av\x1x᷉jj❤️o gh"
             + ansi::fgc(tint::redlt)
             + "bc🏌🏻‍♀️ 👯🏿‍♀️"
             + ansi::cuf(1)
@@ -1134,7 +1144,7 @@ int main(int argc, char* argv[])
             X(Shop         , "▀▄ Shop"             ) \
             X(Logs         , "▀▄ Logs"             ) \
             X(Empty        , "Empty window"        ) \
-            X(Help         , "Help"                ) 
+            X(Help         , "Help"                )
 
             //X(Task         , "▀▄ Task"             )
             //X(Draw         , "▀▄ Draw"             )
@@ -1244,7 +1254,7 @@ int main(int argc, char* argv[])
                                 }
                             };
                         }
-                        
+
                         scroll_bars(layers, scroll);
                         break;
                     }
@@ -1278,8 +1288,13 @@ int main(int argc, char* argv[])
                             #endif
 
                             block->color(whitelt, blackdk);
-                        }
+                            #ifdef DEMO
+                                twod minsz = { 20,1 }; // mc crashes when window is too small
+                                winsz = std::max(winsz, minsz);
+                                block->limits(minsz);
+                            #endif
 
+                        }
                             //scroll->color(whitelt, 0xFF121212);
                             //auto block = scroll->attach<term>(winsz, "cmd");
                             //block->color(whitelt, 0xFF000000);
@@ -1352,7 +1367,7 @@ int main(int argc, char* argv[])
                         //     auto block = frame->attach<
                         //         stem_rate<e2::general, e2::form::global::lucidity>>
                         //         ("Alpha channel", 0, 255, "rgb");
-                        //     
+                        //
                         //     block->color(0xFFFFFF, bluedk);
                         //     break;
                         // }
@@ -1530,17 +1545,14 @@ int main(int argc, char* argv[])
                         if (vtm_count < max_vtm)
                         {
                             vtm_count++;
+                            auto block = scroll->attach<term>(winsz, "vtm");
+                            block->color(whitelt, blackdk);
+                            auto c = &vtm_count;
+                            block->SUBMIT_BYVAL(e2::release, e2::dtor, dummy)
                             {
-                                auto block = scroll->attach<term>(winsz, "vtm");
-                                block->color(whitelt, blackdk);
-                                
-                                auto c = &vtm_count;
-                                scroll->SUBMIT_BYVAL(e2::release, e2::form::upon::detached, q)
-                                {
-                                    log ("vtm destoyed");
-                                    (*c)--;
-                                };
-                            }
+                                log ("main: vtm destoyed");
+                                (*c)--;
+                            };
                         }
                         else
                         {
@@ -1551,40 +1563,6 @@ int main(int argc, char* argv[])
                         }
 
                         scroll_bars(layers, scroll);
-
-
-
-                        //if (vtm_count < max_vtm)
-                        //{
-                        //    vtm_count++;
-                        //#ifdef DEMO
-                        //        frame->header(ansi::jet(bias::left) + "ssh vtm@netxs.online");
-                        //#else
-                        //        frame->header(ansi::jet(bias::left) + objs_desc[VTM]);
-                        //#endif
-                        //    //auto scroll = frame->attach<rail>();
-                        //    {
-                        //        auto block = frame->attach<term>(winsz, "vtm");
-                        //        //auto block = scroll->attach<term>(winsz, "vtm");
-                        //        block->color(whitelt, blackdk);
-                        //        // block->canvas.wipe();
-                        //        // block->colored = faux;
-                        //        auto c = &vtm_count;
-                        //        frame->SUBMIT_BYVAL(e2::release, e2::form::upon::detached, q)
-                        //        {
-                        //            log ("vtm destoyed");
-                        //            (*c)--;
-                        //        };
-                        //    }
-                        //}
-                        //else
-                        //{
-                        //    auto block = frame->attach<pane>();
-                        //    block->color(whitelt, blackdk);
-                        //    block->topic = ansi::fgc(yellowlt).mgl(4).mgr(4).wrp(faux) + "\n\nconnection rejected\n\n"
-                        //        + ansi::nil().wrp(true) + "Reached the limit of recursive connections, destroy existing recursive instances to create new ones.";
-                        //    //block->caret.show();
-                        //}
                         break;
                     }
                     case Far:
@@ -1619,9 +1597,11 @@ int main(int argc, char* argv[])
                             auto block = scroll->attach<term>(winsz, "wsl mc");
 
                             #elif defined(__linux__)
-
+#ifdef DEMO
+                            auto block = scroll->attach<term>(winsz, "bash -c 'LC_ALL=en_US.UTF-8 mc -c -x -d'");
+#else
                             auto block = scroll->attach<term>(winsz, "bash -c 'LC_ALL=en_US.UTF-8 mc -c -x'");
-
+#endif
                             #elif defined(__APPLE__)
 
                             auto block = scroll->attach<term>(winsz, "zsh -c 'LC_ALL=en_US.UTF-8 mc -c -x'");
@@ -1654,6 +1634,11 @@ int main(int argc, char* argv[])
                             #endif
 
                             block->color(whitelt, blackdk);
+                            #ifdef DEMO
+                                twod minsz = { 20,1 }; // mc crashes when window is too small
+                                winsz = std::max(winsz, minsz);
+                                block->limits(minsz);
+                            #endif
                         }
                         scroll_bars_term(layers, scroll);
                         break;
@@ -1665,9 +1650,17 @@ int main(int argc, char* argv[])
                         auto layers = frame->attach<cake>();
                         auto scroll = layers->attach<rail>();
                         {
+                        #ifdef DEMO
+                            auto block = scroll->attach<post>();
+                            block->color(whitelt, blackdk);
+                            block->topic = ansi::fgc(yellowlt).mgl(4).mgr(4).wrp(faux) + "\n\nLogs is not availabe in DEMO mode\n\n"
+                                + ansi::nil().wrp(true) + "Use the full version of VTM to run Logs.";
+                        #else
                             auto block = scroll->attach<post_logs>();
                             block->color(whitelt, blackdk);
+                        #endif
                         }
+
                         scroll_bars(layers, scroll);
                         break;
                     }
@@ -1716,9 +1709,9 @@ int main(int argc, char* argv[])
             board->SUBMIT(e2::release, e2::form::proceed::createby, gear)
             {
                 auto location = gear.slot;
-                if (gear.meta(hids::CTRL) || gear.meta(hids::RCTRL))
+                if (gear.meta(hids::ANYCTRL))
                 {
-                    log("gate: copy area to clipboard ", location);
+                    log("gate: area copied to clipboard ", location);
                     sptr<core> canvas_ptr;
                     if (auto gate_ptr = bell::getref(gear.id))
                     {
@@ -1860,7 +1853,6 @@ int main(int argc, char* argv[])
             iota fps = 60;
             board->SIGNAL(e2::general, e2::timer::fps, fps);
 
-
             iota usr_count = 0;
 
             if (auto link = os::ipc::open<os::server>(path))
@@ -1880,10 +1872,9 @@ int main(int argc, char* argv[])
                     auto _user   = peer->line(';');
                     auto _name   = peer->line(';');
                     log("peer: region= ", _region,
-                            ", ip= ",     _ip,
-                            ", user= ",   _user,
-                            ", name= ",   _name);
-
+                            ", ip= "    , _ip,
+                            ", user= "  , _user,
+                            ", name= "  , _name);
                     text c_ip;
                     text c_port;
                     auto c_info = utf::divide(_ip, " ");
@@ -1892,13 +1883,10 @@ int main(int argc, char* argv[])
 
                     utf::change(_ip, " ", ":");
 
-                    //bool test = _user == "bsu_test";
-                    //auto coor = test ? twod{ -100, 30 } : twod{};
-                    auto coor = twod{};
+                    //todo Move user's viewport to the last saved position
+                    auto user_coor = twod{};
 
-                    //log("main: spawn a new thread for client: ", (test ? "bsu_test" : "vtm"));
-
-                    //todo disyinct users via config, enumerate if no config
+                    //todo distinguish users by config, enumerate if no config
                     _name = "[" + _name + ":" + std::to_string(usr_count++) + "]";
                     log("main: spawn a new thread for client: ", _name);
 
@@ -1913,28 +1901,14 @@ int main(int argc, char* argv[])
                         #endif
 
                         auto client = board->invite<gate>(username);
-
                         client->color(whitedk, blacklt);
-                        //text params = ansi::mgr(0).mgl(0);
                         text header = ansi::jet(bias::center).mgr(0).mgl(0)
                             + username;
-                        //text header = ansi::jet(bias::center) + "Monotty Desktop Environment";
                         text footer = ansi::mgr(1).mgl(1)
                             + MONOTTY_VER;
                         client->SIGNAL(e2::preview, e2::form::prop::header, header);
                         client->SIGNAL(e2::preview, e2::form::prop::footer, footer);
-                        //client->SIGNAL(e2::preview, e2::form::prop::params, params);
-
-                        //text header = ansi::jet(bias::center) 
-                        //	+ "[User." + utf::remain(c_ip) + ":" + c_port + "]";
-                        //text footer = MONOTTY_VER;
-                        //client->title = ansi::wrp(faux).mgr(0).mgl(0)
-                        //	+ ansi::rlf(faux).jet(bias::left).cup(dot_00)
-                        //	+ header
-                        //	+ ansi::rlf(true).jet(bias::right).cup(dot_00)
-                        //	+ footer
-                        //	+ ansi::rlf(faux).jet(bias::left).cup(dot_00);
-                        client->base::moveby(coor);
+                        client->base::moveby(user_coor);
 
                         log("main: new gate created on ", peer);
 
@@ -1945,11 +1919,8 @@ int main(int argc, char* argv[])
                         #endif
 
                         log("main: proceed complete on ", peer);
-
                         client->detach();
-
                         log("main: exit from the threads sync on ", peer);
-
                     } }.detach();
 
                     log("main: new thread is running on ", peer);
