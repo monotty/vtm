@@ -1,15 +1,13 @@
-# [Monotty Desktopio Preview](https://github.com/netxs-group/VTM/releases/tag/latest)
-A text-based multi-user desktop environment, [/mʌˈnɒti ˈdesktɑːpioʊ/](http://ipa-reader.xyz/?text=m%CA%8C%CB%88n%C9%92ti%20%CB%88deskt%C9%91%CB%90pio%CA%8A&voice=Joanna)
+# Monotty Desktopio Preview
 
-[![HitCount](https://views.whatilearened.today/views/github/netxs-group/VTM.svg)](https://github.com/netxs-group/VTM) [![Gitter](https://badges.gitter.im/netxs-group/VTM.svg)](https://gitter.im/netxs-group/VTM?utm_source=badge&utm_medium=badge&utm_campaign=pr-badge) [![Twitter handle][]][twitter badge]
-
-![image](https://dice.netxs.online/cloud/vtm/mde_banner_v1.07.png)
+A text-based desktop environment in your terminal
+![image](https://dice.netxs.online/cloud/vtm/mde_banner_v1.13.png)
 
 # Demo
 
-- Live SSH Demo  
+- Live SSH Demo
 
-     `ssh vtm@netxs.online`  
+  `ssh vtm@netxs.online`
 
 - Video
   - [Desktop environment](https://youtu.be/fLumnSctakY)
@@ -18,43 +16,27 @@ A text-based multi-user desktop environment, [/mʌˈnɒti ˈdesktɑːpioʊ/](htt
 
 # Supported Platforms
 
- - GNU/Linux amd64
- - Windows
-    - Windows 10 (32/64)
-    - Windows Server 2019 (32/64)
- - macOS
-    - Catalina 10.15
+- GNU/Linux amd64
+- Windows
+  - Windows 10 (32/64)
+  - Windows Server 2019 (32/64)
+- macOS
+  - Catalina 10.15
 
-# Installation
-[![](https://dice.netxs.online/cloud/vtm/status/macos)](https://github.com/netxs-group/VTM/releases)  [![](https://dice.netxs.online/cloud/vtm/status/linux)](https://github.com/netxs-group/VTM/releases)
-```bash
-if   [[ "$OSTYPE" == "linux-gnu"* ]]; then release=vtm_linux_amd64
-elif [[ "$OSTYPE" == "darwin"*    ]]; then release=vtm_macos
-else exit 1; fi
-tmpdir=$(mktemp -d); cd $tmpdir
-wget "https://github.com/netxs-group/VTM/releases/download/latest/${release}.tar.gz"
-tar -zxvf "${release}.tar.gz"; cd "./${release}"
-cat ./install.sh
-echo "tmpdir=${tmpdir}"
-sudo ./install.sh; rm -rf $tmpdir; cd ~
-```
+# Releases
 
-[![](https://dice.netxs.online/cloud/vtm/status/windows)](https://github.com/netxs-group/VTM/releases)
-```cmd
-cd %TEMP%
-set release=vtm_windows_64
-curl -LJO https://github.com/netxs-group/VTM/releases/download/latest/%release%.zip
-tar -zxvf %release%.zip & cd ./%release%
-notepad ./install.ps1
-powershell ./install.ps1
-```
+[![](https://dice.netxs.online/cloud/vtm/status/macos)](https://github.com/netxs-group/VTM/releases/download/latest/vtm_macos.tar.gz)  
+[![](https://dice.netxs.online/cloud/vtm/status/linux)](https://github.com/netxs-group/VTM/releases/download/latest/vtm_linux_amd64.tar.gz)  
+[![](https://dice.netxs.online/cloud/vtm/status/windows)](https://github.com/netxs-group/VTM/releases/download/latest/vtm_windows_64.zip)  
+
+---
 
 # Command Line Options
 
-Module                         | Options
--------------------------------|--------------------------------------
-`vtm(.exe)` desktopio client   | No arguments
-`vtmd(.exe)` desktopio server  | `[ -d ]` run in background
+Module               | Options
+---------------------|--------------------------------------
+`vtm(.exe)` client   | No arguments
+`vtmd(.exe)` server  | `[ -d ]` run in background
 
 # User Interface Commands
 
@@ -63,83 +45,98 @@ Module                         | Options
 Shortcut              | Action
 ----------------------|--------------------------------------
 `Ctrl + PgUp/Dn`      | Switch between windows
-`LeftClick`           | Assign exclusive keyboard focus
+`LeftClick`           | Taskbar: Go to window<br>Window: Assign exclusive keyboard focus
 `Ctrl + LeftClick`    | Assign/clear group keyboard focus
-double `LeftClick`    | Window: Maximize/restore
-`RightClick`          | Desktop: Call menu
-`Left + Right`<br>or `MiddleClick` | Window: Close/destroy
-`LeftDrag`            | Desktop: Move visible windows<br>Window: Resize/move
-`RightDrag`           | Desktop: Create new window<br>Window: Scroll content
+double `LeftClick`    | Menu: Create new window<br>Window: Maximize/restore window
+`RightClick`          | Taskbar: Move window to center of view
+`Left + Right`<br>or `MiddleClick` | Window: Close/destroy window
+`LeftDrag`            | Desktop: Move visible windows<br>Window menu: Move window
+`RightDrag`           | Desktop: Create new window<br>Window: Scroll window content
 `Left + RightDrag`    | Scroll workspace
 `Ctrl + RightDrag`<br>or `Ctrl + MiddleDrag` | Copy selected area to clipboard `OSC 52`
 
 # Built-in Applications
 
 - `▀▄ Term` Terminal emulator
-- `▀▄ Logs` Debugging tool for monitoring applications' output in real time
-- `▀▄ Info` Software documentation browser _(not ready)_
-- `▀▄ Shop` A digital distribution platform _(not ready)_
-- `▀▄ Text` A simple text editor _(not ready)_
-- `▀▄ Calc` A simple spreadsheet program like VisiCalc or Lotus 1-2-3 _(not ready)_
-- `▀▄ Clip` Clipboard manager _(not ready)_
-- `▀▄ Draw` ANSI-artworks application _(not ready)_
+- `▀▄ Logs` VT monitoring tool
 - `▀▄ Task` Task manager (desktopio) _(not ready)_
-- `▀▄ Char` Unicode code points browser _(not ready)_
-- `▀▄ File` An orthodox file manager _(not ready)_
-- `▀▄ Time` A calendar application _(not ready)_
+- `▀▄ Hood` Configuration utility _(not ready)_
+- `▀▄ Info` Documentation browser _(not ready)_
+- `▀▄ Shop` TUIs distribution platform _(not ready)_
+- `▀▄ Text` ANSI/VT Text editor _(not ready)_
+- `▀▄ Calc` Spreadsheet calculator _(not ready)_
+- `▀▄ Draw` ANSI-artwork editor _(not ready)_
+- `▀▄ File` File manager _(not ready)_
 - `▀▄ Goto` Internet/SSH browser _(not ready)_
-- `▀▄ Game` Doom-II _(not ready)_
+- `▀▄ Clip` Clipboard manager _(not ready)_
+- `▀▄ Char` Unicode codepoints browser _(not ready)_
+- `▀▄ Time` Calendar application _(not ready)_
+- `▀▄ Doom` Doom Ⅱ source port _(not ready)_
 
 <details><summary>show details...</summary><p>
 
-- `▀▄ Term`
+ - `▀▄ Term`
+   - UTF-8 Everywhere
+   - Unicode clustering
    - TrueColor/256-color support
-   - Auto-wrap mode `DECAWM`
+   - Auto-wrap mode `DECAWM` (with horizontal scrolling)
    - Focus tracking `DECSET 1004`
    - Bracketed paste mode `DECSET 2004`
-   - SGR attributes: overline, double underline, strikethrough
+   - SGR attributes: overline, double underline, strikethrough, and others
    - Save/restore terminal window title `XTWINOPS 22/23`
-   - Mouse Tracking `DECSET 1000/1002/1003/1006 SGR` mode
+   - Mouse tracking `DECSET 1000/1002/1003/1006 SGR` mode
    - Mouse tracking `DECSET 10060 Extended SGR` mode, mouse reporting outside of the terminal viewport (outside + negative arguments) #62
-   - Scrollback buffer size is limited to 20000 lines (temporarily hardcoded value)
+   - Configurable using VT-sequences
+   
+      Name         | Sequence                         | Description
+      -------------|----------------------------------|-------------
+      `CCC_SBS`    | `CSI` 24 \[ : n \[ : m \] \] `p` | Set scrollback buffer size, `int32_t`<br>`n` Buffer limit in lines, 0 is unlimited, _default is 20.000_<br>`m` Grow step for unlimited buffer, _default is 0_
+      `CCC_RST`    | `CSI`  1           `p`           | Reset all parameters to default
+      `CCC_TBS`    | `CSI`  5 \[ : n \] `p`           | Set tabulation length<br>`n` Length in chars, _max = 256, default is 8_
+      `CCC_JET`    | `CSI` 11 \[ : n \] `p`           | Set text alignment, _default is Left_<br>`n = 0` default<br>`n = 1` Left<br>`n = 2` Right<br>`n = 3` Center
+      `CCC_WRP`    | `CSI` 12 \[ : n \] `p`           | Set text autowrap mode, _default is On_<br>`n = 0` default<br>`n = 1` On<br>`n = 2` Off
+      `CCC_RTL`    | `CSI` 13 \[ : n \] `p`           | Set text right-to-left mode, _default is Off_<br>`n = 0` default<br>`n = 1` On<br>`n = 2` Off
 
-- `▀▄ Logs`
+ - `▀▄ Logs`
   - Reset by double `RightClick`
 
-- `▀▄ Info`
+ - `▀▄ Hood`
   - ...
 
-- `▀▄ Shop`
+ - `▀▄ Info`
+  - ...
+
+ - `▀▄ Shop`
   - Just a sketch
 
-- `▀▄ Text`
-  - Just a sketch
+ - `▀▄ Text`
+  - User interface only
 
-- `▀▄ Calc`
-  - Just a sketch
+ - `▀▄ Calc`
+  - User interface only
 
-- `▀▄ Clip`
+ - `▀▄ Clip`
   - ...
 
-- `▀▄ Draw`
+ - `▀▄ Draw`
   - ...
 
-- `▀▄ Task`
+ - `▀▄ Task`
   - ...
 
-- `▀▄ Char`
+ - `▀▄ Char`
   - ...
 
-- `▀▄ File`
+ - `▀▄ File`
   - ...
 
-- `▀▄ Time`
+ - `▀▄ Time`
   - ...
 
-- `▀▄ Goto`
+ - `▀▄ Goto`
   - ...
 
-- `▀▄ Game`
+ - `▀▄ Doom`
   - ...
 
 </p></details>
@@ -147,6 +144,10 @@ double `LeftClick`    | Window: Maximize/restore
 # Related Repositories
 
 [Desktopio Framework Documentation](https://github.com/netxs-group/Desktopio-Docs)
+
+---
+
+[![HitCount](https://views.whatilearened.today/views/github/netxs-group/VTM.svg)](https://github.com/netxs-group/VTM) [![Gitter](https://badges.gitter.im/netxs-group/VTM.svg)](https://gitter.im/netxs-group/VTM?utm_source=badge&utm_medium=badge&utm_campaign=pr-badge) [![Twitter handle][]][twitter badge]
 
 [//]: # (LINKS)
 [twitter handle]: https://img.shields.io/twitter/follow/desktopio.svg?style=social&label=Follow
