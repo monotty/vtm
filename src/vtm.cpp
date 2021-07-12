@@ -1,9 +1,6 @@
 // Copyright (c) NetXS Group.
 // Licensed under the MIT license.
 
-#pragma clang diagnostic ignored "-Wunused-variable"
-#pragma clang diagnostic ignored "-Wunused-function"
-
 #include "netxs/os/system.hpp"
 
 #include <fstream> // std::ifstream
@@ -32,7 +29,7 @@ int main(int argc, char* argv[])
         os::exit(1, error);
     }
 
-    //[Demo] get current region from ~./vtm/vtm.conf
+    // Demo: get current region from ~./vtm/vtm.conf
     utf::text spot;
     {
         std::ifstream config;
@@ -48,42 +45,40 @@ int main(int argc, char* argv[])
     auto user = os::user();
     auto path = utf::concat("monotty_", user); //todo unify, use vtm.conf
 
-    auto link = os::ipc::open<os::client>(path, 10s, [&]() {
-        log("main: no desktop for user ", user);
-        log("main: spawning desktop environment");
-        return os::exec("vtmd", "-d");
+    auto link = os::ipc::open<os::client>(path, 10s, [&]()
+        {
+            log("main: new desktop environment for user ", user);
+            return os::exec("vtmd", "-d");
         });
 
-    if (!link) os::exit(-1, "main: open server link error");
+    if (!link) os::exit(-1, "main: desktop server connection error");
+
+    auto mode = os::legacy_mode();
 
     link->send(utf::concat(spot, ";",
                            host, ";",
                            name, ";",
-                           user, ";"));
+                           user, ";",
+                           mode, ";"));
 
     auto gate = os::tty::proxy(link);
-    ansi::esc mode;
-    mode.save_title(). // Push current title onto the stack.
-         altbuf(true). // Switch to alternate buffer.
-         vmouse(true). // Turn mouse reporting on/off.
-         cursor(faux). // Set the caret visibility.
-         bpmode(true). // Enable bracketed paste mode.
-         setutf(true); // Set UTF-8 character set.
     gate.ignite();
-    gate.output(mode);
-    
-    gate.splice();
-    
-    mode.clear();
-    mode.vmouse(faux).
-         cursor(true).
-         altbuf(faux).
-         bpmode(faux).
-         load_title();
-    gate.output(mode);
-    gate.revert();
+    gate.output(ansi::esc{}.save_title()
+                           .altbuf(true)
+                           .vmouse(true)
+                           .cursor(faux)
+                           .bpmode(true)
+                           .setutf(true));
+    gate.splice(mode);
 
-    // Pause to consume/receive buffered input (e.g. mouse tracking)
+    gate.output(ansi::esc{}.scrn_reset()
+                           .vmouse(faux)
+                           .cursor(true)
+                           .altbuf(faux)
+                           .bpmode(faux)
+                           .load_title());
+
+    // Pause to complete consuming/receiving buffered input (e.g. mouse tracking)
     // that has just been canceled.
     std::this_thread::sleep_for(200ms);
 }

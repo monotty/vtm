@@ -11,22 +11,24 @@ namespace netxs
     template<class T>
     struct testy
     {
-        T prev;
-        T last;
+        T    prev;
+        T    last;
+        bool test = faux;
+
         bool operator()(T newvalue)
         {
             prev = last;
-            bool result = last != newvalue;
-            if (result)
-            {
-                last = newvalue;
-            }
-            return result;
+            test = last != newvalue;
+            if (test) last = newvalue;
+            return test;
         }
-        operator T& ()
-        {
-            return last;
-        }
+        operator T& () { return last; }
+        testy() = default;
+        testy(T const& value)
+            : prev{ value },
+              last{ value },
+              test{ faux  }
+        { }
     };
 
     struct	null_deleter

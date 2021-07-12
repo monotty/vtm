@@ -259,6 +259,7 @@ namespace netxs::ui
         {
             assert(amount >= 0 && amount < batch.length());
             while(amount--) batch.pop();
+            align_basis();
         }
         auto get_line_index_by_id(iota id)
         {
@@ -541,6 +542,7 @@ namespace netxs::ui
                 auto mas_index = get_line_index_by_id(trim_line.bossid);
                 auto max_width = iota{ 0 };
                 auto head_iter = batch.begin() + mas_index;
+                //todo the case when wrap::on is over the wrap::off and the remainder is wider than panel.x
                 do
                 {
                     auto& line_inst = *--line_iter;
@@ -569,7 +571,9 @@ namespace netxs::ui
         {
             while(begin_it != end_it)
             {
-                (*begin_it).wipe(brush.spare);
+                auto& line = *begin_it;
+                xsize.drop(line);
+                line.wipe(brush.spare);
                 ++begin_it;
             }
         }
@@ -579,7 +583,8 @@ namespace netxs::ui
             if (n)
             {
                 auto[top, end] = get_scroll_region();
-                auto all_it = batch.begin() + basis;
+                auto nul_it = batch.begin();
+                auto all_it = nul_it + basis;
                 auto end_it = all_it + end;
                 auto top_it = all_it + top;
                 auto bossid = all_it->bossid;
@@ -592,39 +597,21 @@ namespace netxs::ui
                 }
                 if (n > 0) // Scroll down (move down the text block).
                 {
-                    if (use_scrollback)
-                    {
-                        //todo implement
-                        // if (top)
-                        // {
-                        //     auto buffer = cache.begin();
-                        //     if (basis) dissect(all_it);
-                        //     dissect(top_it);
-                        //     dissect(top_it + n);
-                        //     move_to(all_it, top_it,       buffer    ); // Move fixed header block to the temporary cache.
-                        //     move_to(top_it, top_it + n,   all_it    ); // Move up by the "top" the first n lines of scrolling region.
-                        //     move_to(buffer, buffer + top, all_it + n); // Move back fixed header block from the temporary cache.
-                        // }
-                        // add_lines(n);
-                        // auto bottom = batch.end() - (n + 1);
-                        // dissect(bottom - footer + 1);
-                        // move_to(bottom, bottom - footer, bottom + n); // Move down footer block by n.
-                    }
-                    else
-                    {
-                        n = std::min(n, height);
-                        auto a = top_it - 1;
-                        auto b = end_it - n;
-                        dissect(b + 1);
-                        dissect(top_it);
-                        if (footer) dissect(end_it + 1);
-                        move_to(b, a, end_it);
-                        zeroise(top_it, top_it + n);
-                    }
+                    n = std::min(n, height);
+                    auto a = top_it - 1;
+                    auto b = end_it - n;
+                    auto c = end_it + 1;
+                    dissect(b + 1);
+                    dissect(top_it);
+                    if (footer) dissect(c);
+                    zeroise(b + 1, c);
+                    move_to(b, a, end_it);
+                    zeroise(top_it, top_it + n);
                 }
                 else // Scroll up (move up the text block).
                 {
                     n = std::min(-n, height);
+                    auto a = top_it + n;
                     if (use_scrollback)
                     {
                         if (top)
@@ -632,28 +619,46 @@ namespace netxs::ui
                             auto buffer = cache.begin();
                             if (basis) dissect(all_it);
                             dissect(top_it);
-                            dissect(top_it + n);
+                            dissect(a);
                             move_to(all_it, top_it,       buffer    ); // Move fixed header block to the temporary cache.
-                            move_to(top_it, top_it + n,   all_it    ); // Move up by the "top" the first n lines of scrolling region.
+                            move_to(top_it, a,            all_it    ); // Move up by the "top" the first n lines of scrolling region.
                             move_to(buffer, buffer + top, all_it + n); // Move back fixed header block from the temporary cache.
                         }
                         add_lines(n);
-                        auto bottom = batch.end() - (n + 1);
-                        dissect(bottom - footer + 1);
-                        move_to(bottom, bottom - footer, bottom + n); // Move down footer block by n.
+                        auto c = batch.end() - 1;
+                        auto b = c - n;
+                        auto d = b - footer;
+                        dissect(d + 1);
+                        move_to(b, d, c); // Move down footer block by n.
                     }
                     else
                     {
-                        auto a = top_it + n;
                         auto b = end_it + 1;
                         dissect(a);
                         if (footer) dissect(b);
+                        zeroise(top_it, a);
                         move_to(a, b, top_it);
-                        zeroise(b - n, b);
                     }
                 }
                 rebuild_upto_id(bossid);
             }
+        }
+        // rods: Trim all autowrap lines by the specified size.
+        void trim_to_size(twod const& new_size)
+        {
+            auto head = batch.begin() + basis;
+            auto tail = batch.end() - std::max(0, panel.y - new_size.y);
+            if (new_size.x < panel.x)
+            {
+                while (tail != head)
+                {
+                    --tail;
+                    dissect(tail);
+                    auto& line = *tail;
+                    if (line.style.wrapln == wrap::on) line.trimto(new_size.x);
+                }
+            }
+            else while (--tail != head) dissect(tail);
         }
     };
 
@@ -980,12 +985,19 @@ namespace netxs::ui
                 parser() : vt()
                 {
                     using namespace netxs::console::ansi;
+                    vt::csier.table_space[CSI_SPC_SRC] = VT_PROC{ p->na("CSI n SP A  Shift right n columns(s)."); }; // CSI n SP A  Shift right n columns(s).
+                    vt::csier.table_space[CSI_SPC_SLC] = VT_PROC{ p->na("CSI n SP @  Shift left  n columns(s)."); }; // CSI n SP @  Shift left n columns(s).
+                    vt::csier.table_space[CSI_SPC_CST] = VT_PROC{ p->boss.caret_style(q(1)); }; // CSI n SP q  Set caret style (DECSCUSR).
+                    vt::csier.table_hash [CSI_HSH_SCP] = VT_PROC{ p->na("CSI n # P  Push current palette colors onto stack. n default is 0."); }; // CSI n # P  Push current palette colors onto stack. n default is 0.
+                    vt::csier.table_hash [CSI_HSH_RCP] = VT_PROC{ p->na("CSI n # Q  Pop  current palette colors onto stack. n default is 0."); }; // CSI n # Q  Pop  current palette colors onto stack. n default is 0.
+                    vt::csier.table_excl [CSI_EXL_RST] = VT_PROC{ p->boss.decstr( ); }; // CSI ! p  Soft terminal reset (DECSTR)
+
                     vt::csier.table[CSI_CUU] = VT_PROC{ p->up ( q(1)); };  // CSI n A
                     vt::csier.table[CSI_CUD] = VT_PROC{ p->dn ( q(1)); };  // CSI n B
                     vt::csier.table[CSI_CUF] = VT_PROC{ p->cuf( q(1)); };  // CSI n C
                     vt::csier.table[CSI_CUB] = VT_PROC{ p->cuf(-q(1)); };  // CSI n D
 
-                    vt::csier.table[CSI_CUD2]= VT_PROC{ p->dn ( q(1)); };  // CSI n e  Move caret down. Same as CUD
+                    vt::csier.table[CSI_CUD2]= VT_PROC{ p->dn ( q(1)); };  // CSI n e  Move caret down. Same as CUD.
 
                     vt::csier.table[CSI_CNL] = vt::csier.table[CSI_CUD];   // CSI n E
                     vt::csier.table[CSI_CPL] = vt::csier.table[CSI_CUU];   // CSI n F
@@ -1015,21 +1027,21 @@ namespace netxs::ui
                     vt::csier.table[CSI_CCC][CCC_SBS] = VT_PROC{ p->boss.resize(q); };  // CCC_SBS: Set scrollback size.
                     vt::csier.table[CSI_CCC][CCC_EXT] = VT_PROC{ p->boss.native(q(1)); };  // CCC_EXT: Setup extended functionality.
 
-                    vt::intro[ctrl::ESC]['M']= VT_PROC{ p->ri (); }; // ESC M  Reverse index
-                    vt::intro[ctrl::ESC]['H']= VT_PROC{ p->na("ESC H  Place tabstop at the current caret posistion"); }; // ESC H  Place tabstop at the current caret posistion.
-                    vt::intro[ctrl::ESC]['c']= VT_PROC{ p->boss.decstr(); }; // ESC c (same as CSI ! p) Full reset (RIS).
-                    vt::intro[ctrl::ESC]['7']= VT_PROC{ p->scp(); }; // ESC 7 (same as CSI s) Save caret position.
-                    vt::intro[ctrl::ESC]['8']= VT_PROC{ p->rcp(); }; // ESC 8 (same as CSI u) Restore caret position.
+                    vt::intro[ctrl::ESC][ESC_IND] = VT_PROC{ p->dn(1); }; // ESC D  Caret Down.
+                    vt::intro[ctrl::ESC][ESC_IR ] = VT_PROC{ p->ri (); }; // ESC M  Reverse index.
+                    vt::intro[ctrl::ESC][ESC_HTS] = VT_PROC{ p->na("ESC H  Place tabstop at the current caret posistion"); }; // ESC H  Place tabstop at the current caret posistion.
+                    vt::intro[ctrl::ESC][ESC_RIS] = VT_PROC{ p->boss.decstr(); }; // ESC c Reset to initial state (same as DECSTR).
+                    vt::intro[ctrl::ESC][ESC_SC ] = VT_PROC{ p->scp(); }; // ESC 7 (same as CSI s) Save caret position.
+                    vt::intro[ctrl::ESC][ESC_RC ] = VT_PROC{ p->rcp(); }; // ESC 8 (same as CSI u) Restore caret position.
 
-                    vt::intro[ctrl::BS ]     = VT_PROC{ p->cuf(-q.pop_all(ctrl::BS )); };
-                    vt::intro[ctrl::DEL]     = VT_PROC{ p->del( q.pop_all(ctrl::DEL)); };
-                    vt::intro[ctrl::TAB]     = VT_PROC{ p->tab( q.pop_all(ctrl::TAB)); };
-                    vt::intro[ctrl::CR ]     = VT_PROC{ p->home(); };
-                    vt::intro[ctrl::EOL]     = VT_PROC{ p->dn ( q.pop_all(ctrl::EOL)); };
+                    vt::intro[ctrl::BS ] = VT_PROC{ p->cuf(-q.pop_all(ctrl::BS )); };
+                    vt::intro[ctrl::DEL] = VT_PROC{ p->del( q.pop_all(ctrl::DEL)); };
+                    vt::intro[ctrl::TAB] = VT_PROC{ p->tab( q.pop_all(ctrl::TAB)); };
+                    vt::intro[ctrl::CR ] = VT_PROC{ p->home(); };
+                    vt::intro[ctrl::EOL] = VT_PROC{ p->dn ( q.pop_all(ctrl::EOL)); };
 
                     vt::csier.table_quest[DECSET] = VT_PROC{ p->boss.decset(q); };
                     vt::csier.table_quest[DECRST] = VT_PROC{ p->boss.decrst(q); };
-                    vt::csier.table_excl [DECSTR] = VT_PROC{ p->boss.decstr( ); }; // CSI ! p  Soft terminal reset (DECSTR)
 
                     vt::oscer[OSC_LABEL_TITLE] = VT_PROC{ p->boss.winprops.set(OSC_LABEL_TITLE, q); };
                     vt::oscer[OSC_LABEL]       = VT_PROC{ p->boss.winprops.set(OSC_LABEL,       q); };
@@ -1224,6 +1236,10 @@ namespace netxs::ui
                     finalize();
                 }
             }
+            // scrollbuff: Shift left n columns(s).
+            void shl(iota n)
+            {
+            }
             // scrollbuff: CSI n X  Erase/put n chars after cursor. Don't change cursor pos.
             void ech(iota n)
             {
@@ -1371,8 +1387,16 @@ namespace netxs::ui
             {
                 finalize();
                 auto posx = batch->chx();
-                if (batch->style.wrapln == wrap::on) posx -= posx % panel.x;
-                else                                 posx = 0;
+                if (batch->style.wrapln == wrap::on)
+                {
+                    auto d = posx % panel.x;
+                    posx -= d;
+                    if (posx && d < 2)
+                    {
+                        posx -= panel.x;
+                    }
+                }
+                else posx = 0;
                 batch->chx(posx);
                 coord.x = 0;
             }
@@ -1490,7 +1514,7 @@ namespace netxs::ui
                         target->style.wrp(wrap::on);
                         break;
                     case 12:   // Enable caret blinking.
-                        log("decset: CSI ? 12 h  Caret blinkage control is not implemented.");
+                        caret.blink_period();
                         break;
                     case 25:   // Caret on.
                         target->caret = true;
@@ -1558,7 +1582,7 @@ namespace netxs::ui
                         target->style.wrp(wrap::off);
                         break;
                     case 12:   // Disable caret blinking.
-                        log("decset: CSI ? 12 l  Caret blinkage control is not implemented.");
+                        caret.blink_period(period::zero());
                         break;
                     case 25:   // Caret off.
                         target->caret = faux;
@@ -1609,6 +1633,40 @@ namespace netxs::ui
                     default:
                         break;
                 }
+            }
+        }
+        void caret_style(iota style)
+        {
+            switch (style)
+            {
+            case 0: // n = 0  blinking box
+            case 1: // n = 1  blinking box (default)
+                caret.blink_period();
+                caret.style(true);
+                break;
+            case 2: // n = 2  steady box
+                caret.blink_period(period::zero());
+                caret.style(true);
+                break;
+            case 3: // n = 3  blinking underline
+                caret.blink_period();
+                caret.style(faux);
+                break;
+            case 4: // n = 4  steady underline
+                caret.blink_period(period::zero());
+                caret.style(faux);
+                break;
+            case 5: // n = 5  blinking I-bar
+                caret.blink_period();
+                caret.style(true);
+                break;
+            case 6: // n = 6  steady I-bar
+                caret.blink_period(period::zero());
+                caret.style(true);
+                break;
+            default:
+                log("term: unsupported caret style requested, ", style);
+                break;
             }
         }
 
@@ -1752,10 +1810,9 @@ namespace netxs::ui
                             auto old_caret_pos = caret.coor();
                             auto caret_seeable = viewport.coor.y == base::size().y - viewport.size.y;
 
-                            if (target == &altbuf || target->scroll_region_used())
+                            if (target == &altbuf)// || target->scroll_region_used())
                             {
-                                //target->trim_to_size(new_size);
-                                //todo altbuf: trim to size
+                                altbuf.trim_to_size(new_size);
                                 //todo scroll_region_used: scroll region up or down (pull lines from scrollback buffer)
                             }
                             viewport.size = new_size;
@@ -1798,6 +1855,21 @@ namespace netxs::ui
                     utf::change(data, "\033[1C", "\033OC");
                     utf::change(data, "\033[1D", "\033OD");
                 }
+                // Linux console specific.
+                utf::change(data, "\033[[A", "\033OP");      // F1
+                utf::change(data, "\033[[B", "\033OQ");      // F2
+                utf::change(data, "\033[[C", "\033OR");      // F3
+                utf::change(data, "\033[[D", "\033OS");      // F4
+                utf::change(data, "\033[[E", "\033[15~");    // F5
+                utf::change(data, "\033[25~", "\033[1;2P");  // Shift+F1
+                utf::change(data, "\033[26~", "\033[1;2Q");  // Shift+F2
+                utf::change(data, "\033[28~", "\033[1;2R");  // Shift+F3
+                utf::change(data, "\033[29~", "\033[1;2S");  // Shift+F4
+                utf::change(data, "\033[31~", "\033[15;2~"); // Shift+F5
+                utf::change(data, "\033[32~", "\033[17;2~"); // Shift+F6
+                utf::change(data, "\033[33~", "\033[18;2~"); // Shift+F7
+                utf::change(data, "\033[34~", "\033[19;2~"); // Shift+F8
+
                 ptycon.write(data);
 
                 #ifdef KEYLOG

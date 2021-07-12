@@ -95,11 +95,13 @@ namespace netxs::console
         EVENT_BIND(e2::term::layout  , const twod)
         EVENT_BIND(e2::term::preclose, const bool)
         EVENT_BIND(e2::term::quit    , const view)
+        EVENT_BIND(e2::term::pointer , const bool)
 
     EVENT_BIND(e2::config::any, iota)
         EVENT_BIND(e2::config::broadcast, sptr<bell>)
-        EVENT_BIND(e2::config::intervals::any, period)
-            EVENT_SAME(e2::config::intervals::any, e2::config::intervals::blink)
+        EVENT_BIND(e2::config::caret::any, period)
+            EVENT_BIND(e2::config::caret::blink, period)
+            EVENT_BIND(e2::config::caret::style, iota)
 
     EVENT_BIND(e2::data::any, iota)
         EVENT_BIND(e2::data::changed, iota)
@@ -521,10 +523,9 @@ namespace netxs::console
             //else
             {
                 // Interpret button combinations
-                if ((m.button[joint] = (m.button[first]         & m.button[other])
-                                     | (  button[joint].pressed & m.button[first])
-                                     | (  button[joint].pressed & m.button[other])))
+                if (m.button[first] && m.button[other])
                 {
+                    m.button[joint] = true;
                     if (button[first].dragged)
                     {
                         button[first].dragged = faux;
@@ -536,6 +537,35 @@ namespace netxs::console
                         action(dragcncl, other);
                     }
                 }
+                else
+                {
+                    // Release all on release any. Due to apple terminal bug.
+                    if (m.button[joint])
+                    {
+                        m.button[first] = m.button[other] = faux;
+                    }
+                    m.button[joint] = faux;
+
+                }
+                //todo possible bug in Apple's Terminal - it does not return the second release
+                //                                        in case the two buttons are pressed.
+                //if ((m.button[joint] = (m.button[first]         && m.button[other])
+                //                    || (  button[joint].pressed && m.button[first])
+                //                    || (  button[joint].pressed && m.button[other])))
+                //
+                //{
+                //    if (button[first].dragged)
+                //    {
+                //        button[first].dragged = faux;
+                //        action(dragcncl, first);
+                //    }
+                //    if (button[other].dragged)
+                //    {
+                //        button[other].dragged = faux;
+                //        action(dragcncl, other);
+                //    }
+                //}
+
                 // In order to avoid single button tracking (Click, Pull, etc)
                 button[first].succeed = !(m.button[joint] || button[joint].pressed);
                 button[other].succeed = button[first].succeed;
@@ -2532,35 +2562,69 @@ namespace netxs::console
             bool   live; // caret: Should the caret be drawn.
             bool   done; // caret: Is the caret already drawn.
             rect   body; // caret: Caret position.
-            period step; // caret: Blink interval.
+            period step; // caret: Blink interval. period::zero() if steady.
             moment next; // caret: Time of next blinking.
-            //iota form; // caret: Set caret style (box, line, bar)
+            bool   form; // caret: Caret style: true - box; faux - underline.
 
         public:
             caret(base&&) = delete;
-            caret(base& boss, bool visible = faux, twod position = dot_00) : skill{ boss },
+            caret(base& boss, bool visible = faux, twod position = dot_00, bool abox = faux) : skill{ boss },
                 live{ faux },
                 done{ faux },
+                form{ abox },
                 body{ position, dot_11 }, // Caret is always one cell size (see the term::scrollback definition).
                 step{ BLINK_PERIOD }
             {
-                boss.SUBMIT_T(e2::request, e2::config::intervals::blink, conf, req_step)
+                boss.SUBMIT_T(e2::request, e2::config::caret::blink, conf, req_step)
                 {
                     req_step = step;
                 };
-                boss.SUBMIT_T(e2::general, e2::config::intervals::blink, conf, new_step)
+                boss.SUBMIT_T(e2::request, e2::config::caret::style, conf, req_style)
                 {
-                    step = new_step;
+                    req_style = form ? 1 : 0;
                 };
-                boss.SUBMIT_T(e2::preview, e2::config::intervals::blink, conf, new_step)
+                boss.SUBMIT_T(e2::general, e2::config::caret::blink, conf, new_step)
                 {
-                    step = new_step;
+                    blink_period(new_step);
+                };
+                boss.SUBMIT_T(e2::preview, e2::config::caret::blink, conf, new_step)
+                {
+                    blink_period(new_step);
+                };
+                boss.SUBMIT_T(e2::general, e2::config::caret::style, conf, new_style)
+                {
+                    style(new_style);
+                };
+                boss.SUBMIT_T(e2::preview, e2::config::caret::style, conf, new_style)
+                {
+                    style(new_style);
                 };
                 if (visible) show();
             }
 
             operator bool() const { return memo.count(); }
 
+            // pro::caret: Set caret style.
+            void style(bool new_form)
+            {
+                if (form != new_form)
+                {
+                    hide();
+                    form = new_form;
+                    show();
+                }
+            }
+            // pro::caret: Set blink period.
+            void blink_period(period const& new_step = BLINK_PERIOD)
+            {
+                auto changed = (step == period::zero()) != (new_step == period::zero());
+                step = new_step;
+                if (changed)
+                {
+                    hide();
+                    show();
+                }
+            }
             // pro::caret: Set caret position.
             void coor(twod const& coor)
             {
@@ -2585,8 +2649,11 @@ namespace netxs::console
             // pro::caret: Force to redraw caret.
             void reset()
             {
-                live = faux;
-                next = {};
+                if (step != period::zero())
+                {
+                    live = faux;
+                    next = {};
+                }
             }
             // pro::caret: Enable caret.
             void show()
@@ -2594,16 +2661,19 @@ namespace netxs::console
                 if (!*this)
                 {
                     done = faux;
-                    live = faux;
-                    boss.SUBMIT_T(e2::general, e2::timer::tick, memo, timestamp)
+                    live = step == period::zero();
+                    if (!live)
                     {
-                        if (timestamp > next)
+                        boss.SUBMIT_T(e2::general, e2::timer::tick, memo, timestamp)
                         {
-                            next = timestamp + step;
-                            live = !live;
-                            boss.SIGNAL(e2::preview, e2::form::layout::strike, body);
-                        }
-                    };
+                            if (timestamp > next)
+                            {
+                                next = timestamp + step;
+                                live = !live;
+                                boss.SIGNAL(e2::preview, e2::form::layout::strike, body);
+                            }
+                        };
+                    }
                     boss.SUBMIT_T(e2::release, e2::postrender, memo, canvas)
                     {
                         done = live;
@@ -2614,7 +2684,8 @@ namespace netxs::console
                             point.coor += field.coor + boss.base::coor();
                             if (auto area = field.clip(point))
                             {
-                                canvas.fill(area, [](cell& c) { c.und(!c.und()); });
+                                if (form) canvas.fill(area, [](cell& c) { c.inv(!c.inv()); });
+                                else      canvas.fill(area, [](cell& c) { c.und(!c.und()); });
                             }
                         }
                     };
@@ -4858,7 +4929,6 @@ again:
                                                 mouse.hzwheel = flags & (1 << 3); // MOUSE_HWHEELED;
                                                 mouse.wheeldt = wheel;
 
-                                                // Windows Terminal Reported mouse ctrlstate is broken
                                                 bool k_ralt  = ctrls & 0x1;
                                                 bool k_alt   = ctrls & 0x2;
                                                 bool k_rctrl = ctrls & 0x4;
@@ -4972,11 +5042,41 @@ again:
                                         else pos++; // pop '_'
                                     }
                                 }
-                                else if (event_id == ansi::CCC_EXT && l > 2 
+                                else if (event_id == ansi::CCC_EXT && l > 2
                                     && tmp.at(0) == ':' && tmp.at(2) == 'p')
                                 {
                                     pos += 5 /* 25:1p */;
                                     owner.SIGNAL(e2::release, e2::term::native, tmp.at(1) == '1');
+                                }
+                                else if (event_id == ansi::CCC_SMS && l > 2
+                                    && tmp.at(0) == ':' && tmp.at(2) == 'p')
+                                {
+                                    pos += 5 /* 26:1p */;
+                                    owner.SIGNAL(e2::release, e2::term::pointer, tmp.at(1) == '1');
+                                }
+                                else if (event_id == ansi::CCC_KBD && l > 2
+                                    && tmp.at(0) == ':')
+                                {
+                                    tmp.remove_prefix(1); // pop ':'
+                                    if(auto v = utf::to_int(tmp))
+                                    {
+                                        if (tmp.size() && tmp.at(0) == 'p')
+                                        {
+                                            tmp.remove_prefix(1); // pop 'p'
+                                            pos += l - tmp.size();
+                                            auto ctrls = v.value();
+                                                bool k_ralt  = ctrls & 0x1;
+                                                bool k_alt   = ctrls & 0x2;
+                                                bool k_rctrl = ctrls & 0x4;
+                                                bool k_ctrl  = ctrls & 0x8;
+                                                bool k_shift = ctrls & 0x10;
+                                                keybd.ctlstate = (k_shift ? hids::SHIFT : 0)
+                                                               + (k_alt   ? hids::ALT   : 0)
+                                                               + (k_ralt  ? hids::ALT   : 0)
+                                                               + (k_rctrl ? hids::RCTRL : 0)
+                                                               + (k_ctrl  ? hids::CTRL  : 0);
+                                        }
+                                    }
                                 }
                                 else
                                 {
@@ -5101,6 +5201,7 @@ again:
         ansi  frame; // diff: Text screen representation.
         bool  alive; // diff: Working loop state.
         bool  ready; // diff: Conditional variable to avoid spurious wakeup.
+        svga  video; // diff: VGA 16/256-color compatibility mode.
         work  paint; // diff: Rendering thread.
         pair  debug; // diff: Debug info.
 
@@ -5108,6 +5209,7 @@ again:
         text  extra_cached; // diff: Cached extra data to cout.
 
         // diff: Render current buffer to the screen.
+        template<svga VGAMODE = svga::truecolor>
         void render()
         {
             using time = moment;
@@ -5118,7 +5220,7 @@ again:
             {
                 auto dumb = c;
                 dumb.txt(utf::REPLACEMENT_CHARACTER_UTF8_VIEW);
-                dumb.scan(state, frame);
+                dumb.template scan<VGAMODE>(state, frame);
             };
 
             std::unique_lock guard{ mutex };
@@ -5127,6 +5229,7 @@ again:
             time start;
 
             //todo unify (it is just a proof of concept)
+            //todo switch VGAMODE on fly
             while ((void)synch.wait(guard, [&]{ return ready; }), alive)
             {
                 ready = faux;
@@ -5144,9 +5247,7 @@ again:
                     auto src = front.data();
                     auto end = src + front.size();
                     auto row = 0;
-
-                    frame.scroll_wipe().autowr(faux); // Smooth resize.
-                    //frame.scroll_wipe();
+                    frame.scroll_wipe();
                     while (row++ < field.y)
                     {
                         frame.locate(1, row);
@@ -5156,7 +5257,7 @@ again:
                             auto& c = *(src++);
                             if (c.wdt() < 2)
                             {
-                                c.scan(state, frame);
+                                c.scan<VGAMODE>(state, frame);
                             }
                             else
                             {
@@ -5172,7 +5273,7 @@ again:
                                         }
                                         else
                                         {
-                                            if (!c.scan(d, state, frame))
+                                            if (!c.scan<VGAMODE>(d, state, frame))
                                             {
                                                 fallback(c, state, frame); // Left part alone.
                                                 src--; // Repeat all for d again.
@@ -5218,7 +5319,7 @@ again:
                                     frame.locate(col, row);
 
                                     back = fore;
-                                    fore.scan(state, frame);
+                                    fore.scan<VGAMODE>(state, frame);
 
                                     /* optimizations */
                                     while (src != end)
@@ -5233,7 +5334,7 @@ again:
                                             else
                                             {
                                                 back = fore;
-                                                fore.scan(state, frame);
+                                                fore.scan<VGAMODE>(state, frame);
                                             }
                                         }
                                         else if (w == 2) // Check left part.
@@ -5255,7 +5356,7 @@ again:
                                                         }
                                                         else // d.wdt() == 3
                                                         {
-                                                            if (!fore.scan(d, state, frame))
+                                                            if (!fore.scan<VGAMODE>(d, state, frame))
                                                             {
                                                                 fallback(fore, state, frame); // Left part alone.
                                                                 fallback(d,    state, frame); // Right part alone.
@@ -5278,7 +5379,7 @@ again:
                                                     }
                                                     else // d.wdt() == 3
                                                     {
-                                                        if (!fore.scan(d, state, frame))
+                                                        if (!fore.scan<VGAMODE>(d, state, frame))
                                                         {
                                                             fallback(fore, state, frame); // Left part alone.
                                                             fallback(d, state, frame); // Right part alone.
@@ -5325,7 +5426,7 @@ again:
                                             }
                                             else // d.wdt() == 3
                                             {
-                                                if (!fore.scan(d, state, frame))
+                                                if (!fore.scan<VGAMODE>(d, state, frame))
                                                 {
                                                     
                                                     fallback(fore, state, frame); // Left part alone.
@@ -5361,7 +5462,7 @@ again:
                                                     auto col = static_cast<iota>(src - beg - 1);
                                                     frame.locate(col, row);
 
-                                                    if (!fore.scan(d, state, frame))
+                                                    if (!fore.scan<VGAMODE>(d, state, frame))
                                                     {
                                                         fallback(fore, state, frame); // Left part alone.
                                                         fallback(d, state, frame); // Right part alone.
@@ -5429,7 +5530,7 @@ again:
             return std::nullopt;
         }
 
-        diff(link& conio, pro::input& input)
+        diff(link& conio, pro::input& input, svga vga_mode)
             : rhash{ 0 },
               dhash{ 0 },
               delta{ 0 },
@@ -5437,14 +5538,23 @@ again:
               alive{ true },
               ready{ faux },
               conio{ conio },
+              video{ vga_mode },
               mutex{ input.sync },
               cache{ input.xmap.pick() }
         {
             log("diff: ctor start");
-            paint = work([&] { render(); });
+            paint = work([&]
+                { 
+                    switch(video)
+                    {
+                        case svga::truecolor: render<svga::truecolor>(); break;
+                        case svga::vga16:     render<svga::vga16    >(); break;
+                        case svga::vga256:    render<svga::vga256   >(); break;
+                        default: break;
+                    }
+                });
             log("diff: ctor complete");
         }
-
         ~diff()
         {
             log("diff: dtor");
@@ -5488,6 +5598,7 @@ again:
         text uname_txt; // gate: Client name (original).
         bool native = faux; //gate: Extended functionality support.
         bool fullscreen = faux; //gate: Fullscreen mode.
+        iota legacy = os::legacy::clean;
 
     public:
         // todo unify
@@ -5499,8 +5610,11 @@ again:
         {
             if (auto world = base::parent())
             {
+                auto vga_mode = legacy & os::legacy::vga16  ? svga::vga16
+                              : legacy & os::legacy::vga256 ? svga::vga256
+                                                            : svga::truecolor;
                 link conio{ *this, media }; // gate: Terminal IO.
-                diff paint{ conio, input }; // gate: Rendering loop.
+                diff paint{ conio, input, vga_mode }; // gate: Rendering loop.
                 subs token;                 // gate: Subscription tokens array.
 
                 // conio events.
@@ -5517,6 +5631,10 @@ again:
                 SUBMIT_T(e2::release, e2::term::native, token, extended)
                 {
                     native = extended;
+                };
+                SUBMIT_T(e2::release, e2::term::pointer, token, pointer)
+                {
+                    legacy |= pointer ? os::legacy::mouse : 0;
                 };
                 SUBMIT_T(e2::release, e2::term::error, token, errcode)
                 {
@@ -5593,11 +5711,12 @@ again:
         }
 
     protected:
-        gate(view user_name)
+        gate(view user_name, iota legacy_mode)
         {
             //todo unify
             uname = uname_txt = user_name;
             title.live = faux;
+            legacy = legacy_mode;
             mouse.draggable<sysmouse::leftright>();
             SUBMIT(e2::release, e2::form::drag::start::leftright, gear)
             {
@@ -5658,8 +5777,10 @@ again:
                 //if (gear.meta(hids::CTRL | hids::RCTRL))
                 {
                     //todo unify
-                    auto pgup = gear.keystrokes == "\033[5;5~"s;
-                    auto pgdn = gear.keystrokes == "\033[6;5~"s;
+                    auto pgup = gear.keystrokes == "\033[5;5~"s
+                            || (gear.keystrokes == "\033[5~"s && gear.meta(hids::CTRL | hids::RCTRL));
+                    auto pgdn = gear.keystrokes == "\033[6;5~"s
+                            || (gear.keystrokes == "\033[6~"s && gear.meta(hids::CTRL | hids::RCTRL));
                     if (pgup || pgdn)
                     {
                         if (auto world = base::parent())
@@ -5729,20 +5850,6 @@ again:
             {
                 if (&parent_canvas != &cache.canvas)
                 {
-                    auto area = base::area();
-                    area.coor += input.coord - parent_canvas.area().coor;
-                    area.size = dot_11;
-                    cell brush;
-                    if (input.push)
-                    {
-                        brush.txt(64 + input.push).bgc(reddk).fgc(whitelt);
-                    }
-                    else
-                    {
-                        brush.txt(whitespace).bgc(greenlt);
-                    }
-                    parent_canvas.fill(area, brush);
-
                     //if (parent.test(area.coor))
                     //{
                     //	auto hover_id = parent[area.coor].link();
@@ -5752,7 +5859,9 @@ again:
                     if (uname.lyric)
                     {
                         auto& header = *uname.lyric;
-                        area.coor += parent_canvas.area().coor;
+                        auto area = base::area();
+                        area.coor += input.coord;
+                        area.size = dot_11;
                         area.coor.y--;
                         area.coor.x -= (iota)header.size().x / 2;
                         //todo unify header coords
@@ -5764,7 +5873,25 @@ again:
                 {
                     if (uibar && !fullscreen) parent_canvas.render(uibar, base::coor());
                 }
-
+                bool show_mouse = legacy & os::legacy::mouse;
+                if (&parent_canvas != &cache.canvas || show_mouse)
+                {
+                    auto area = base::area();
+                    area.coor += input.coord;
+                    area.coor -= parent_canvas.area().coor;
+                    area.size = dot_11;
+                    cell brush;
+                    if (input.push)
+                    {
+                        brush.txt(64 + input.push).bgc(reddk).fgc(0xFFffffff);
+                    }
+                    else
+                    {
+                        if (show_mouse) brush.txt("\u2588"/* █ */).fgc(0xFF00ff00);
+                        else            brush.txt(whitespace).bgc(greenlt);
+                    }
+                    parent_canvas.fill(area, brush);
+                }
                 #ifdef REGIONS
                 parent_canvas.each([](cell& c){
                     auto mark = rgba{ rgba::color256[c.link() % 256] };

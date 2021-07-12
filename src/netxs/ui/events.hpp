@@ -214,16 +214,16 @@ namespace netxs::events
         };};
         struct config { enum : type {
                 any = e2::_config,
-                _intervals  = any | (1 << _level0), // any kind of intervals property (arg: period)
+                _caret      = any | (1 << _level0), // any kind of intervals property (arg: period)
                 broadcast   = any | (2 << _level0), // release: broadcast source changed, args: sptr<bell>.
                 //resized     = any | (3 << _level0), //
             };
             private: static const unsigned int _level1 = _level0 + _width;
             public:
-            struct intervals { enum : type {
-                    any = config::_intervals,
+            struct caret { enum : type {
+                    any = config::_caret,
                     blink       = any | (1 << _level1), // caret blinking interval (arg: period)
-                    //up          = any | (2 << _level1),
+                    style       = any | (2 << _level1), // caret style: 0 - underline, 1 - box (arg: iota)
             };};
         };
         struct term { enum : type {
@@ -238,6 +238,7 @@ namespace netxs::events
                 layout      = any | (8 << _level0),
                 preclose    = any | (9 << _level0), // signal to quit after idle timeout (arg: bool - ready to shutdown)
                 quit        = any | (10<< _level0), // quit (arg: text - bye msg)
+                pointer     = any | (11<< _level0), // mouse pointer visibility (arg: bool)
                 //menu      = any | (11 << _level0),
         };};
         struct hids { enum : type {

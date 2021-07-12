@@ -38,39 +38,52 @@ namespace netxs::console::ansi
     static const char ESC_IND = 'D'; // ESC D         Caret Down.
     static const char ESC_IR  = 'M'; // ESC M         Caret Up.
     static const char ESC_DCS = 'P'; // ESC P ... ST  DCS start
+    static const char ESC_RIS = 'c'; // ESC c         Reset terminal to initial state.
 
-    static const char CSI_CUU = 'A'; // CSI n      A  — Caret Up.
-    static const char CSI_CUD = 'B'; // CSI n      B  — Caret Down.
-    static const char CSI_CUD2= 'e'; // CSI n      e  — Caret Down.
-    static const char CSI_CUF = 'C'; // CSI n      C  — Caret Forward.
-    static const char CSI_CUB = 'D'; // CSI n      D  — Caret Back.
-    static const char CSI_CNL = 'E'; // CSI n      E  — Caret Next Line.
-    static const char CSI_CPL = 'F'; // CSI n      F  — Caret Previous Line.
-    static const char CSI_CHX = 'G'; // CSI n      G  — Caret Horizontal Absolute.
-    static const char CSI_CHY = 'd'; // CSI n      d  — Caret Vertical Absolute.
-    static const char CSI_CUP = 'H'; // CSI n ; m  H  — Caret Position.
-    static const char CSI_HVP = 'f'; // CSI n ; m  f  — Horizontal and Vertical Position.
-    static const char CSI_SGR = 'm'; // CSI n [;k] m  — Select Graphic Rendition.
-    static const char DECSTBM = 'r'; // CSI t ; b  r  — Set scrolling region (t/b: top + bottom).
-    static const char CSI_SCP = 's'; // CSI        s  — Save caret Position.
-    static const char CSI_RCP = 'u'; // CSI        u  — Restore caret Position.
-    static const char CSI__EL = 'K'; // CSI n      K  — Erase 0: from caret to end, 1: from begin to caret, 2: all line.
-    static const char CSI__IL = 'L'; // CSI n      L  — Insert n blank lines.
-    static const char CSI__ED = 'J'; // CSI n      J  — Erase 0: from caret to end of screen, 1: from begin to caret, 2: all screen.
-    static const char CSI__DL = 'M'; // CSI n      M  — Delete n lines.
-    static const char CSI_DCH = 'P'; // CSI n      P  — Delete n character(s).
-    static const char CSI__SD = 'T'; // CSI n      T  — Scroll down by n lines, scrolled out lines are lost.
-    static const char CSI__SU = 'S'; // CSI n      S  — Scroll   up by n lines, scrolled out lines are lost.
-    static const char CSI_WIN = 't'; // CSI n;m;k  t  — XTWINOPS, Terminal window props.
-    static const char CSI_ECH = 'X'; // CSI n      X  — Erase n character(s) ? difference with delete ?
-    static const char CSI_ICH = '@'; // CSI n      @  — Insert/wedge n character(s).
-    static const char DECSET  = 'h'; // CSI ? n    h  — DECSET.
-    static const char DECRST  = 'l'; // CSI ? n    l  — DECRST.
-    static const char CSI_hRM = 'h'; // CSI n      h  — Reset mode (always Replace mode n=4).
-    static const char CSI_lRM = 'l'; // CSI n      l  — Reset mode (always Replace mode n=4).
-    static const char DECSTR  = 'p'; // CSI !      p  — Reset terminal to initial state.
-    static const char CSI_CCC = 'p'; // CSI n [; x1; x2; ...; xn ] p — Custom Caret Command.
-    static const char W32_INP = '_'; // CSI EVENT_TYPEn [; x1; x2; ...; xn ] _ — win32-input-mode.
+    static const char CSI_SPC_SLC = '@'; // CSI n SP   @  — Shift left n columns(s).
+    static const char CSI_SPC_SRC = 'A'; // CSI n SP   A  — Shift right n columns(s).
+    static const char CSI_SPC_CST = 'q'; // CSI n SP   q  — Set caret style (DECSCUSR).
+
+    static const char CSI_HSH_SCP = 'P'; // CSI n #    P  — Push current palette colors onto stack. n default is 0.
+    static const char CSI_HSH_RCP = 'Q'; // CSI n #    Q  — Pop current palette colors from stack. n default is 0.
+    static const char CSI_HSH_RVA = 'q'; // CSI   #    q  — Pop video attributes from stack (XTPOPSGR).
+
+    static const char CSI_DQT_SCP = 'q'; // CSI n "    q  — Select character protection attribute.
+
+    static const char CSI_EXL_RST = 'p'; // CSI   !    p  — Reset terminal to initial state.
+
+    static const char CSI_CUU = 'A';     // CSI n      A  — Caret Up.
+    static const char CSI_CUD = 'B';     // CSI n      B  — Caret Down.
+    static const char CSI_CUD2= 'e';     // CSI n      e  — Caret Down.
+    static const char CSI_CUF = 'C';     // CSI n      C  — Caret Forward.
+    static const char CSI_CUB = 'D';     // CSI n      D  — Caret Back.
+    static const char CSI_CNL = 'E';     // CSI n      E  — Caret Next Line.
+    static const char CSI_CPL = 'F';     // CSI n      F  — Caret Previous Line.
+    static const char CSI_CHX = 'G';     // CSI n      G  — Caret Horizontal Absolute.
+    static const char CSI_CHY = 'd';     // CSI n      d  — Caret Vertical Absolute.
+    static const char CSI_HVP = 'f';     // CSI n ; m  f  — Horizontal and Vertical Position.
+    static const char CSI_CUP = 'H';     // CSI n ; m  H  — Caret Position.
+    static const char CSI_SGR = 'm';     // CSI n [;k] m  — Select Graphic Rendition.
+    static const char DECSTBM = 'r';     // CSI t ; b  r  — Set scrolling region (t/b: top + bottom).
+    static const char CSI_SCP = 's';     // CSI        s  — Save caret Position.
+    static const char CSI_RCP = 'u';     // CSI        u  — Restore caret Position.
+    static const char CSI__EL = 'K';     // CSI n      K  — Erase 0: from caret to end, 1: from begin to caret, 2: all line.
+    static const char CSI__IL = 'L';     // CSI n      L  — Insert n blank lines.
+    static const char CSI__ED = 'J';     // CSI n      J  — Erase 0: from caret to end of screen, 1: from begin to caret, 2: all screen.
+    static const char CSI__DL = 'M';     // CSI n      M  — Delete n lines.
+    static const char CSI_DCH = 'P';     // CSI n      P  — Delete n character(s).
+    static const char CSI_LED = 'q';     // CSI n      q  — Load keyboard LEDs.
+    static const char CSI__SD = 'T';     // CSI n      T  — Scroll down by n lines, scrolled out lines are lost.
+    static const char CSI__SU = 'S';     // CSI n      S  — Scroll   up by n lines, scrolled out lines are lost.
+    static const char CSI_WIN = 't';     // CSI n;m;k  t  — XTWINOPS, Terminal window props.
+    static const char CSI_ECH = 'X';     // CSI n      X  — Erase n character(s) ? difference with delete ?
+    static const char CSI_ICH = '@';     // CSI n      @  — Insert/wedge n character(s).
+    static const char DECSET  = 'h';     // CSI ? n    h  — DECSET.
+    static const char DECRST  = 'l';     // CSI ? n    l  — DECRST.
+    static const char CSI_hRM = 'h';     // CSI n      h  — Reset mode (always Replace mode n=4).
+    static const char CSI_lRM = 'l';     // CSI n      l  — Reset mode (always Replace mode n=4).
+    static const char CSI_CCC = 'p';     // CSI n [; x1; x2; ...; xn ] p — Custom Caret Command.
+    static const char W32_INP = '_';     // CSI EVENT_TYPEn [; x1; x2; ...; xn ] _ — win32-input-mode.
 
     static const char C0_NUL = '\x00'; // Null                - Originally used to allow gaps to be left on paper tape for edits. Later used for padding after a code that might take a terminal some time to process (e.g. a carriage return or line feed on a printing terminal). Now often used as a string terminator, especially in the programming language C.
     static const char C0_SOH = '\x01'; // Start of Heading    - First character of a message header. In Hadoop, it is often used as a field separator.
@@ -201,12 +214,15 @@ namespace netxs::console::ansi
     static const iota CCC_REF    = 23 ; // CSI 23: id      p  - create the reference to the existing paragraph.
     static const iota CCC_SBS    = 24 ; // CSI 24: n: m    p  - define scrollback size: n: max size, m: grow_by step.
     static const iota CCC_EXT    = 25 ; // CSI 25: b       p  - extended functionality support.
-    //static const iota CCC_WIN = 20 ; // CSI 20: x: y    p    terminal window resize.
+    static const iota CCC_SMS    = 26 ; // CSI 26: b       p  - Should the mouse poiner to be drawn.
+    static const iota CCC_KBD    = 27 ; // CSI 27: n       p  - Set keyboard modifiers.
 
     // ansi: Escaped sequences accumulator.
     struct esc
         : public text
     {
+        esc() = default;
+
         inline text str(iota n) { return std::to_string(n); }
         inline text str(char n) { return text(1, n); }
 
@@ -227,7 +243,6 @@ namespace netxs::console::ansi
         esc& vmouse (bool b) { add(b ? "\033[?1002;1003;1004;1006;10060h" : "\033[?1002;1003;1004;1006;10060l"); return *this; } // esc: Focus and Mouse position reporting/tracking.
         esc& locate_wipe ()  { add("\033[r");                           return *this; } // esc: Enable scrolling for entire display (clear screen).
         esc& locate_call ()  { add("\033[6n");                          return *this; } // esc: Report caret position.
-        esc& screen_wipe ()  { add("\033[!p");                          return *this; } // esc: Reset certain terminal settings to their defaults. Also resets the mouse tracking mode in VTE.
         esc& scroll_wipe ()  { add("\033[3J");                          return *this; } // esc: Erase scrollback.
         esc& tag (view t)    { add("\033]2;" + text(t) + "\07");        return *this; } // esc: Window title.
         esc& setutf (bool b) { add(b ? "\033%G"      : "\033%@");       return *this; } // esc: Select UTF-8 character set (true) or default (faux).
@@ -238,7 +253,43 @@ namespace netxs::console::ansi
         esc& bpmode (bool b) { add(b ? "\033[?2004h" : "\033[?2004l");  return *this; } // esc: Set bracketed paste mode.
         esc& autowr (bool b) { add(b ? "\033[?7h"    : "\033[?7l");     return *this; } // esc: Set autowrap mode.
         esc& save_title ()   { add("\033[22;0t");                       return *this; } // esc: Save terminal window title.
+        esc& scrn_reset ()   { add("\033[H\033[m\033[3J");              return *this; } // esc: Reset palette, erase scrollback and reset caret location.
         esc& load_title ()   { add("\033[23;0t");                       return *this; } // esc: Restore terminal window title.
+        esc& osc_palette (iota i, rgba const& c) // esc: Set color palette. ESC ] 4 ; <i> ; rgb : <r> / <g> / <b> ESC.
+        {
+            add("\033]4;" + str(i) + ";rgb:" + utf::to_hex(c.chan.r) + "/"
+                                             + utf::to_hex(c.chan.g) + "/"
+                                             + utf::to_hex(c.chan.b) + "\07");
+            return *this;
+        }
+        esc& osc_palette_reset () // esc: Reset color palette.
+        {
+            osc_palette(0,  rgba::color256[tint::blackdk  ]);
+            osc_palette(1,  rgba::color256[tint::reddk    ]);
+            osc_palette(2,  rgba::color256[tint::greendk  ]);
+            osc_palette(3,  rgba::color256[tint::yellowdk ]);
+            osc_palette(4,  rgba::color256[tint::bluedk   ]);
+            osc_palette(5,  rgba::color256[tint::magentadk]);
+            osc_palette(6,  rgba::color256[tint::cyandk   ]);
+            osc_palette(7,  rgba::color256[tint::whitedk  ]);
+            osc_palette(8,  rgba::color256[tint::blacklt  ]);
+            osc_palette(9,  rgba::color256[tint::redlt    ]);
+            osc_palette(10, rgba::color256[tint::greenlt  ]);
+            osc_palette(11, rgba::color256[tint::yellowlt ]);
+            osc_palette(12, rgba::color256[tint::bluelt   ]);
+            osc_palette(13, rgba::color256[tint::magentalt]);
+            osc_palette(14, rgba::color256[tint::cyanlt   ]);
+            osc_palette(15, rgba::color256[tint::whitelt  ]);
+            return *this;
+        }
+        esc& old_palette_reset (){ add("\033]R"); return *this; } // esc: Reset color palette (Linux console).
+        esc& old_palette (iota i, rgba const& c) // esc: Set color palette (Linux console).
+        {
+            add("\033]P" + utf::to_hex(i, 1) + utf::to_hex(c.chan.r, 2)
+                                             + utf::to_hex(c.chan.g, 2)
+                                             + utf::to_hex(c.chan.b, 2) + "\033");
+            return *this;
+        }
 
         esc& w32input (bool b) { add(b ? "\033[?9001h" : "\033[?9001l");        return *this; } // ansi: Application Caret Keys (DECCKM).
         esc& w32begin () { clear(); add("\033["); return *this; }
@@ -291,7 +342,6 @@ namespace netxs::console::ansi
             return *this;
         }
 
-       //esc& ocp (twod const& p)   { add("\033[" + str(p.y) + ";" + str(p.x) + "H"); return *this; }    // esc: 1-Based caret position.
         esc& cup (twod const& p) { add("\033[20:" + str(p.y) + ":" + str(p.x) + CSI_CCC); return *this; } // esc: 0-Based caret position.
         esc& cuu (iota n)        { add(n == 1 ? "\033[A" : "\033[" + str(n) + "A"); return *this; } // esc: Caret up.
         esc& cud (iota n)        { add(n == 1 ? "\033[B" : "\033[" + str(n) + "B"); return *this; } // esc: Caret down.
@@ -324,14 +374,136 @@ namespace netxs::console::ansi
                                                     + str(c.chan.g) + ":"
                                                     + str(c.chan.b) + ":"
                                                     + str(c.chan.a) + "m"); return *this; }
-
-        esc& fgc (rgba const& c) { add("\033[38;2;" + str(c.chan.r) + ";" // esc: SGR Foreground color. RGB: red, green, blue.
-                                                    + str(c.chan.g) + ";"
-                                                    + str(c.chan.b) + "m"); return *this; }
-        esc& bgc (rgba const& c) { add("\033[48;2;" + str(c.chan.r) + ";" // esc: SGR Background color. RGB: red, green, blue and alpha.
-                                                    + str(c.chan.g) + ";"
-                                                    + str(c.chan.b) + "m"); return *this; }
-
+        // esc: SGR Foreground color (256-color mode).
+        esc& fgc256(rgba const& c)
+        {
+            return add("\033[38;5;" + str(c.to256cube()) + "m");
+        }
+        // esc: SGR Background color (256-color mode).
+        esc& bgc256(rgba const& c)
+        {
+            return add("\033[48;5;" + str(c.to256cube()) + "m");
+        }
+        // esc: SGR Foreground color (16-color mode).
+        esc& fgc16(rgba const& c)
+        {
+            iota clr = 30;
+            switch(c.token)
+            {
+                case 0xFF000000: clr += 0;
+                    add("\033[22;" + str(clr) + "m");
+                    return *this;
+                case 0xFFffffff: clr += 5;
+                    add("\033[22;" + str(clr) + "m");
+                    return *this;
+                case 0xFF00ff00:
+                case rgba{ rgba::color256[tint::greenlt  ] }.token: clr += 60 + 0; break;
+                case 0xFF00ffff:
+                case rgba{ rgba::color256[tint::yellowlt ] }.token: clr += 60 + 1; break;
+                case 0xFFff00ff:
+                case rgba{ rgba::color256[tint::magentalt] }.token: clr += 60 + 2; break;
+                case rgba{ rgba::color256[tint::reddk    ] }.token: clr += 60 + 3; break;
+                case rgba{ rgba::color256[tint::bluedk   ] }.token: clr += 60 + 4; break;
+                case rgba{ rgba::color256[tint::greendk  ] }.token: clr += 60 + 5; break;
+                case rgba{ rgba::color256[tint::yellowdk ] }.token: clr += 60 + 6; break;
+                case 0xFFffff00:
+                case rgba{ rgba::color256[tint::cyanlt   ] }.token: clr += 60 + 7; break;
+                case 0xFF0000ff:
+                case rgba{ rgba::color256[tint::redlt    ] }.token:
+                    clr += 6;
+                    add("\033[22;" + str(clr) + "m");
+                    return *this;
+                case rgba{ rgba::color256[tint::blacklt  ] }.token:
+                    clr += 4;
+                    add("\033[22;" + str(clr) + "m");
+                    return *this;
+                case 0xFFff0000:
+                case rgba{ rgba::color256[tint::bluelt   ] }.token:
+                    clr += 7;
+                    add("\033[22;" + str(clr) + "m");
+                    return *this;
+                default: // grayscale
+                    auto l = c.luma();
+                    if      (l < 42)  clr += 1;
+                    else if (l < 90)  clr += 2;
+                    else if (l < 170) clr += 3;
+                    else if (l < 240) clr += 4;
+                    else              clr += 5;
+                    add("\033[22;" + str(clr) + "m");
+                    return *this;
+            }
+            return add("\033[" + str(clr) + "m");
+        }
+        // esc: SGR Background color (16-color mode).
+        esc& bgc16(rgba const& c)
+        {
+            iota clr = 40;
+            switch(c.token)
+            {
+                case 0xFF000000: clr += 0; break;
+                case 0xFFffffff: clr += 5; break;
+                case 0xFF0000ff:
+                case rgba{ rgba::color256[tint::reddk   ] }.token: clr += 6; break;
+                case rgba{ rgba::color256[tint::redlt   ] }.token: clr += 6; break;
+                case 0xFFff0000:
+                case rgba{ rgba::color256[tint::bluelt  ] }.token: clr += 7; break;
+                default:
+                    if (c.chan.b > 0xE0
+                     && c.chan.r > 0x30 && c.chan.r < 0x50
+                     && c.chan.g > 0x70 && c.chan.g < 0xd0)
+                    {
+                        clr += 7;
+                    }
+                    else // grayscale
+                    {
+                        auto l = c.luma();
+                        if      (l < 42)  clr += 1;
+                        else if (l < 90)  clr += 2;
+                        else if (l < 170) clr += 3;
+                        else if (l < 240) clr += 4;
+                        else              clr += 5;
+                    }
+            }
+            return add("\033[" + str(clr) + "m");
+        }
+        // esc: SGR Foreground color. RGB: red, green, blue.
+        template<svga VGAMODE = svga::truecolor>
+        esc& fgc(rgba const& c)
+        {
+            switch(VGAMODE)
+            {
+                case svga::truecolor:
+                    add("\033[38;2;" + str(c.chan.r) + ";"
+                                     + str(c.chan.g) + ";"
+                                     + str(c.chan.b) + "m");
+                    break;
+                case svga::vga16:
+                    return fgc16(c);
+                case svga::vga256:
+                    return fgc256(c);
+                default: break;
+            }
+            return *this;
+        }
+        // esc: SGR Background color. RGB: red, green, blue.
+        template<svga VGAMODE = svga::truecolor>
+        esc& bgc(rgba const& c)
+        {
+            switch(VGAMODE)
+            {
+                case svga::truecolor:
+                    add("\033[48;2;" + str(c.chan.r) + ";"
+                                     + str(c.chan.g) + ";"
+                                     + str(c.chan.b) + "m");
+                    break;
+                case svga::vga16:
+                    return bgc16(c);
+                case svga::vga256:
+                    return bgc256(c);
+                default: break;
+            }
+            return *this;
+        }
         esc& sav ()              { add("\033[10m");                     return *this; } // esc: Save SGR attributes.
         esc& nil ()              { add("\033[m");                       return *this; } // esc: Reset SGR attributes to zero.
         esc& nop ()              { add("\033["   + str(CSI_CCC));       return *this; } // esc: No operation. Split the text run.
@@ -362,6 +534,8 @@ namespace netxs::console::ansi
         esc& idx (iota i)        { add("\033[19:"+ str(i  ) + CSI_CCC); return *this; } // esc: Split the text run and associate the fragment with an id.
         esc& ref (iota i)        { add("\033[23:"+ str(i  ) + CSI_CCC); return *this; } // esc: Create the reference to the existing paragraph.
         esc& ext (bool b)        { add("\033[25:"); add(b ? "1" : "0"); add(CSI_CCC); return *this; } // esc: Extended functionality support.
+        esc& show_mouse (bool b) { add("\033[26:"+ str(b  ) + CSI_CCC); return *this; } // esc: Should the mouse poiner to be drawn.
+        esc& meta_state (iota m) { add("\033[27:"+ str(m  ) + CSI_CCC); return *this; } // esc: Set keyboard meta modifiers (Ctrl, Shift, Alt, etc).
         //todo unify
         //esc& win (twod const& p){ add("\033[20:" + str(p.x) + ":"                       // esc: Terminal window resize report.
         //                                         + str(p.y) + CSI_CCC); return *this; }
@@ -388,7 +562,6 @@ namespace netxs::console::ansi
                                 return *this; } // esc: OSC report.
     };
 
-    //static esc screen_wipe ()        { return esc{}.screen_wipe(); } // esc: Reset certain terminal settings to their defaults. Also resets the mouse tracking mode in VTE.
     static esc vmouse (bool b)       { return esc{}.vmouse(b);     } // ansi: Mouse position reporting/tracking.
     static esc locate(twod const& n) { return esc{}.locate(n);     } // ansi: 1-Based caret position.
     static esc locate_wipe ()        { return esc{}.locate_wipe(); } // ansi: Enable scrolling for entire display (clear screen).
@@ -452,6 +625,7 @@ namespace netxs::console::ansi
     static esc mgt (iota n)          { return esc{}.mgt (n); } // ansi: Top margin.
     static esc mgb (iota n)          { return esc{}.mgb (n); } // ansi: Bottom margin.
     static esc ext (bool b)          { return esc{}.ext (b); } // ansi: Extended functionality.
+    static esc show_mouse(bool b)    { return esc{}.show_mouse(b); } // esc: Should the mouse poiner to be drawn.
 
     static esc jet (iota n)          { return esc{}.jet (n); } // ansi: Text alignment.
     static esc wrp (iota n)          { return esc{}.wrp (n); } // ansi: Text wrapping.
@@ -612,12 +786,18 @@ namespace netxs::console::ansi
     {
         using tree = func<fifo, T>;
 
-        tree table;
-        tree table_quest;
-        tree table_excl;
-        tree table_gt;
-        tree table_equals;
-        tree table_hash;
+        tree table         ;
+        tree table_quest   ;
+        tree table_excl    ;
+        tree table_gt      ;
+        tree table_lt      ;
+        tree table_equals  ;
+        tree table_hash    ;
+        tree table_dollarsn;
+        tree table_space   ;
+        tree table_dblqoute;
+        tree table_sglqoute;
+        tree table_asterisk;
 
         csi_t()
         {
@@ -646,17 +826,24 @@ namespace netxs::console::ansi
             */
             #define F(t, q) p->task(rule{ fn::t, q })
 
-            table_quest .resize(0x100);
+            table_quest   .resize(0x100);
                 table_quest[DECSET] = nullptr; // decset
                 table_quest[DECRST] = nullptr; // decrst
 
-            table_excl  .resize(0x100);
-                table_excl[DECSTR] = nullptr; // decstr
+            table_excl    .resize(0x100);
+                table_excl[CSI_EXL_RST] = nullptr; // decstr
 
-            table_gt    .resize(0x100);
-            table_equals.resize(0x100);
-            table_hash  .resize(0x100);
-            table       .resize(0x100);
+            table_gt      .resize(0x100);
+            table_lt      .resize(0x100);
+            table_equals  .resize(0x100);
+            table_hash    .resize(0x100);
+            table_dollarsn.resize(0x100);
+            table_space   .resize(0x100);
+            table_dblqoute.resize(0x100);
+            table_sglqoute.resize(0x100);
+            table_asterisk.resize(0x100);
+
+            table         .resize(0x100);
                 table[CSI_CUU] = VT_PROC{ F(dy,-q(1)); };              // fx_cuu
                 table[CSI_CUD] = VT_PROC{ F(dy, q(1)); };              // fx_cud
                 table[CSI_CUF] = VT_PROC{ F(dx, q(1)); };              // fx_cuf
@@ -712,6 +899,8 @@ namespace netxs::console::ansi
                     csi_ccc[CCC_REF] = nullptr;
                     csi_ccc[CCC_SBS] = nullptr;
                     csi_ccc[CCC_EXT] = nullptr;
+                    csi_ccc[CCC_SMS] = nullptr;
+                    csi_ccc[CCC_KBD] = nullptr;
 
                 auto& csi_sgr = table[CSI_SGR].resize(0x100);
                 csi_sgr.enable_multi_arg();
@@ -771,12 +960,18 @@ namespace netxs::console::ansi
         }
 
         void proceed(iota cmd, T*& client)  { table.execute(cmd, client); }
-        void proceed       (fifo& q, T*& p) { table       .execute(q, p); }
-        void proceed_quest (fifo& q, T*& p) { table_quest .execute(q, p); }
-        void proceed_gt    (fifo& q, T*& p) { table_gt    .execute(q, p); }
-        void proceed_hash  (fifo& q, T*& p) { table_hash  .execute(q, p); }
-        void proceed_equals(fifo& q, T*& p) { table_equals.execute(q, p); }
-        void proceed_excl  (fifo& q, T*& p) { table_excl  .execute(q, p); }
+        void proceed           (fifo& q, T*& p) { table         .execute(q, p); }
+        void proceed_quest     (fifo& q, T*& p) { table_quest   .execute(q, p); }
+        void proceed_gt        (fifo& q, T*& p) { table_gt      .execute(q, p); }
+        void proceed_lt        (fifo& q, T*& p) { table_lt      .execute(q, p); }
+        void proceed_hash      (fifo& q, T*& p) { table_hash    .execute(q, p); }
+        void proceed_equals    (fifo& q, T*& p) { table_equals  .execute(q, p); }
+        void proceed_excl      (fifo& q, T*& p) { table_excl    .execute(q, p); }
+        void proceed_dollarsn  (fifo& q, T*& p) { table_dollarsn.execute(q, p); }
+        void proceed_space     (fifo& q, T*& p) { table_space   .execute(q, p); }
+        void proceed_dblqoute  (fifo& q, T*& p) { table_dblqoute.execute(q, p); }
+        void proceed_sglqoute  (fifo& q, T*& p) { table_sglqoute.execute(q, p); }
+        void proceed_asterisk  (fifo& q, T*& p) { table_asterisk.execute(q, p); }
     };
 
     template<class T> struct _glb { static typename T::template parser<T> parser; };
@@ -849,6 +1044,9 @@ namespace netxs::console::ansi
 
             if (ascii.length())
             {
+                auto b = '\0';
+                auto ints = []  (unsigned char cmd) { return cmd >= 0x20 && cmd <= 0x2f; }; // "intermediate bytes" in the range 0x20–0x2F
+                auto pars = []  (unsigned char cmd) { return cmd >= 0x3A && cmd <= 0x3f; }; // "parameter bytes" in the range 0x30–0x3F
                 auto cmds = []  (unsigned char cmd) { return cmd >= 0x40 && cmd <= 0x7E; };
                 auto nums = []  (unsigned char cmd) { return(cmd >= '0'  && cmd <= '9') || cmd == '-'; };
                 auto fill = [&] (auto& queue)
@@ -877,31 +1075,40 @@ namespace netxs::console::ansi
                             queue.settop(a);
                             break;
                         }
+                        else if (ints(a)) b = a; // Intermediate byte and parameter byte never appear at the same time, so consider they as a single group.
                     }
                 };
 
                 auto& csier = _glb<T>::parser.csier;
                 auto c = ascii.front();
-
-                if (nums(c))
+                if (cmds(c))
                 {
-                    fifo queue{ CCC_NOP }; // Reserve for the command type.
-                    fill(queue);
-                    csier.proceed(queue, client);
+                    ascii.pop_front();
+                    csier.proceed(c, client);
                 }
                 else
                 {
-                    ascii.pop_front();
-                    if (cmds(c)) { csier.proceed(c, client); }
-                    else
-                    {	// Intermediate characters (?>#=!) should always come first (before params).
-                        fifo queue{ CCC_NOP }; // Placeholder for the command type.
+                    fifo queue{ CCC_NOP }; // Reserve for the command type.
+                    if (pars(c))
+                    {
+                        ascii.pop_front();
                         fill(queue);
-                        if      (c == '?') csier.proceed_quest (queue, client);
-                        else if (c == '>') csier.proceed_gt    (queue, client);
-                        else if (c == '#') csier.proceed_hash  (queue, client);
-                        else if (c == '=') csier.proceed_equals(queue, client);
-                        else if (c == '!') csier.proceed_excl  (queue, client);
+                             if (c == '?' ) csier.proceed_quest   (queue, client);
+                        else if (c == '>' ) csier.proceed_gt      (queue, client);
+                        else if (c == '<' ) csier.proceed_lt      (queue, client);
+                        else if (c == '=' ) csier.proceed_equals  (queue, client);
+                    }
+                    else
+                    {
+                        fill(queue);
+                             if (b == '\0') csier.proceed         (queue, client);
+                        else if (b == '!' ) csier.proceed_excl    (queue, client);
+                        else if (b == '#' ) csier.proceed_hash    (queue, client);
+                        else if (b == '$' ) csier.proceed_dollarsn(queue, client);
+                        else if (b == ' ' ) csier.proceed_space   (queue, client);
+                        else if (b == '\"') csier.proceed_dblqoute(queue, client);
+                        else if (b == '\'') csier.proceed_sglqoute(queue, client);
+                        else if (b == '*' ) csier.proceed_asterisk(queue, client);
                     }
                 }
             }
@@ -1161,7 +1368,8 @@ namespace netxs::console::ansi
                              c == 'D' ||
                              c == 'E' ||
                              c == 'H' ||
-                             c == 'M')
+                             c == 'M' ||
+                             c == 'c')
                     {
                         if (++start == crop.size())
                         {
