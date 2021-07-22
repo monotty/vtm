@@ -8,12 +8,8 @@
 #define VTM_USE_CLASSICAL_WIN32_INPUT // Turns on classical console win32 input mode.
 #endif
 
-#if defined(__FreeBSD__) || defined(__APPLE__)
+#if (defined(__unix__) || defined(__APPLE__)) && !defined(__linux__)
     #define __BSD__
-#endif
-
-#if defined(_WIN32)
-#elif defined(__linux__) || defined(__BSD__)
 #endif
 
 #if defined(__clang__)
@@ -58,13 +54,12 @@
 
     #include <Sddl.h>       //security_descriptor
 
-#elif defined(__linux__) || defined(__BSD__)
+#else
 
     #include <errno.h>      // ::errno
     #include <spawn.h>      // ::exec
     #include <unistd.h>     // ::gethostname(), ::getpid(), ::read()
     #include <sys/param.h>  //
-    //#include <utmp.h>       // get_logged_usres
     #include <sys/types.h>  // ::getaddrinfo
     #include <sys/socket.h> // ::shutdown() ::socket(2)
     #include <netdb.h>      //
@@ -136,7 +131,7 @@ namespace netxs::os
         //	//  "CO"  SDDL_CREATOR_OWNER
         //	//  "WD"  SDDL_EVERYONE
 
-    #elif defined(__linux__) || defined(__BSD__)
+    #else
 
         using fd_t = int;
         using conmode = ::termios;
@@ -182,7 +177,7 @@ namespace netxs::os
 
             return GetLastError();
 
-        #elif defined(__linux__) || defined(__BSD__)
+        #else
 
             return errno;
 
@@ -200,7 +195,7 @@ namespace netxs::os
         if(
             #if defined(_WIN32)
                 error_condition == 0
-            #elif defined(__linux__) || defined(__BSD__)
+            #else
                 error_condition == (T)-1
             #endif
         )
@@ -216,7 +211,7 @@ namespace netxs::os
 
             ExitProcess(code);
 
-        #elif defined(__linux__) || defined(__BSD__)
+        #else
 
             if (is_daemon) ::closelog();
             ::exit(code);
@@ -275,36 +270,39 @@ namespace netxs::os
         };
         iota mode = legacy::clean;
         auto term = os::get_env("TERM");
-        log("  os: terminal type \"", term, "\"");
-        if (term.ends_with("16color") || term.ends_with("16colour"))
+        if (term.size())
         {
-            mode |= legacy::vga16;
-        }
-        else
-        {
-            for (auto& type : vga16colors)
+            log("  os: terminal type \"", term, "\"");
+            if (term.ends_with("16color") || term.ends_with("16colour"))
             {
-                if (term == type)
+                mode |= legacy::vga16;
+            }
+            else
+            {
+                for (auto& type : vga16colors)
                 {
-                    mode |= legacy::vga16;
-                    break;
+                    if (term == type)
+                    {
+                        mode |= legacy::vga16;
+                        break;
+                    }
                 }
             }
-        }
-        if (os::get_env("TERM_PROGRAM") == "Apple_Terminal")
-        {
-            log("  os: macOS Apple_Terminal detected");
-            if (!(mode & legacy::vga16)) mode |= legacy::vga256;
-        }
+            if (os::get_env("TERM_PROGRAM") == "Apple_Terminal")
+            {
+                log("  os: macOS Apple_Terminal detected");
+                if (!(mode & legacy::vga16)) mode |= legacy::vga256;
+            }
 
-        if (local_mode()) mode |= legacy::mouse;
-        log("  os: color mode: ", mode & legacy::vga16  ? "16-color"
-                                : mode & legacy::vga256 ? "256-color"
-                                                        : "true-color");
-        log("  os: mouse mode: ", mode & legacy::mouse ? "console" : "VT-style");
+            if (local_mode()) mode |= legacy::mouse;
+            log("  os: color mode: ", mode & legacy::vga16  ? "16-color"
+                                    : mode & legacy::vga256 ? "256-color"
+                                                            : "true-color");
+            log("  os: mouse mode: ", mode & legacy::mouse ? "console" : "VT-style");
+        }
         return mode;
     }
-    static auto vtgafont_update(iota mode)
+    static auto vgafont_update(iota mode)
     {
         #if defined (__linux__)
 
@@ -368,7 +366,7 @@ namespace netxs::os
                     dstmap.entry_ct += std::size(new_recs);
                     if (!ok(::ioctl(STDOUT_FD, PIO_UNIMAP, &dstmap), "PIO_UNIMAP failed")) return;
                 }
-                else log("  os: vtgafont_update failed - UNIMAP is full");
+                else log("  os: vgafont_update failed - UNIMAP is full");
             }
 
         #endif
@@ -403,7 +401,7 @@ namespace netxs::os
                 buffer.resize(buffer.size() << 1);
             }
 
-        #elif defined(__linux__) || defined(__BSD__)
+        #else
 
             char* resolved = realpath("/proc/self/exe", NULL);
             if (resolved)
@@ -479,7 +477,7 @@ namespace netxs::os
             ShellExecuteEx(&ShExecInfo);
             return true;
 
-        #elif defined(__linux__) || defined(__BSD__)
+        #else
 
             auto p_id = ::fork();
             if (p_id == 0) // Child branch
@@ -513,7 +511,7 @@ namespace netxs::os
 
             //todo inplement
 
-        #elif defined(__linux__) || defined(__BSD__)
+        #else
 
             ::openlog(srv_name.data(), LOG_NOWAIT | LOG_PID, LOG_USER);
             is_daemon = true;
@@ -526,7 +524,7 @@ namespace netxs::os
 
             std::cout << data << std::flush;
 
-        #elif defined(__linux__) || defined(__BSD__)
+        #else
 
             if (os::is_daemon) ::syslog(LOG_NOTICE, "%s", data.c_str());
             else               std::cout << data << std::flush;
@@ -539,7 +537,7 @@ namespace netxs::os
 
             return true;
 
-        #elif defined(__linux__) || defined(__BSD__)
+        #else
 
             auto pid = ::fork();
             if (pid < 0)
@@ -601,7 +599,7 @@ namespace netxs::os
                 }
             }
 
-        #elif defined(__linux__) || defined(__BSD__)
+        #else
 
             // APPLE: AI_CANONNAME undeclared
             //std::vector<char> buffer(MAXHOSTNAMELEN);
@@ -639,7 +637,7 @@ namespace netxs::os
             CloseHandle(mutex);
             return result;
 
-        #elif defined(__linux__) || defined(__BSD__)
+        #else
 
             //todo linux implementation
             return true;
@@ -654,7 +652,7 @@ namespace netxs::os
 
             result = GetCurrentProcessId();
 
-        #elif defined(__linux__) || defined(__BSD__)
+        #else
 
             result = getpid();
 
@@ -703,7 +701,7 @@ namespace netxs::os
                 }
             }
 
-        #elif defined(__linux__) || defined(__BSD__)
+        #else
 
             static constexpr auto NAME_WIDTH = 8;
 
@@ -745,7 +743,7 @@ namespace netxs::os
 
             return text(infoBuf, bufCharCount);
 
-        #elif defined(__linux__) || defined(__BSD__)
+        #else
 
             uid_t id;
             id = ::geteuid();
@@ -1221,7 +1219,7 @@ namespace netxs::os
                                      nullptr);    // not overlapped
             if (!fSuccess) count = 0;
 
-        #elif defined(__linux__) || defined(__BSD__)
+        #else
 
             auto count = ::read(fd, buff, size);
 
@@ -1244,7 +1242,7 @@ namespace netxs::os
                                           &count,      // bytes written
                                           nullptr);    // not overlapped
 
-            #elif defined(__linux__) || defined(__BSD__)
+            #else
 
                 auto count = IS_TTY ? ::write(fd, buff, size)
                                     : ::send (fd, buff, size, MSG_NOSIGNAL); // not work with open_pty
@@ -1299,6 +1297,7 @@ namespace netxs::os
                 (yield.*p)(14, rgba::color16[tint16::yellowdk ]);
                 (yield.*p)(15, rgba::color16[tint16::cyanlt   ]);
             };
+            yield.save_palette();
             if (legacy_mouse) set_pal(&ansi::esc::old_palette);
             else              set_pal(&ansi::esc::osc_palette);
             os::send(STDOUT_FD, yield.data(), yield.size());
@@ -1314,6 +1313,7 @@ namespace netxs::os
         {
             if (legacy_mouse) yield.old_palette_reset();
             else              yield.osc_palette_reset();
+            yield.load_palette();
             os::send(STDOUT_FD, yield.data(), yield.size());
             yield.clear();
             log(" tty: palette restored");
@@ -1334,7 +1334,7 @@ namespace netxs::os
                 if (r != INVALID_FD) CloseHandle(r);
                 if (w != INVALID_FD) CloseHandle(w);
             }
-            friend auto& operator << (std::ostream& s, file const& handle)
+            friend auto& operator<< (std::ostream& s, file const& handle)
             {
                 return s << handle.r << "," << handle.w;
             }
@@ -1354,7 +1354,7 @@ namespace netxs::os
             void reset()     { ok(SetEvent(h), "SetEvent error"); }
         };
 
-    #elif defined(__linux__) || defined(__BSD__)
+    #else
 
         struct file
         {
@@ -1367,7 +1367,7 @@ namespace netxs::os
             {
                 if (h != INVALID_FD) ::close(h);
             }
-            friend auto& operator << (std::ostream& s, file const& handle)
+            friend auto& operator<< (std::ostream& s, file const& handle)
             {
                 return s << handle.h;
             }
@@ -1555,7 +1555,7 @@ namespace netxs::os
 
                 return sock_ptr;
 
-            #elif defined(__linux__) || defined(__BSD__)
+            #else
 
                 auto s = file{ ::accept(handle.h, 0, 0) };
                 return s ? std::make_shared<ipc>(s, true)
@@ -1610,7 +1610,7 @@ namespace netxs::os
                 }
                 return true;
 
-            #elif defined(__linux__) || defined(__BSD__)
+            #else
 
                 //an important conceptual reason to want
                 //to use shutdown:
@@ -1753,7 +1753,7 @@ namespace netxs::os
                         return fail("connection error");
                 }
 
-            #elif defined(__linux__) || defined(__BSD__)
+            #else
 
                 ok(::signal(SIGPIPE, SIG_IGN), "failed to set SIG_IGN");
 
@@ -1765,6 +1765,7 @@ namespace netxs::os
                     //todo unify see vtmd.cpp:1564, file system socket
                     path = "/tmp/" + path + ".sock";
                     sun_path--; // File system unix domain socket.
+                    log("open: file system socket ", path);
                 #endif
 
                 if (path.size() > sizeof(sockaddr_un::sun_path) - 2)
@@ -1780,6 +1781,7 @@ namespace netxs::os
                 if constexpr (ROLE == role::server)
                 {
                     #if defined(__BSD__)
+                        log("role server: cleanup file system socket ", path);
                         ::unlink(path.c_str()); // Cleanup file system socket.
                     #endif
 
@@ -1807,11 +1809,11 @@ namespace netxs::os
             return sock_ptr;
         }
 
-        friend auto& operator << (std::ostream& s, netxs::os::ipc const& sock)
+        friend auto& operator<< (std::ostream& s, netxs::os::ipc const& sock)
         {
             return s << "{ xipc: " << sock.handle << " }";
         }
-        friend auto& operator << (std::ostream& s, netxs::os::xipc const& sock)
+        friend auto& operator<< (std::ostream& s, netxs::os::xipc const& sock)
         {
             return s << *sock;
         }
@@ -1838,7 +1840,7 @@ namespace netxs::os
                                 cinfo.srWindow.Bottom - cinfo.srWindow.Top + 1 });
                     }
 
-                #elif defined(__linux__) || defined(__BSD__)
+                #else
 
                     winsize size;
                     if(ok(::ioctl(STDOUT_FD, TIOCGWINSZ, &size)))
@@ -1886,7 +1888,7 @@ namespace netxs::os
                     return TRUE;
                 }
 
-            #elif defined(__linux__) || defined(__BSD__)
+            #else
 
                 static void default_mode()
                 {
@@ -2003,6 +2005,7 @@ namespace netxs::os
                         }
                         yield.w32close();
                         ipcio.send(yield);
+                        yield.clear();
                     }
                 }
             }
@@ -2079,7 +2082,7 @@ namespace netxs::os
 
             #endif // USE_WIN32_INPUT
 
-            #elif defined(__linux__) || defined(__BSD__)
+            #else
 
                 bool legacy_mouse = mode & os::legacy::mouse;
                 bool legacy_color = mode & os::legacy::vga16;
@@ -2173,7 +2176,7 @@ namespace netxs::os
                             {
                                 yield.meta_state(state.shift.last);
                                 auto data = os::recv(STDIN_FD, buffer.data(), buffer.size());
-                                yield += data;
+                                yield.add(data);
                                 ipcio.send<faux>(yield);
                                 yield.clear();
                             }
@@ -2244,9 +2247,9 @@ namespace netxs::os
             _globals<void>::ipcio = pipe_link;
             return tty{};
         }
-        bool output(view text)
+        bool output(view utf8)
         {
-            return os::send<true>(STDOUT_FD, text.data(), text.size());
+            return os::send<true>(STDOUT_FD, utf8.data(), utf8.size());
         }
         void ignite()
         {
@@ -2279,12 +2282,12 @@ namespace netxs::os
                 ok(SetConsoleMode(STDOUT_FD, outmode), "SetConsoleMode error (stdout)");
                 ok(SetConsoleCtrlHandler(sig_hndl, TRUE), "SetConsoleCtrlHandler error");
 
-            #elif defined(__linux__) || defined(__BSD__)
+            #else
 
                 auto& state = _globals<void>::state;
                 if (ok(::tcgetattr(STDIN_FD, &state))) // Set stdin raw mode.
                 {
-                    ::termios raw_mode = state;
+                    auto raw_mode = state;
                     ::cfmakeraw(&raw_mode);
                     ok(::tcsetattr(STDIN_FD, TCSANOW, &raw_mode));
                 }
@@ -2303,7 +2306,7 @@ namespace netxs::os
             auto& ipcio = *_globals<void>::ipcio;
 
             os::set_palette(mode);
-            os::vtgafont_update(mode);
+            os::vgafont_update(mode);
 
             auto  input = std::thread{ [&]() { reader(mode); } };
 
@@ -2333,7 +2336,7 @@ namespace netxs::os
             HANDLE gameover { INVALID_FD };
             std::thread client_exit_waiter;
 
-        #elif defined(__linux__) || defined(__BSD__)
+        #else
 
             pid_t pid = 0;
 
@@ -2470,7 +2473,7 @@ namespace netxs::os
                 //todo workaround for GH#10400 (resolved) https://github.com/microsoft/terminal/issues/10400
                 std::this_thread::sleep_for(250ms);
 
-            #elif defined(__linux__) || defined(__BSD__)
+            #else
 
                 auto fdm = ::posix_openpt(O_RDWR | O_NOCTTY); // Get master PTY.
                 auto rc1 = ::grantpt     (fdm);               // Grant master PTY file access.
@@ -2545,10 +2548,9 @@ namespace netxs::os
                 CloseHandle(hProcess);
                 CloseHandle(hThread);
 
-            #elif defined(__linux__) || defined(__BSD__)
+            #else
 
                 int status;
-                termlink.shut();
                 ok(::kill(pid, SIGKILL));
                 ok(::waitpid(pid, &status, 0)); // Wait for the child to avoid zombies.
                 if (WIFEXITED(status))
@@ -2589,16 +2591,17 @@ namespace netxs::os
         }
         void resize(twod const& newsize)
         {
-            if (termsize(newsize))
+            if (termsize(newsize) && termlink)
             {
                 #if defined(_WIN32)
 
                     COORD winsz;
                     winsz.X = newsize.x;
                     winsz.Y = newsize.y;
-                    ok(ResizePseudoConsole(hPC, winsz));
+                    auto hr = ResizePseudoConsole(hPC, winsz);
+                    if (hr != S_OK) log("cons: ResizePseudoConsole error, ", hr);
 
-                #elif defined(__linux__) || defined(__BSD__)
+                #else
 
                     winsize winsz;
                     winsz.ws_col = newsize.x;
