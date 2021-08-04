@@ -5,15 +5,13 @@
 #define NETXS_RICHTEXT_HPP
 
 #include "ansi.hpp"
-#include "../ui/events.hpp"
 #include "../text/logger.hpp"
 
 namespace netxs::console
 {
-    using namespace std::literals;
     using namespace netxs::ui::atoms;
-    using namespace netxs::events;
-    
+    using namespace std::literals;
+
     using ansi::qiew;
     using ansi::writ;
     using grid = std::vector<cell>;
@@ -353,11 +351,11 @@ namespace netxs::console
             temp.size.x = border.east.step;
             fill(temp, fuse);
         }
-        template<class TEXT>
-        void  text(twod const& pos, TEXT const& txt, bool rtl = faux) // core: Put the specified text substring to the specified coordinates on the canvas.
+        template<class TEXT, class P = noop>
+        void  text(twod const& pos, TEXT const& txt, bool rtl = faux, P print = P()) // core: Put the specified text substring to the specified coordinates on the canvas.
         {
-            rtl ? txt.template output<true>(*this, pos)
-                : txt.template output<faux>(*this, pos);
+            rtl ? txt.template output<true>(*this, pos, print)
+                : txt.template output<faux>(*this, pos, print);
         }
         void operator += (core const& src) // core: Append specified canvas.
         {
@@ -648,20 +646,21 @@ namespace netxs::console
         {
             compose(block);
         }
-        template<class T>
-        void go(T const& block, core& canvas)
+
+        template<class T, class P = noop>
+        void go(T const& block, core& canvas, P printfx = P())
         {
             compose(block, [&](auto const& coord, auto const& subblock)
                            {
-                               canvas.text(coord, subblock, isr_to_l);
+                               canvas.text(coord, subblock, isr_to_l, printfx);
                            });
         }
-        template<bool USE_LOCUS = true, class T>
-        auto print(T const& block, core& canvas)
+        template<bool USE_LOCUS = true, class T, class P = noop>
+        auto print(T const& block, core& canvas, P printfx = P())
         {
             auto cp = USE_LOCUS ? forward(block)
                                 : flow::cp();
-            go(block, canvas);
+            go(block, canvas, printfx);
             return cp;
         }
         template<bool USE_LOCUS = true, class T>
@@ -798,8 +797,8 @@ namespace netxs::console
         constexpr auto  empty () const { return !width;                }
         constexpr auto  length() const { return  width;                }
 
-        template<bool RtoL>
-        auto output(core& canvas, twod const& pos) const  // shot: Print the source content using the specified print proc, which returns the number of characters printed.
+        template<bool RtoL, class P = noop>
+        auto output(core& canvas, twod const& pos, P print = P()) const  // shot: Print the source content using the specified print proc, which returns the number of characters printed.
         {
             //todo place is wrong if RtoL==true
             //rect place{ pos, { RtoL ? width, basis.size().y } };
@@ -810,7 +809,6 @@ namespace netxs::console
 
             if (joint)
             {
-                auto fuse = [&](auto& dst, auto& src) { dst.fusefull(src); };
 
                 if constexpr (RtoL)
                 {
@@ -822,7 +820,13 @@ namespace netxs::console
                     place.coor = joint.coor - place.coor;
                 }
                 place.coor.x += start;
-                netxs::inbody<RtoL>(canvas, basis, joint, place.coor, fuse);
+
+                if constexpr (std::is_same_v<P, noop>)
+                {
+                    auto fuse = [&](auto& dst, auto& src) { dst.fusefull(src); };
+                    netxs::inbody<RtoL>(canvas, basis, joint, place.coor, fuse);
+                }
+                else netxs::inbody<RtoL>(canvas, basis, joint, place.coor, print);
             }
 
             return width;
@@ -1019,8 +1023,6 @@ namespace netxs::console
             };
 
             auto& lyric = *this->lyric;
-
-            bool need_attetion = faux;
 
             //todo unify for size.y > 1
             auto newsz = caret + width;
@@ -1220,15 +1222,15 @@ namespace netxs::console
         }
         // rope: Print the source content using the specified print proc,
         //       which returns the number of characters printed.
-        template<bool RtoL>
-        void output(core& canvas, twod locate) const
+        template<bool RtoL, class P = noop>
+        void output(core& canvas, twod locate, P print = P()) const
         {
             auto total = volume.x;
 
             auto draw = [&](auto& item, auto start, auto width)
             {
                 auto line = item.substr(start, width);
-                auto size = line.template output<RtoL>(canvas, locate);
+                auto size = line.template output<RtoL>(canvas, locate, print);
                 locate.x += size;
                 return size;
             };
@@ -1330,7 +1332,7 @@ namespace netxs::console
             using vt = ansi::parser<T>;
             parser() : vt()
             {
-                using namespace netxs::console::ansi;
+                using namespace netxs::ansi;
                 vt::intro[ctrl::CR ]     = VT_PROC{ q.pop_if(ctrl::EOL); p->task({ fn::nl,1 }); };
                 vt::intro[ctrl::TAB]     = VT_PROC{ p->task({ fn::tb,q.pop_all(ctrl::TAB) }); };
                 vt::intro[ctrl::EOL]     = VT_PROC{ p->task({ fn::nl,q.pop_all(ctrl::EOL) }); };
@@ -1487,287 +1489,6 @@ namespace netxs::console
         auto& current() const { return *layer; } // page: RO access to the current paragraph.
 
         void  tab(iota n) { layer->ins(n, brush); } // page: Inset tabs via space.
-    };
-
-    // richtext: Textographical canvas.
-    class face
-        : public core, public flow, public std::enable_shared_from_this<face>
-    {
-        using vrgb = std::vector<irgb>;
-
-        cell brush;
-        twod anker;     // face: The position of the nearest visible paragraph.
-        id_t piece = 1; // face: The nearest to top paragraph.
-
-        vrgb cache; // face: BlurFX temp buffer.
-
-        // face: Is the c inside the viewport?
-        bool inside(twod const& c)
-        {
-            return c.y >= 0 && c.y < region.size.y;
-            //todo X-axis
-        }
-
-    public:
-        //todo revise
-        bool caret = faux; // face: Cursor visibility.
-        bool moved = faux; // face: Is reflow required.
-        bool decoy = true; // face: Is the cursor inside the viewport.
-
-        // face: Print paragraph.
-        void output(para const& block)
-        {
-            flow::print(block, *this);
-        }
-        // face: Print page.
-        void output(page const& textpage)
-        {
-            auto publish = [&](auto const& combo)
-            {
-                flow::print(combo, *this);
-                brush = combo.mark(); // Current mark of the last printed fragment.
-            };
-            textpage.stream(publish);
-        }
-        // face: Print page with holding top visible paragraph on its own place.
-        void output(page const& textpage, bool reset)
-        {
-            //todo if cursor is visible when tie to the cursor position
-            //     else tie to the first visible text line.
-
-            bool done = faux;
-            // Get vertical position of the nearest paragraph to the top.
-            auto gain = [&](auto const& combo)
-            {
-                auto pred = flow::print(combo, *this);
-                brush = combo.mark(); // Current mark of the last printed fragment.
-
-                auto post = flow::cp();
-                if (!done)
-                {
-                    if (pred.y <= 0 && post.y >= 0)
-                    {
-                        anker.y = pred.y;
-                        piece = combo.id();
-                        done = true;
-                    }
-                    else
-                    {
-                        if (std::abs(anker.y) > std::abs(pred.y))
-                        {
-                            anker.y = pred.y;
-                            piece = combo.id();
-                        }
-                    }
-                }
-            };
-
-            // Get vertical position of the specified paragraph.
-            auto find = [&](auto const& combo)
-            {
-                auto cp = flow::print(combo);
-                if (combo.id() == piece) anker = cp;
-            };
-
-            if (reset)
-            {
-                anker.y = std::numeric_limits<iota>::max();
-                textpage.stream(gain);
-
-                decoy = caret && inside(flow::cp());
-            }
-            else
-            {
-                textpage.stream(find);
-            }
-        }
-        // face: Reflow text page on the canvas and hold position
-        //       of the top visible paragraph while resizing.
-        void reflow(page& textpage)
-        {
-            if (moved)
-            {
-                flow::zz(); //flow::sc();
-
-                auto delta = anker;
-                output(textpage, faux);
-                std::swap(delta, anker);
-
-                auto  cover = flow::minmax();
-                //auto& basis = flow::origin;
-                auto basis = dot_00;// flow::origin;
-                basis.y += anker.y - delta.y;
-
-                if (decoy)
-                {
-                    // Don't tie the first line if it's the only one. Make one step forward.
-                    if (anker.y == 0 &&
-                        anker.y == flow::cp().y &&
-                        cover.height() > 1)
-                    {
-                        // the increment is removed bcos it shifts mc one row down on Ctrl+O and back
-                        //basis.y++;
-                    }
-
-                    auto newcp = flow::cp();
-                    if (!inside(newcp))
-                    {
-                        if (newcp.y < 0) basis.y -= newcp.y;
-                        else             basis.y -= newcp.y - region.size.y + 1;
-                    }
-                }
-                else
-                {
-                    basis.y = std::clamp(basis.y, -cover.b, region.size.y - cover.t - 1);
-                }
-
-                moved = faux;
-            }
-
-            wipe();
-        }
-
-        // face: Forward call to the core and reset cursor.
-        template<class ...Args>
-        void wipe(Args&&... args) // Optional args.
-        {
-            core::wipe(args...);
-            flow::reset();
-        }
-        // face: Change current context. Return old context.
-        auto  bump(dent const& delta)
-        {
-            auto old_full = face::full();
-            auto old_view = core::view();
-            auto new_view = core::area().clip<true>(old_view + delta);
-            auto new_full = old_full + delta;
-            face::full(new_full);
-            core::view(new_view);
-            return std::pair{ old_full, old_view };
-        }
-        // face: Restore previously saved context.
-        void  bump(std::pair<rect, rect> ctx)
-        {
-            face::full(ctx.first);
-            core::view(ctx.second);
-        }
-
-        // Use a two letter function if we don't need to return *this
-        face& cup (twod const& p) { flow::ac( p); return *this; } // face: Cursor 0-based absolute position.
-        face& chx (iota x)        { flow::ax( x); return *this; } // face: Cursor 0-based horizontal absolute.
-        face& chy (iota y)        { flow::ay( y); return *this; } // face: Cursor 0-based vertical absolute.
-        face& cpp (twod const& p) { flow::pc( p); return *this; } // face: Cursor percent position.
-        face& cpx (iota x)        { flow::px( x); return *this; } // face: Cursor H percent position.
-        face& cpy (iota y)        { flow::py( y); return *this; } // face: Cursor V percent position.
-        face& cuu (iota n = 1)    { flow::dy(-n); return *this; } // face: cursor up.
-        face& cud (iota n = 1)    { flow::dy( n); return *this; } // face: Cursor down.
-        face& cuf (iota n = 1)    { flow::dx( n); return *this; } // face: Cursor forward.
-        face& cub (iota n = 1)    { flow::dx(-n); return *this; } // face: Cursor backward.
-        face& cnl (iota n = 1)    { flow::dy( n); return *this; } // face: Cursor next line.
-        face& cpl (iota n = 1)    { flow::dy(-n); return *this; } // face: Cursor previous line.
-
-        face& ocp (twod const& p) { flow::oc( p); return *this; } // face: Cursor 1-based absolute position.
-        face& ocx (iota x)        { flow::ox( x); return *this; } // face: Cursor 1-based horizontal absolute.
-        face& ocy (iota y)        { flow::oy( y); return *this; } // face: Cursor 1-based vertical absolute.
-
-        face& scp ()              { flow::sc(  ); return *this; } // face: Save cursor position.
-        face& rcp ()              { flow::rc(  ); return *this; } // face: Restore cursor position.
-        face& rst ()  { flow::zz(); flow::sc(  ); return *this; } // face: Reset to zero all cursor params.
-
-        face& tab (iota n = 1)    { flow::tb( n); return *this; } // face: Proceed the \t .
-        face& eol (iota n = 1)    { flow::nl( n); return *this; } // face: Proceed the \r || \n || \r\n .
-
-        void size (twod const& newsize) // face: Change the size of the face/core.
-        {
-            core::size(newsize);
-            flow::size(newsize);
-        }
-
-        template<class P = noop>
-        void blur(iota r, P shade = P())
-        {
-            auto view = core::view();
-            auto size = core::size();
-
-            auto w = view.size.x;
-            auto h = view.size.y;
-
-            if (auto size = w * h; cache.size() < size) cache.resize(size);
-
-            auto s_ptr = core::data(view.coor);
-            auto d_ptr = cache.data();
-
-            auto s_width = size.x;
-            auto d_width = view.size.x;
-
-            auto s_point = [](cell* c)->auto& { return c->bgc(); };
-            auto d_point = [](irgb* c)->auto& { return *c;       };
-
-            netxs::bokefy<irgb>(s_ptr,
-                                d_ptr, w,
-                                       h, r, s_width,
-                                             d_width, s_point,
-                                                      d_point, shade);
-        }
-
-        // face: Render nested object to the canvas using renderproc. TRIM = trim viewport to the client area.
-        template<bool TRIM = true, class T>
-        void render(sptr<T> nested_ptr, twod const& basis)
-        {
-            if (nested_ptr)
-            {
-                auto& nested = *nested_ptr;
-                face::render<TRIM>(nested, basis);
-            }
-        }
-        // face: Render nested object to the canvas using renderproc. TRIM = trim viewport to the client area.
-        template<bool TRIM = true, class T>
-        void render(T& nested, twod const& offset_coor)
-        {
-            auto canvas_view = core::view();
-            auto parent_area = flow::full();
-
-            auto object_area = nested.area();
-            object_area.coor+= parent_area.coor;
-
-            auto nested_view = canvas_view.clip(object_area);
-            if (TRIM ? nested_view : canvas_view)
-            {
-                auto canvas_coor = core::coor();
-                if constexpr (TRIM) core::view(nested_view);
-                core::back(offset_coor);
-                flow::full(object_area);
-
-                nested.bell::template signal<e2::release>(e2::render::prerender, static_cast<face&&>(*this));
-                nested.bell::template signal<e2::release>(e2::postrender, static_cast<face&&>(*this));
-
-                if constexpr (TRIM) core::view(canvas_view);
-                core::move(canvas_coor);
-                flow::full(parent_area);
-            }
-        }
-        // face: Render itself to the canvas using renderproc.
-        template<class T>
-        void render(T& object)
-        {
-            auto canvas_view = core::view();
-            auto parent_area = flow::full();
-
-            auto object_area = object.area();
-            object_area.coor-= core::coor();
-
-            if (auto nested_view = canvas_view.clip(object_area))
-            {
-                core::view(nested_view);
-                flow::full(object_area);
-
-                object.bell::template signal<e2::release>(e2::render::prerender, static_cast<face&&>(*this));
-                object.bell::template signal<e2::release>(e2::postrender, static_cast<face&&>(*this));
-
-                core::view(canvas_view);
-                flow::full(parent_area);
-            }
-        }
     };
 
     //todo revise

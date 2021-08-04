@@ -8,12 +8,17 @@ Text-based desktop environment inside your terminal*
 
  - [Unicode/UTF-8](https://www.cl.cam.ac.uk/~mgk25/unicode.html)
  - [Grapheme Clustering](https://unicode.org/reports/tr29/#Grapheme_Cluster_Boundaries)
- - [24-bit True Color](https://gist.github.com/XVilka/8346728)
+ - [24-bit True Color](https://github.com//termstandard/colors)
  - [xterm-style Mouse Reporting](https://invisible-island.net/xterm/ctlseqs/ctlseqs.html#h2-Mouse-Tracking)
 
-#### [Tested Terminals](https://github.com/netxs-group/VTM/discussions/72)
+#### [Tested Terminals](https://github.com/netxs-group/vtm/discussions/72)
 
 # Demo
+
+<a href="https://www.youtube.com/watch?v=FzmtPCxoPeA">
+  <img align="right" width="400" alt="Demo on YouTube" src="https://user-images.githubusercontent.com/11535558/127660289-25e71ef1-d17d-42d1-b79e-00e570056fe4.gif">
+</a>
+
 ### Live SSH
 
  - `ssh vtm@netxs.online`
@@ -47,7 +52,7 @@ Build-time dependencies
  - [`gcc`](https://gcc.gnu.org/projects/cxx-status.html) or [`clang`](https://clang.llvm.org/cxx_status.html) with support for C++20
 
 ```bash
-git clone https://github.com/netxs-group/VTM.git && cd ./VTM
+git clone https://github.com/netxs-group/vtm.git && cd ./vtm
 cmake ./src -DCMAKE_BUILD_TYPE=Release
 cmake --build .
 cmake --install .
@@ -62,21 +67,22 @@ Build-time dependencies
 
 Use `Developer Command Prompt for VS 2019` as a build environment
 ```cmd
-git clone https://github.com/netxs-group/VTM.git && cd ./VTM
+git clone https://github.com/netxs-group/vtm.git && cd ./vtm
 cmake ./src -DCMAKE_BUILD_TYPE=Release "-GVisual Studio 16 2019"
 cmake --build . --config Release
 cd ./Release
 powershell ../src/install/install.ps1
 ```
 
-# Binaries for `amd64`
+# Binaries
 
-[![](https://dice.netxs.online/cloud/vtm/status/macos)](https://github.com/netxs-group/VTM/releases/latest/download/vtm_macos_amd64.tar.gz)  
-[![](https://dice.netxs.online/cloud/vtm/status/freebsd)](https://github.com/netxs-group/VTM/releases/latest/download/vtm_freebsd_amd64.tar.gz)  
-[![](https://dice.netxs.online/cloud/vtm/status/netbsd)](https://github.com/netxs-group/VTM/releases/latest/download/vtm_netbsd_amd64.tar.gz)  
-[![](https://dice.netxs.online/cloud/vtm/status/openbsd)](https://github.com/netxs-group/VTM/releases/latest/download/vtm_openbsd_amd64.tar.gz)  
-[![](https://dice.netxs.online/cloud/vtm/status/linux)](https://github.com/netxs-group/VTM/releases/latest/download/vtm_linux_amd64.tar.gz)  
-[![](https://dice.netxs.online/cloud/vtm/status/windows)](https://github.com/netxs-group/VTM/releases/latest/download/vtm_windows_amd64.zip)  
+[![](https://dice.netxs.online/cloud/vtm/status/macos_any)](https://github.com/netxs-group/vtm/releases/latest/download/vtm_macos_any.tar.gz)  
+[![](https://dice.netxs.online/cloud/vtm/status/macos)](https://github.com/netxs-group/vtm/releases/latest/download/vtm_macos_amd64.tar.gz)  
+[![](https://dice.netxs.online/cloud/vtm/status/freebsd)](https://github.com/netxs-group/vtm/releases/latest/download/vtm_freebsd_amd64.tar.gz)  
+[![](https://dice.netxs.online/cloud/vtm/status/netbsd)](https://github.com/netxs-group/vtm/releases/latest/download/vtm_netbsd_amd64.tar.gz)  
+[![](https://dice.netxs.online/cloud/vtm/status/openbsd)](https://github.com/netxs-group/vtm/releases/latest/download/vtm_openbsd_amd64.tar.gz)  
+[![](https://dice.netxs.online/cloud/vtm/status/linux)](https://github.com/netxs-group/vtm/releases/latest/download/vtm_linux_amd64.tar.gz)  
+[![](https://dice.netxs.online/cloud/vtm/status/windows)](https://github.com/netxs-group/vtm/releases/latest/download/vtm_windows_amd64.zip)  
 
 ---
 
@@ -93,13 +99,13 @@ Module               | Options
 <thead>
   <tr>
     <th rowspan="2"></th>
-    <th colspan="3">Side bar</th>
+    <th colspan="3">Sidebar</th>
     <th colspan="4">App window</th>
     <th colspan="2">Desktop</th>
   </tr>
   <tr>
     <th>App list</th>
-    <th>Running apps</th>
+    <th>Running app list</th>
     <th>User list</th>
     <th>≡ Menu</th>
     <th>Menu bar</th>
@@ -116,7 +122,7 @@ Module               | Options
   </tr>
   <tr>
     <th>LeftClick</th>
-    <td>Select default app</td>
+    <td>Set default app</td>
     <td>Go to app</td>
     <td></td>
     <td colspan="4">Assign exclusive keyboard focus</td>
@@ -140,9 +146,9 @@ Module               | Options
   <tr>
     <th>RightClick</th>
     <td></td>
-    <td>Move app window to center of view</td>
+    <td>Center app window</td>
     <td colspan="5"></td>
-    <td>Move app window to center of view</td>
+    <td>Center app window</td>
     <td></td>
   </tr>
   <tr>
@@ -153,20 +159,24 @@ Module               | Options
   </tr>
   <tr>
     <th>LeftDrag</th>
-    <td colspan="3">Adjust Side Bar width</td>
+    <td colspan="3">Adjust sidebar width</td>
     <td colspan="5">Move app window</td>
-    <td>Scroll workspace</td>
+    <td>Panoramic workspace scrolling</td>
   </tr>
   <tr>
     <th>RightDrag</th>
     <td colspan="5"></td>
-    <td>Panoramic scrolling</td>
+    <td>Panoramic content scrolling</td>
     <td colspan="2"></td>
     <td>Run default app</td>
   </tr>
   <tr>
+    <th>MiddleDrag</th>
+    <td colspan="9">Run default app</td>
+  </tr>
+  <tr>
     <th>Left+RightDrag</th>
-    <td colspan="9">Scroll workspace</td>
+    <td colspan="9">Panoramic workspace scrolling</td>
   </tr>
   <tr>
     <th>Ctrl+RightDrag or Ctrl+MiddleDrag</th>
@@ -229,7 +239,7 @@ Module               | Options
 
 ---
 
-[![HitCount](https://views.whatilearened.today/views/github/netxs-group/VTM.svg)](https://github.com/netxs-group/VTM) [![Twitter handle][]][twitter badge]
+[![HitCount](https://views.whatilearened.today/views/github/netxs-group/vtm.svg)](https://github.com/netxs-group/vtm) [![Twitter handle][]][twitter badge]
 
 [//]: # (LINKS)
 [twitter handle]: https://img.shields.io/twitter/follow/desktopio.svg?style=social&label=Follow
