@@ -40,7 +40,14 @@ namespace netxs::console
 
     using namespace netxs::input;
     using drawfx = std::function<bool(face&, page const&)>;
-    using registry_t = std::map<id_t, std::list<sptr<base>>>;
+    using registry_t = netxs::imap<text, std::list<sptr<base>>>;
+    using focus_test_t = std::pair<id_t, iota>;
+    struct create_t
+    {
+        text menu_item_id;
+        rect location;
+        sptr<base> frame;
+    };
 }
 
 namespace netxs::events::userland
@@ -59,6 +66,7 @@ namespace netxs::events::userland
         {
             EVENT_XS( tick      , moment              ), // timer tick, arg: current moment (now).
             EVENT_XS( postrender, console::face       ), // release: UI-tree post-rendering.
+            EVENT_XS( depth     , iota                ), // request: Determine the depth of the hierarchy.
             GROUP_XS( render    , console::face       ), // release: UI-tree rendering.
             GROUP_XS( conio     , iota                ),
             GROUP_XS( size      , twod                ), // release: Object size.
@@ -100,14 +108,27 @@ namespace netxs::events::userland
             };
             SUBSET_XS( config )
             {
-                EVENT_XS( broadcast, sptr<bell> ), // release: broadcast source changed.
-                EVENT_XS( fps      , iota       ), // request to set new fps, arg: new fps (iota); the value == -1 is used to request current fps.
-                GROUP_XS( caret    , period     ), // any kind of intervals property.
+                EVENT_XS( whereami , sptr<console::base> ), // request: pointer to world object.
+                EVENT_XS( broadcast, sptr<bell>          ), // release: broadcast source changed.
+                EVENT_XS( fps      , iota                ), // request to set new fps, arg: new fps (iota); the value == -1 is used to request current fps.
+                GROUP_XS( caret    , period              ), // any kind of intervals property.
+                GROUP_XS( plugins  , iota                ),
 
                 SUBSET_XS( caret )
                 {
                     EVENT_XS( blink, period ), // caret blinking interval.
                     EVENT_XS( style, iota   ), // caret style: 0 - underline, 1 - box.
+                };
+                SUBSET_XS( plugins )
+                {
+                    EVENT_XS( align, bool ), // release: enable/disable align plugin.
+                    GROUP_XS( sizer, dent ), // configure sizer.
+
+                    SUBSET_XS( sizer )
+                    {
+                        EVENT_XS( inner, dent ), // release: set inner size; request: request unner size.
+                        EVENT_XS( outer, dent ), // release: set outer size; request: request outer size.
+                    };
                 };
             };
             SUBSET_XS( conio )
@@ -127,7 +148,8 @@ namespace netxs::events::userland
             };
             SUBSET_XS( data )
             {
-                EVENT_XS( changed, iota            ), // return digest.
+                //todo revise (see app::desk)
+                EVENT_XS( changed, utf::text       ), // release/preview/request: current menu item id(text).
                 EVENT_XS( request, iota            ),
                 EVENT_XS( disable, iota            ),
                 EVENT_XS( flush  , iota            ),
@@ -142,14 +164,15 @@ namespace netxs::events::userland
             SUBSET_XS( form )
             {
                 EVENT_XS( canvas   , sptr<console::core> ), // request global canvas.
-                EVENT_XS( quit     , bool                ), // request parent for destroy.
+                EVENT_XS( maximize , input::hids         ), // request to toggle maximize/restore.
+                EVENT_XS( quit     , sptr<console::base> ), // request parent for destroy.
                 GROUP_XS( layout   , const twod          ),
                 GROUP_XS( draggable, bool                ), // signal to the form to enable draggablity for specified mouse button.
                 GROUP_XS( highlight, bool                ),
                 GROUP_XS( upon     , bool                ),
                 GROUP_XS( proceed  , bool                ),
                 GROUP_XS( cursor   , bool                ),
-                GROUP_XS( drag     , console::hids       ),
+                GROUP_XS( drag     , input::hids         ),
                 GROUP_XS( prop     , text                ),
                 GROUP_XS( global   , twod                ),
                 GROUP_XS( state    , const twod          ),
@@ -182,8 +205,6 @@ namespace netxs::events::userland
                     //EVENT_XS( hide      , bool       ), // order to make it hidden.
                     //EVENT_XS( next      , sptr<base> ), // request client for next child object, only request.
                     //EVENT_XS( prev      , sptr<base> ), // request client for prev child object, only request.
-                    //EVENT_XS( footer    , const rich ), // notify the client has changed footer, only release.
-                    //EVENT_XS( clientrect, rect       ), // notify the client area has changed, only release.
                 };
                 SUBSET_XS( highlight )
                 {
@@ -196,7 +217,9 @@ namespace netxs::events::userland
                     EVENT_XS( cached , console::face       ), // inform about camvas is cached.
                     EVENT_XS( wiped  , console::face       ), // event after wipe the canvas.
                     EVENT_XS( changed, twod                ), // event after resize, arg: diff bw old and new size.
-                    EVENT_XS( dragged, console::hids       ), // event after drag.
+                    EVENT_XS( dragged, input::hids         ), // event after drag.
+                    EVENT_XS( created, input::hids         ), // release: notify the instance of who created it.
+                    EVENT_XS( started, sptr<console::base> ), // release: notify the instance is commissioned. arg: visual root.
                     GROUP_XS( vtree  , sptr<console::base> ), // visual tree events, arg: parent base_sptr.
                     GROUP_XS( scroll , rack                ), // event after scroll.
                     //EVENT_XS( created    , sptr<console::base> ), // event after itself creation, arg: itself bell_sptr.
@@ -222,11 +245,15 @@ namespace netxs::events::userland
                 SUBSET_XS( proceed )
                 {
                     EVENT_XS( create  , rect                ), // return coordinates of the new object placeholder.
-                    EVENT_XS( createby, console::hids       ), // return gear with coordinates of the new object placeholder gear::slot.
+                    EVENT_XS( createat, console::create_t   ), // general: create an intance at the specified location and return sptr<base>.
+                    EVENT_XS( createby, input::hids         ), // return gear with coordinates of the new object placeholder gear::slot.
                     EVENT_XS( destroy , console::base       ), // ??? bool return reference to the parent.
                     EVENT_XS( render  , console::drawfx     ), // ask children to render itself to the parent canvas, arg is a function drawfx to perform drawing.
                     EVENT_XS( attach  , sptr<console::base> ), // order to attach a child, arg is a parent base_sptr.
                     EVENT_XS( detach  , sptr<console::base> ), // order to detach a child, tier::release - kill itself, tier::preview - detach the child specified in args, arg is a child sptr.
+                    EVENT_XS( focus   , sptr<console::base> ), // order to set focus to the specified object, arg is a object sptr.
+                    EVENT_XS( unfocus , sptr<console::base> ), // order to unset focus on the specified object, arg is a object sptr.
+                    EVENT_XS( swap    , sptr<console::base> ), // order to relace existing client. See tiling manager empty slot.
                     //EVENT_XS( commit     , iota                     ), // order to output the targets, arg is a frame number.
                     //EVENT_XS( multirender, vector<shared_ptr<face>> ), // ask children to render itself to the set of canvases, arg is an array of the face sptrs.
                     //EVENT_XS( draw       , face                     ), // ????  order to render itself to the canvas.
@@ -243,72 +270,71 @@ namespace netxs::events::userland
                 };
                 SUBSET_XS( drag )
                 {
-                    GROUP_XS( start , console::hids ), // notify about mouse drag start by pro::mouse.
-                    GROUP_XS( pull  , console::hids ), // notify about mouse drag pull by pro::mouse.
-                    GROUP_XS( cancel, console::hids ), // notify about mouse drag cancel by pro::mouse.
-                    GROUP_XS( stop  , console::hids ), // notify about mouse drag stop by pro::mouse.
+                    GROUP_XS( start , input::hids ), // notify about mouse drag start by pro::mouse.
+                    GROUP_XS( pull  , input::hids ), // notify about mouse drag pull by pro::mouse.
+                    GROUP_XS( cancel, input::hids ), // notify about mouse drag cancel by pro::mouse.
+                    GROUP_XS( stop  , input::hids ), // notify about mouse drag stop by pro::mouse.
 
                     SUBSET_XS( start )
                     {
-                        EVENT_XS( left     , console::hids ),
-                        EVENT_XS( right    , console::hids ),
-                        EVENT_XS( leftright, console::hids ),
-                        EVENT_XS( middle   , console::hids ),
-                        EVENT_XS( wheel    , console::hids ),
-                        EVENT_XS( win      , console::hids ),
+                        EVENT_XS( left     , input::hids ),
+                        EVENT_XS( right    , input::hids ),
+                        EVENT_XS( leftright, input::hids ),
+                        EVENT_XS( middle   , input::hids ),
+                        EVENT_XS( wheel    , input::hids ),
+                        EVENT_XS( win      , input::hids ),
 
                         INDEX_XS( left, right, leftright, middle, wheel, win ),
                     };
                     SUBSET_XS( pull )
                     {
-                        EVENT_XS( left     , console::hids ),
-                        EVENT_XS( right    , console::hids ),
-                        EVENT_XS( leftright, console::hids ),
-                        EVENT_XS( middle   , console::hids ),
-                        EVENT_XS( wheel    , console::hids ),
-                        EVENT_XS( win      , console::hids ),
+                        EVENT_XS( left     , input::hids ),
+                        EVENT_XS( right    , input::hids ),
+                        EVENT_XS( leftright, input::hids ),
+                        EVENT_XS( middle   , input::hids ),
+                        EVENT_XS( wheel    , input::hids ),
+                        EVENT_XS( win      , input::hids ),
 
                         INDEX_XS( left, right, leftright, middle, wheel, win ),
                     };
                     SUBSET_XS( cancel )
                     {
-                        EVENT_XS( left     , console::hids ),
-                        EVENT_XS( right    , console::hids ),
-                        EVENT_XS( leftright, console::hids ),
-                        EVENT_XS( middle   , console::hids ),
-                        EVENT_XS( wheel    , console::hids ),
-                        EVENT_XS( win      , console::hids ),
+                        EVENT_XS( left     , input::hids ),
+                        EVENT_XS( right    , input::hids ),
+                        EVENT_XS( leftright, input::hids ),
+                        EVENT_XS( middle   , input::hids ),
+                        EVENT_XS( wheel    , input::hids ),
+                        EVENT_XS( win      , input::hids ),
 
                         INDEX_XS( left, right, leftright, middle, wheel, win ),
                     };
                     SUBSET_XS( stop )
                     {
-                        EVENT_XS( left     , console::hids ),
-                        EVENT_XS( right    , console::hids ),
-                        EVENT_XS( leftright, console::hids ),
-                        EVENT_XS( middle   , console::hids ),
-                        EVENT_XS( wheel    , console::hids ),
-                        EVENT_XS( win      , console::hids ),
+                        EVENT_XS( left     , input::hids ),
+                        EVENT_XS( right    , input::hids ),
+                        EVENT_XS( leftright, input::hids ),
+                        EVENT_XS( middle   , input::hids ),
+                        EVENT_XS( wheel    , input::hids ),
+                        EVENT_XS( win      , input::hids ),
 
                         INDEX_XS( left, right, leftright, middle, wheel, win ),
                     };
                 };
                 SUBSET_XS( prop )
                 {
-                    EVENT_XS( header    , text       ), // set form caption header.
-                    EVENT_XS( footer    , text       ), // set form caption footer.
-                    EVENT_XS( name      , text       ), // user name.
-                    EVENT_XS( zorder    , iota       ), // set form z-order, iota: -1 backmost, 0 plain, 1 topmost.
-                    EVENT_XS( brush     , const cell ), // set form brush/color.
-                    EVENT_XS( fullscreen, bool       ), // set fullscreen flag.
-                    EVENT_XS( viewport  , rect       ), // request: return form actual viewport.
+                    EVENT_XS( header    , text        ), // set form caption header.
+                    EVENT_XS( footer    , text        ), // set form caption footer.
+                    EVENT_XS( name      , text        ), // user name.
+                    EVENT_XS( zorder    , iota        ), // set form z-order, iota: -1 backmost, 0 plain, 1 topmost.
+                    EVENT_XS( brush     , const cell  ), // set form brush/color.
+                    EVENT_XS( fullscreen, bool        ), // set fullscreen flag.
+                    EVENT_XS( viewport  , rect        ), // request: return form actual viewport.
+                    EVENT_XS( menusize  , iota        ), // release: set menu height.
                 };
                 SUBSET_XS( global )
                 {
-                    EVENT_XS( ctxmenu , twod ), // request context menu at specified coords.
+                    //EVENT_XS( ctxmenu , twod ), // request context menu at specified coords.
                     EVENT_XS( lucidity, iota ), // set or request global window transparency, iota: 0-255, -1 to request.
-                    //EVENT_XS( prev  , twod ), // request the prev scene window.
-                    //EVENT_XS( next  , twod ), // request the next scene window.
                     //GROUP_XS( object,      ), // global scene objects events
                     //GROUP_XS( user  ,      ), // global scene users events
 
@@ -325,12 +351,20 @@ namespace netxs::events::userland
                 };
                 SUBSET_XS( state )
                 {
-                    EVENT_XS( mouse , iota          ), // notify the client is mouse active or not. The form is active when the number of client (form::eventa::mouse::enter - mouse::leave) is not zero, only release, iota - number of clients.
-                    EVENT_XS( keybd , bool          ), // notify the client is keybd active or not. The form is active when the number of client (form::eventa::keybd::got - keybd::lost) is not zero, only release.
+                    EVENT_XS( mouse , iota          ), // notify the client if mouse is active or not. The form is active when the number of clients (form::eventa::mouse::enter - mouse::leave) is not zero, only release, iota - number of clients.
                     EVENT_XS( header, console::para ), // notify the client has changed title.
                     EVENT_XS( footer, console::para ), // notify the client has changed footer.
                     EVENT_XS( params, console::para ), // notify the client has changed title params.
                     EVENT_XS( color , console::tone ), // notify the client has changed tone, preview to set.
+                    GROUP_XS( keybd , bool          ), // notify the client if keybd is active or not. The form is active when the number of clients (form::eventa::keybd::got - keybd::lost) is not zero, only release.
+
+                    SUBSET_XS( keybd )
+                    {
+                        EVENT_XS( got     , input::hids           ), // release: got  keyboard focus.
+                        EVENT_XS( lost    , input::hids           ), // release: lost keyboard focus.
+                        EVENT_XS( handover, std::list<id_t>       ), // request: Handover all available foci.
+                        EVENT_XS( find    , console::focus_test_t ), // request: Check the focus.
+                    };
                 };
             };
         };
@@ -819,8 +853,8 @@ namespace netxs::console
         rect square;
         bool invalid = true; // base: Should the object be redrawn.
         bool visual_root = faux; // Whether the size is tied to the size of the clients.
-        hook kb_offer_token;
-        hook broadcast_update_token;
+        hook kb_token;
+        iota object_kind = {};
 
     public:
         sptr<bell> broadcast = std::make_shared<bell>(); // base: Broadcast bus.
@@ -830,16 +864,21 @@ namespace netxs::console
         twod anchor; // base: Object balance point. Center point for any transform (on preview).
 
     protected:
-        bool is_attached() const { return kb_offer_token.operator bool(); }
+        bool is_attached() const { return kb_token.operator bool(); }
         void switch_to_bus(sptr<bell> parent_bus)
         {
-            parent_bus->merge(broadcast);
-            broadcast->SIGNAL(tier::release, e2::config::broadcast, parent_bus);
+            if (parent_bus != broadcast) // Reattaching is allowed within the same visual tree.
+            {
+                parent_bus->merge(broadcast);
+                broadcast->SIGNAL(tier::release, e2::config::broadcast, parent_bus);
+            }
         }
 
         virtual ~base() = default;
         base()
         {
+            SUBMIT(tier::request, e2::depth, depth) { depth++; };
+
             SUBMIT(tier::release, e2::coor::set, new_coor) { square.coor = new_coor; };
             SUBMIT(tier::request, e2::coor::set, coor_var) { coor_var = square.coor; };
             SUBMIT(tier::release, e2::size::set, new_size) { square.size = new_size; };
@@ -849,27 +888,24 @@ namespace netxs::console
             {
                 broadcast = new_broadcast;
             };
-
+           /*
+            * Only visual_root can be reattached multiple times!
+            */
             SUBMIT(tier::release, e2::form::upon::vtree::attached, parent_ptr)
             {
                 if (!visual_root)
                 {
                     auto bcast_backup = broadcast;
                     base::switch_to_bus(parent_ptr->base::broadcast);
-                    parent_ptr->SUBMIT_T(tier::release, e2::config::broadcast, broadcast_update_token, new_broadcast)
-                    {
-                        broadcast = new_broadcast;
-                        this->SIGNAL(tier::release, e2::config::broadcast, new_broadcast);
-                    };
                 }
                 parent_shadow = parent_ptr;
                 // Propagate form events up to the visual branch.
                 // Exec after all subscriptions.
-                parent_ptr->SUBMIT_T(tier::release, hids::events::upevent::any, kb_offer_token, gear)
+                parent_ptr->SUBMIT_T(tier::release, hids::events::upevent::any, kb_token, gear)
                 {
                     if (auto parent_ptr = parent_shadow.lock())
                     {
-                        if (gear.focus_taken())
+                        if (gear.focus_taken()) //todo unify, upevent::kbannul using it
                         {
                             parent_ptr->bell::expire<tier::release>();
                         }
@@ -887,13 +923,11 @@ namespace netxs::console
             {
                 if (this->bell::protos<tier::release>(e2::form::upon::vtree::detached))
                 {
-                    kb_offer_token.reset();
-                    if (!visual_root)
-                    {
-                        broadcast_update_token.reset();
-                    }
+                    kb_token.reset();
+                    //todo revise
+                    //parent_shadow.reset();
                 }
-                parent_ptr->base::reflow();
+                if (parent_ptr) parent_ptr->base::reflow(); //todo too expensive
             };
 
             // Propagate form events down to the visual branch.
@@ -922,8 +956,11 @@ namespace netxs::console
         auto& coor() const { return square.coor; }
         auto& size() const { return square.size; }
         auto& area() const { return square; }
+        void  root(bool b) { assert(!kb_token); visual_root = b; }
+        bool  root()       { return visual_root; }
+        iota  kind()       { return object_kind; }
+        void  kind(iota k) { object_kind = k; }
         auto parent()      { return parent_shadow.lock(); }
-        void isroot(bool state) { visual_root = state; }
         void ruined(bool state) { invalid = state; }
         auto ruined() const { return invalid; }
         auto color() const { return brush; }
@@ -1077,14 +1114,25 @@ namespace netxs::console
         // Usage example:
         //          base::riseup<tier::preview, e2::form::prop::header>(txt);
         template<tier TIER, class EVENT, class T>
-        void riseup(EVENT, T&& data)
+        void riseup(EVENT, T&& data, bool forced = faux)
         {
-            if (!SIGNAL(TIER, EVENT{}, data))
+            if (forced)
             {
+                SIGNAL(TIER, EVENT{}, data);
                 base::toboss([&](auto& boss)
                 {
-                    boss.base::template riseup<TIER>(EVENT{}, std::forward<T>(data));
+                    boss.base::template riseup<TIER>(EVENT{}, std::forward<T>(data), forced);
                 });
+            }
+            else
+            {
+                if (!SIGNAL(TIER, EVENT{}, data))
+                {
+                    base::toboss([&](auto& boss)
+                    {
+                        boss.base::template riseup<TIER>(EVENT{}, std::forward<T>(data), forced);
+                    });
+                }
             }
         }
     };
@@ -1305,6 +1353,25 @@ namespace netxs::console
                 {
                     items.dec(gear);
                 };
+                boss.SUBMIT_T(tier::release, e2::config::plugins::sizer::outer, memo, outer_rect)
+                {
+                    outer = outer_rect;
+                    width = outer - inner;
+                };
+                boss.SUBMIT_T(tier::release, e2::config::plugins::sizer::inner, memo, inner_rect)
+                {
+                    inner = inner_rect;
+                    width = outer - inner;
+                };
+                boss.SUBMIT_T(tier::request, e2::config::plugins::sizer::inner, memo, inner_rect)
+                {
+                    inner_rect = inner;
+                };
+                boss.SUBMIT_T(tier::request, e2::config::plugins::sizer::outer, memo, outer_rect)
+                {
+                    outer_rect = outer;
+                };
+
                 engage<sysmouse::left>();
             }
             // pro::sizer: Configuring the mouse button to operate.
@@ -1508,19 +1575,24 @@ namespace netxs::console
             align(base& boss, bool maximize = true) : skill{ boss },
                 weak{}
             {
-                if (maximize)
+                boss.SUBMIT_T(tier::release, e2::config::plugins::align, memo, set)
                 {
-                    boss.SUBMIT_T(tier::release, hids::events::mouse::button::dblclick::left, maxs, gear)
+                    if (set)
                     {
-                        auto size = boss.base::size();
-                        if (size.inside(gear.coord))
+                        boss.SUBMIT_T(tier::release, e2::form::maximize, maxs, gear)
                         {
-                            if (seized(gear.id)) unbind();
-                            else                 follow(gear.id, dot_00);
-                            gear.dismiss();
-                        }
-                    };
-                }
+                            auto size = boss.base::size();
+                            if (size.inside(gear.coord))
+                            {
+                                if (seized(gear.id)) unbind();
+                                else                 follow(gear.id, dot_00);
+                            }
+                        };
+                    }
+                    else maxs.reset();
+                };
+
+                boss.SIGNAL(tier::release, e2::config::plugins::align, maximize);
             }
             ~align() { unbind(faux); }
 
@@ -2576,8 +2648,8 @@ namespace netxs::console
                   skill::memo;
             page head_page; // title: Owner's caption header.
             page foot_page; // title: Owner's caption footer.
-            text head_name; // title: Preserve original header.
-            text foot_name; // title: Preserve original footer.
+            text head_text; // title: Preserve original header.
+            text foot_text; // title: Preserve original footer.
             twod head_size; // title: Header page size.
             twod foot_size; // title: Footer page size.
             bool head_live; // title: Handle header events.
@@ -2613,24 +2685,24 @@ namespace netxs::console
             void header(view newtext)
             {
                 head_page = newtext;
-                head_name = newtext;
+                head_text = newtext;
                 recalc(head_page, head_size);
-                boss.SIGNAL(tier::release, e2::form::prop::header, head_name);
+                boss.SIGNAL(tier::release, e2::form::prop::header, head_text);
                 /*
                 textline.link(boss.id);
-                boss.SIGNAL(tier::release, e2::form::prop::header, head_name);
+                boss.SIGNAL(tier::release, e2::form::prop::header, head_text);
                 boss.SIGNAL(tier::release, e2::form::state::header, textline);
                 */
             }
             void footer(view newtext)
             {
                 foot_page = newtext;
-                foot_name = newtext;
+                foot_text = newtext;
                 recalc(foot_page, foot_size);
-                boss.SIGNAL(tier::release, e2::form::prop::footer, foot_name);
+                boss.SIGNAL(tier::release, e2::form::prop::footer, foot_text);
                 /*
                 textline.link(boss.id);
-                boss.SIGNAL(tier::release, e2::form::prop::footer, foot_name);
+                boss.SIGNAL(tier::release, e2::form::prop::footer, foot_text);
                 boss.SIGNAL(tier::release, e2::form::state::footer, textline);
                 */
             }
@@ -2666,7 +2738,7 @@ namespace netxs::console
                     };
                     boss.SUBMIT_T(tier::request, e2::form::prop::header, memo, curtext)
                     {
-                        curtext = head_name;
+                        curtext = head_text;
                     };
                 }
                 if (foot_live)
@@ -2677,7 +2749,7 @@ namespace netxs::console
                     };
                     boss.SUBMIT_T(tier::request, e2::form::prop::footer, memo, curtext)
                     {
-                        curtext = foot_name;
+                        curtext = foot_text;
                     };
                 }
                 /*
@@ -2710,444 +2782,6 @@ namespace netxs::console
                 header(title);
                 live = visible;
                 //footer(ansi::jet(bias::right) + "test\nmultiline\nfooter");
-            }
-        };
-
-        // pro: Provides functionality for the scene objects manipulations.
-        class scene
-            : public skill
-        {
-            class node // pro::scene: Helper-class for the pro::scene. Adapter for the object that going to be attached to the scene.
-            {
-                struct ward
-                {
-                    enum states
-                    {
-                        unused_hidden, // 00
-                        unused_usable, // 01
-                        active_hidden, // 10
-                        active_usable, // 11
-                        count
-                    };
-
-                    para title[states::count];
-                    cell brush[states::count];
-                    para basis;
-                    bool usable = faux;
-                    bool highlighted = faux;
-                    iota active = 0;
-                    tone color;
-
-                    operator bool ()
-                    {
-                        return basis.size() != dot_00;
-                    }
-                    void set(para const& caption)
-                    {
-                        basis = caption;
-                        basis.decouple();
-                        recalc();
-                    }
-                    auto& get()
-                    {
-                        return title[(active || highlighted ? 2 : 0) + usable];
-                    }
-                    void recalc()
-                    {
-                        brush[active_hidden] = skin::color(color.active);
-                        brush[active_usable] = skin::color(color.active);
-                        brush[unused_hidden] = skin::color(color.passive);
-                        brush[unused_usable] = skin::color(color.passive);
-
-                        brush[unused_usable].bga(brush[unused_usable].bga() << 1);
-
-                        int i = 0;
-                        for (auto& label : title)
-                        {
-                            auto& c = brush[i++];
-                            label = basis;
-                            label.decouple();
-
-                            //todo unify clear formatting/aligning in header
-                            label.locus.kill();
-                            label.style.rst();
-                            label.lyric->each([&](auto& a) { a.meta(c); });
-                        }
-                    }
-                };
-
-                using sptr = netxs::sptr<base>;
-
-                ward header;
-
-            public:
-                rect region;
-                sptr object;
-                id_t obj_id;
-                iota z_order = Z_order::plain;
-
-                node(sptr item)
-                    : object{ item }
-                {
-                    auto& inst = *item;
-                    obj_id = inst.bell::id;
-
-                    inst.SUBMIT(tier::release, e2::form::prop::zorder, order)
-                    {
-                        z_order = order;
-                    };
-                    inst.SUBMIT(tier::release, e2::size::set, size)
-                    {
-                        region.size = size;
-                    };
-                    inst.SUBMIT(tier::release, e2::coor::set, coor)
-                    {
-                        region.coor = coor;
-                    };
-                    inst.SUBMIT(tier::release, e2::form::state::mouse, state)
-                    {
-                        header.active = state;
-                    };
-                    inst.SUBMIT(tier::release, e2::form::highlight::any, state)
-                    {
-                        header.highlighted = state;
-                    };
-                    inst.SUBMIT(tier::release, e2::form::state::header, caption)
-                    {
-                        header.set(caption);
-                    };
-                    inst.SUBMIT(tier::release, e2::form::state::color, color)
-                    {
-                        header.color = color;
-                    };
-
-                    inst.SIGNAL(tier::request, e2::size::set,  region.size);
-                    inst.SIGNAL(tier::request, e2::coor::set,  region.coor);
-                    inst.SIGNAL(tier::request, e2::form::state::mouse,  header.active);
-                    inst.SIGNAL(tier::request, e2::form::state::header, header.basis);
-                    inst.SIGNAL(tier::request, e2::form::state::color,  header.color);
-
-                    header.recalc();
-                }
-                // node: Check equality.
-                bool equals(id_t id)
-                {
-                    return obj_id == id;
-                }
-                // node: Draw the anchor line func and return true
-                //       if the mold is outside the canvas area.
-                void fasten(face& canvas)
-                {
-                    auto window = canvas.area();
-                    auto origin = window.size / 2;
-                    //auto origin = twod{ 6, window.size.y - 3 };
-                    auto offset = region.coor - window.coor;
-                    auto center = offset + (region.size / 2);
-                    header.usable = window.overlap(region);
-                    auto active = header.active || header.highlighted;
-                    auto& grade = skin::grade(active ? header.color.active
-                                                     : header.color.passive);
-                    auto pset = [&](twod const& p, uint8_t k)
-                    {
-                        //canvas[p].fuse(grade[k], obj_id, p - offset);
-                        //canvas[p].fuse(grade[k], obj_id);
-                        canvas[p].link(obj_id).bgc().mix_one(grade[k].bgc());
-                    };
-                    window.coor = dot_00;
-                    netxs::online(window, origin, center, pset);
-                }
-                // node: Output the title to the canvas.
-                //void enlist(face& canvas)
-                //{
-                //    if (header)
-                //    {
-                //        auto& title = header.get();
-                //        canvas.output(title);
-                //        canvas.eol();
-                //    }
-                //}
-                // node: Visualize the underlying object.
-                void render(face& canvas)
-                {
-                    canvas.render(*object);
-                }
-
-                void postrender(face& canvas)
-                {
-                    object->SIGNAL(tier::release, e2::postrender, canvas);
-                }
-            };
-
-            class list // pro::scene: Helper-class for the pro::scene. List of objects that can be reordered, etc.
-            {
-                std::list<sptr<node>> items;
-
-                template<class D>
-                auto search(D head, D tail, id_t id)
-                {
-                    if (items.size())
-                    {
-                        auto test = [id](auto& a) { return a->equals(id); };
-                        return std::find_if(head, tail, test);
-                    }
-                    return tail;
-                }
-
-            public:
-                operator bool () { return items.size(); }
-                auto size()      { return items.size(); }
-                void append(sptr<base> item)
-                {
-                    items.push_back(std::make_shared<node>(item));
-                }
-                // Draw backpane for spectators.
-                void prerender(face& canvas)
-                {
-                    for (auto& item : items) item->fasten(canvas); // Draw strings.
-                    for (auto& item : items) item->render(canvas); // Draw shadows.
-                }
-                // Draw windows.
-                void render(face& canvas)
-                {
-                    for (auto& item : items) item->fasten(canvas);
-                    //todo optimize
-                    for (auto& item : items) if (item->z_order == Z_order::backmost) item->render(canvas);
-                    for (auto& item : items) if (item->z_order == Z_order::plain   ) item->render(canvas);
-                    for (auto& item : items) if (item->z_order == Z_order::topmost ) item->render(canvas);
-                }
-                // Draw spectator's mouse pointers.
-                void postrender(face& canvas)
-                {
-                    for (auto& item : items) item->postrender(canvas);
-                }
-
-                rect remove(id_t id)
-                {
-                    rect area;
-                    auto head = items.begin();
-                    auto tail = items.end();
-                    auto item = search(head, tail, id);
-                    if (item != tail)
-                    {
-                        area = (**item).region;
-                        items.erase(item);
-                    }
-                    return area;
-                }
-                rect bubble(id_t id)
-                {
-                    auto head = items.rbegin();
-                    auto tail = items.rend();
-                    auto item = search(head, tail, id);
-
-                    if (item != head && item != tail)
-                    {
-                        auto& area = (**item).region;
-                        if (!area.clip((**std::prev(item)).region))
-                        {
-                            auto shadow = *item;
-                            items.erase(std::next(item).base());
-
-                            while (--item != head
-                                && !area.clip((**std::prev(item)).region))
-                            { }
-
-                            items.insert(item.base(), shadow);
-                            return area;
-                        }
-                    }
-
-                    return rect_00;
-                }
-                rect expose(id_t id)
-                {
-                    auto head = items.rbegin();
-                    auto tail = items.rend();
-                    auto item = search(head, tail, id);
-
-                    if (item != head && item != tail)
-                    {
-                        auto shadow = *item;
-                        items.erase(std::next(item).base());
-                        items.push_back(shadow);
-                        return shadow->region;
-                    }
-
-                    return rect_00;
-                }
-                auto rotate_next()
-                {
-                    items.push_back(items.front());
-                    items.pop_front();
-                    return items.back();
-                }
-                auto rotate_prev()
-                {
-                    items.push_front(items.back());
-                    items.pop_back();
-                    return items.back();
-                }
-            };
-
-            using skill::boss,
-                  skill::memo;
-            using proc = drawfx;
-            using time = moment;
-            using area = std::vector<rect>;
-
-            area edges; // scene: wrecked regions history
-            proc paint; // scene: Render all child items to the specified canvas
-            list items; // scene: Child visual tree
-            list users; // scene: Scene spectators
-
-            sptr<registry_t> app_registry;
-            sptr<std::list<sptr<base>>> usr_registry;
-
-        public:
-            scene(base&&) = delete;
-            scene(base& boss) : skill{ boss },
-                app_registry{ std::make_shared<registry_t>() },
-                usr_registry{ std::make_shared<std::list<sptr<base>>>() }
-            {
-                paint = [&](face& canvas, page const& titles) -> bool
-                {
-                    if (edges.size())
-                    {
-                        canvas.wipe(boss.id);
-                        canvas.output(titles);
-                        //todo revise
-                        if (users.size() > 1) users.prerender(canvas); // Draw backpane for spectators
-                        items.render    (canvas); // Draw objects of the world
-                        users.postrender(canvas); // Draw spectator's mouse pointers
-                        return true;
-                    }
-                    else return faux;
-                };
-
-                boss.SUBMIT_T(tier::preview, e2::form::proceed::detach, memo, item_ptr)
-                {
-                    auto& inst = *item_ptr;
-                    denote(items.remove(inst.id));
-                    denote(users.remove(inst.id));
-
-                    //todo unify
-                    bool found = faux;
-                    // Remove from active app registry.
-                    for (auto& [class_id, app_list] : *app_registry)
-                    {
-                        auto head = app_list.begin();
-                        auto tail = app_list.end();
-                        auto iter = std::find_if(head, tail, [&](auto& c) { return c == item_ptr; });
-                        if (iter != tail)
-                        {
-                            app_list.erase(iter);
-                            found = true;
-                            break;
-                        }
-                    }
-                    { // Remove user.
-                        auto& subset = *usr_registry;
-                        auto head = subset.begin();
-                        auto tail = subset.end();
-                        auto item = std::find_if(head, tail, [&](auto& c){ return c == item_ptr; });
-                        if (item != tail)
-                        {
-                            subset.erase(item);
-                            found = true;
-                        }
-                    }
-                    if (found)
-                        inst.SIGNAL(tier::release, e2::form::upon::vtree::detached, boss.This());
-                };
-                boss.SUBMIT_T(tier::release, e2::form::layout::bubble, memo, inst)
-                {
-                    auto region = items.bubble(inst.bell::id);
-                    denote(region);
-                };
-                boss.SUBMIT_T(tier::release, e2::form::layout::expose, memo, inst)
-                {
-                    auto region = items.expose(inst.bell::id);
-                    denote(region);
-                };
-                boss.SUBMIT_T(tier::request, e2::bindings::list::users, memo, usr_list)
-                {
-                    usr_list = usr_registry;
-                };
-                boss.SUBMIT_T(tier::request, e2::bindings::list::apps, memo, app_list)
-                {
-                    app_list = app_registry;
-                };
-
-
-                // pro::scene: Proceed request for available objects (next)
-                boss.SUBMIT_T(tier::request, e2::form::proceed::attach, memo, next)
-                {
-                    if (items)
-                        if (auto next_ptr = items.rotate_next())
-                            next = next_ptr->object;
-                };
-                // pro::scene: Proceed request for available objects (prev)
-                boss.SUBMIT_T(tier::request, e2::form::proceed::detach, memo, prev)
-                {
-                    if (items)
-                        if (auto prev_ptr = items.rotate_prev())
-                            prev = prev_ptr->object;
-                };
-            }
-
-            // pro::scene: .
-            void redraw()
-            {
-                boss.SIGNAL(tier::release, e2::form::proceed::render, paint);
-                edges.clear();
-            }
-            // pro::scene: Mark dirty region.
-            void denote(rect const& updateregion)
-            {
-                if (updateregion)
-                {
-                    edges.push_back(updateregion);
-                }
-            }
-
-            // pro::scene: Attach a new item to the scene.
-            template<class S>
-            auto branch(id_t class_id, sptr<S> item)
-            {
-                items.append(item);
-                item->base::isroot(true);
-                (*app_registry)[class_id].push_back(item);
-                item->SIGNAL(tier::release, e2::form::upon::vtree::attached, boss.base::This());
-
-                boss.SIGNAL(tier::release, e2::bindings::list::apps, app_registry);
-                return item;
-            }
-            // pro::scene: Create a new item of the specified subtype
-            //             and attach it to the scene.
-            template<class S, class ...Args>
-            auto attach(id_t class_id, Args&&... args)
-            {
-                auto item = boss.indexer<bell>::create<S>(std::forward<Args>(args)...);
-                branch(class_id, item);
-                return item;
-            }
-            // pro::scene: Create a new user of the specified subtype
-            //             and invite him to the scene.
-            template<class S, class ...Args>
-            auto invite(Args&&... args)
-            {
-                auto user = boss.indexer<bell>::create<S>(std::forward<Args>(args)...);
-                users.append(user);
-                usr_registry->push_back(user);
-                user->base::isroot(true);
-                user->SIGNAL(tier::release, e2::form::upon::vtree::attached, boss.base::This());
-
-                //todo unify
-                tone color{ tone::brighter, tone::shadow};
-                user->SIGNAL(tier::preview, e2::form::state::color, color);
-
-                boss.SIGNAL(tier::release, e2::bindings::list::users, usr_registry);
-                return user;
             }
         };
 
@@ -3242,7 +2876,7 @@ namespace netxs::console
         {
             using skill::boss,
                   skill::memo;
-            hook accept_kbd;
+            subs kb_subs;
             iota clients = 0;
 
         public:
@@ -3277,7 +2911,7 @@ namespace netxs::console
                     {
                         if (!clients++)
                         {
-                            boss.SIGNAL(tier::release, e2::form::state::keybd, true);
+                            boss.SIGNAL(tier::release, e2::form::state::keybd::got, gear);
                         }
                     }
                 };
@@ -3288,11 +2922,11 @@ namespace netxs::console
                     {
                         if (!--clients)
                         {
-                            boss.SIGNAL(tier::release, e2::form::state::keybd, faux);
+                            boss.SIGNAL(tier::release, e2::form::state::keybd::lost, gear);
                         }
                     }
                 };
-                boss.SUBMIT_T(tier::request, e2::form::state::keybd, memo, state)
+                boss.SUBMIT_T(tier::request, e2::form::state::keybd::any, memo, state)
                 {
                     state = !!clients;
                 };
@@ -3306,6 +2940,15 @@ namespace netxs::console
 
                     boss.SIGNAL(tier::release, hids::events::keybd::any, gear);
                 };
+                //boss.SUBMIT_T(tier::release, e2::form::upon::vtree::detached, memo, parent)
+                //{
+                //    if (parent)
+                //    {
+                //        //auto gear = gear.set_kb_focus(boss.This());
+                //        //;
+                //        //parent->SIGNAL(tier::release, hids::events::upevent::kboffer, gear);
+                //    }
+                //};
             };
 
             // pro::keybd: Subscribe on keybd offers.
@@ -3313,7 +2956,7 @@ namespace netxs::console
             {
                 if (value)
                 {
-                    boss.SUBMIT_T(tier::release, hids::events::upevent::kboffer, accept_kbd, gear)
+                    boss.SUBMIT_T(tier::release, hids::events::upevent::kboffer, kb_subs, gear)
                     {
                         if (!gear.focus_taken())
                         {
@@ -3321,10 +2964,14 @@ namespace netxs::console
                             boss.bell::expire<tier::release>();
                         }
                     };
+                    boss.SUBMIT_T(tier::release, hids::events::upevent::kbannul, kb_subs, gear)
+                    {
+                        gear.remove_from_kb_focus(boss.This());
+                    };
                 }
                 else
                 {
-                    accept_kbd.reset();
+                    kb_subs.clear();
                 }
             }
         };
@@ -3788,7 +3435,7 @@ namespace netxs::console
         };
 
         // pro: Custom highlighter.
-        template<auto fuse>
+        //template<auto fuse> //todo apple clang doesn't get it
         class shade
             : public skill
         {
@@ -3812,210 +3459,13 @@ namespace netxs::console
                     if (highlighted)
                     {
                         auto area = parent_canvas.full();
-                        parent_canvas.fill(area, fuse);
+                        //parent_canvas.fill(area, fuse); //todo apple clang doesn't get it
+                        parent_canvas.fill(area, cell::shaders::xlight);
                     }                
                 };
             }
         };
-
-        //todo PoC, unify, too hacky
-        // pro: Cell Highlighter.
-        class cell_highlight
-            : public skill
-        {
-            struct sock
-            {
-                twod curpos; // sock: Current coor.
-                bool inside; // sock: Is active.
-                bool seized; // sock: Is seized.
-                rect region; // sock: Selected region.
-
-                sock()
-                    : inside{ faux },
-                      seized{ faux }
-                { }
-                operator bool(){ return inside || seized || region.size; }
-                auto grab(twod const& coord, bool resume)
-                {
-                    if (inside)
-                    {
-                        if (!(region.size && resume))
-                        {
-                            region.coor = coord;
-                            region.size = dot_00;
-                        }
-                        seized = true;
-                    }
-                    return seized;
-                }
-                auto calc(base const& boss, twod const& coord)
-                {
-                    curpos = coord;
-                    auto area = boss.size();
-                    area.x += boss.oversz.r;
-                    inside = area.inside(curpos);
-                }
-                auto drag(twod const& coord)
-                {
-                    if (seized)
-                    {
-                        region.size = coord - region.coor;
-                    }
-                    return seized;
-                }
-                void drop()
-                {
-                    seized = faux;
-                }
-            };
-            using list = socks<sock>;
-            using skill::boss,
-                  skill::memo;
-
-            list items;
-
-        public:
-            cell_highlight(base&&) = delete;
-            cell_highlight(base& boss)
-                : skill{ boss }
-            {
-                boss.SUBMIT_T(tier::release, e2::postrender, memo, parent_canvas)
-                {
-                    auto full = parent_canvas.full();
-                    auto view = parent_canvas.view();
-                    auto mark = cell{}.bgc(bluelt).bga(0x40);
-                    auto fill = [&](cell& c) { c.fuse(mark); };
-                    auto step = twod{ 5, 1 };
-                    auto area = full;
-                    area.size.x += boss.oversz.r;
-                    items.foreach([&](sock& item)
-                    {
-                        if (item.region.size)
-                        {
-                            auto region = item.region.normalize();
-                            auto pos1 = region.coor / step * step;
-                            auto pos2 = (region.coor + region.size + step) / step * step;
-                            auto pick = rect{ full.coor + pos1, pos2 - pos1 }.clip(area).clip(view);
-                            parent_canvas.fill(pick, fill);
-                        }
-                        if (item.inside)
-                        {
-                            auto pos1 = item.curpos / step * step;
-                            auto pick = rect{ full.coor + pos1, step }.clip(view);
-                            parent_canvas.fill(pick, fill);
-                        }
-                    });
-                };
-                boss.SUBMIT_T(tier::release, hids::events::mouse::button::click::any, memo, gear)
-                {
-                    auto& item = items.take(gear);
-                    if (item.region.size)
-                    {
-                        if (gear.meta(hids::ANYCTRL)) item.region.size = gear.coord - item.region.coor;
-                        else                          item.region.size = dot_00;
-                    }
-                    recalc();
-                };
-                boss.SUBMIT_T(tier::release, hids::events::mouse::button::dblclick::any, memo, gear)
-                {
-                    auto& item = items.take(gear);
-                    auto area = boss.size();
-                    area.x += boss.oversz.r;
-                    item.region.coor = dot_00;
-                    item.region.size = area;
-                    recalc();
-                    gear.dismiss();
-                };
-                boss.SUBMIT_T(tier::general, hids::events::die, memo, gear)
-                {
-                    recalc();
-                    boss.deface();
-                };
-                boss.SUBMIT_T(tier::release, hids::events::notify::mouse::enter, memo, gear)
-                {
-                    items.add(gear);
-                };
-                boss.SUBMIT_T(tier::release, hids::events::notify::mouse::leave, memo, gear)
-                {
-                    auto& item = items.take(gear);
-                    if (item.region.size)
-                    {
-                        item.inside = faux;
-                    }
-                    else items.del(gear);
-                    recalc();
-                };
-                engage<sysmouse::left>();
-            }
-            void recalc()
-            {
-                text data;
-                auto step = twod{ 5, 1 };
-                auto size = boss.size();
-                size.x += boss.oversz.r;
-                items.foreach([&](sock& item)
-                {
-                    if (item.region.size)
-                    {
-                        auto region = item.region.normalize();
-                        auto pos1 = region.coor / step;
-                        auto pos2 = (region.coor + region.size) / step;
-                        pos1 = std::clamp(pos1, dot_00, twod{ 25, 98 } );
-                        pos2 = std::clamp(pos2, dot_00, twod{ 25, 98 } );
-                        data += 'A'+ (char)pos1.x;
-                        data += std::to_string(pos1.y + 1);
-                        data += ':';
-                        data += 'A' + (char)pos2.x;
-                        data += std::to_string(pos2.y + 1);
-                        data += ", ";
-                    }
-                });
-                if (data.size())
-                {
-                    data.pop_back(); // pop", "
-                    data.pop_back(); // pop", "
-                    data = " =SUM(" + ansi::fgc(bluedk).add(data).fgc(blacklt).add(")");
-                }
-                else data = " =SUM(" + ansi::itc(true).fgc(reddk).add("select cells by dragging").itc(faux).fgc(blacklt).add(")");
-                log("calc: DATA ", data);                        
-                boss.SIGNAL(tier::release, e2::data::text, data);
-            }
-            // pro::cell_highlight: Configuring the mouse button to operate.
-            template<sysmouse::bttns BUTTON>
-            void engage()
-            {
-                boss.SIGNAL(tier::release, e2::form::draggable::_<BUTTON>, true);
-                boss.SUBMIT_T(tier::release, hids::events::mouse::move, memo, gear)
-                {
-                    items.take(gear).calc(boss, gear.coord);
-                    boss.base::deface();
-                };
-                boss.SUBMIT_T(tier::release, e2::form::drag::start::_<BUTTON>, memo, gear)
-                {
-                    if (items.take(gear).grab(gear.coord, gear.meta(hids::ANYCTRL)))
-                        gear.dismiss();
-                };
-                boss.SUBMIT_T(tier::release, e2::form::drag::pull::_<BUTTON>, memo, gear)
-                {
-                    if (items.take(gear).drag(gear.coord))
-                    {
-                        recalc();
-                        gear.dismiss();
-                    }
-                };
-                boss.SUBMIT_T(tier::release, e2::form::drag::cancel::_<BUTTON>, memo, gear)
-                {
-                    items.take(gear).drop();
-                    recalc();
-                };
-                boss.SUBMIT_T(tier::release, e2::form::drag::stop::_<BUTTON>, memo, gear)
-                {
-                    items.take(gear).drop();
-                    recalc();
-                };
-            }
-        };
-        
+   
         // pro: Keyboard focus highlighter.
         class focus
             : public skill
@@ -4023,24 +3473,74 @@ namespace netxs::console
             using skill::boss,
                   skill::memo;
 
-            bool active = faux; // mold: Keyboard focus.
-            rgba title_fg_color = 0xFFffffff;
+            using list = std::list<id_t>;
+
+            list pool; // focus: List of active input devices.
+
+            bool find(auto test_id)
+            {
+                for (auto id : pool) if (test_id == id) return true;
+                return faux;
+            }
 
         public:
             focus(base&&) = delete;
             focus(base& boss)
                 : skill{ boss }
             {
-                boss.SUBMIT_T(tier::release, e2::form::state::keybd, memo, status)
+                boss.broadcast->SUBMIT_T(tier::request, e2::form::state::keybd::find, memo, gear_test)
                 {
-                    active = status;
+                    if (find(gear_test.first))
+                    {
+                        gear_test.second++;
+                    }
+                };
+                boss.broadcast->SUBMIT_T(tier::request, e2::form::state::keybd::handover, memo, gear_id_list)
+                {
+                    if (pool.size())
+                    {
+                        auto This = boss.This();
+                        auto head = gear_id_list.end();
+                        gear_id_list.insert(head, pool.begin(), pool.end());
+                        auto tail = gear_id_list.end();
+                        while (head != tail)
+                        {
+                            auto gear_id = *head++;
+                            if (auto gate_ptr = bell::getref(gear_id))
+                            {
+                                gate_ptr->SIGNAL(tier::preview, e2::form::proceed::unfocus, This);
+                            }
+                        }
+                        boss.base::deface();
+                    }
+                };
+                boss.SUBMIT_T(tier::release, e2::form::state::keybd::got, memo, gear)
+                {
+                    pool.push_back(gear.id);
                     boss.base::deface();
+                };
+                boss.SUBMIT_T(tier::release, e2::form::state::keybd::lost, memo, gear)
+                {
+                    assert(!pool.empty());
+
+                    if (!pool.empty())
+                    {
+                        auto head = pool.begin();
+                        auto tail = pool.end();
+                        auto item = std::find_if(head, tail, [&](auto& c) { return c == gear.id; });
+                        if (item != tail)
+                        {
+                            pool.erase(item);
+                        }
+                        boss.base::deface();
+                    }
                 };
                 boss.SUBMIT_T(tier::release, e2::render::prerender, memo, parent_canvas)
                 {
                     //todo revise, too many fillings (mold's artifacts)
                     auto normal = boss.base::color();
-                    if (active)
+                    rgba title_fg_color = 0xFFffffff;
+                    if (!pool.empty())
                     {
                         auto bright = skin::color(tone::brighter);
                         auto shadow = skin::color(tone::shadower);
@@ -4086,7 +3586,431 @@ namespace netxs::console
         pro::robot robot{*this }; // host: Amination controller.
         pro::keybd keybd{*this }; // host: Keyboard controller.
         pro::mouse mouse{*this }; // host: Mouse controller.
-        pro::scene scene{*this }; // host: Scene controller.
+
+        // host: Provides functionality for the scene objects manipulations.
+        class hall
+        {
+            class node // scene: Helper-class for the pro::scene. Adapter for the object that going to be attached to the scene.
+            {
+                struct ward
+                {
+                    enum states
+                    {
+                        unused_hidden, // 00
+                        unused_usable, // 01
+                        active_hidden, // 10
+                        active_usable, // 11
+                        count
+                    };
+
+                    para title[states::count];
+                    cell brush[states::count];
+                    para basis;
+                    bool usable = faux;
+                    bool highlighted = faux;
+                    iota active = 0;
+                    tone color;
+
+                    operator bool ()
+                    {
+                        return basis.size() != dot_00;
+                    }
+                    void set(para const& caption)
+                    {
+                        basis = caption;
+                        basis.decouple();
+                        recalc();
+                    }
+                    auto& get()
+                    {
+                        return title[(active || highlighted ? 2 : 0) + usable];
+                    }
+                    void recalc()
+                    {
+                        brush[active_hidden] = skin::color(color.active);
+                        brush[active_usable] = skin::color(color.active);
+                        brush[unused_hidden] = skin::color(color.passive);
+                        brush[unused_usable] = skin::color(color.passive);
+
+                        brush[unused_usable].bga(brush[unused_usable].bga() << 1);
+
+                        int i = 0;
+                        for (auto& label : title)
+                        {
+                            auto& c = brush[i++];
+                            label = basis;
+                            label.decouple();
+
+                            //todo unify clear formatting/aligning in header
+                            label.locus.kill();
+                            label.style.rst();
+                            label.lyric->each([&](auto& a) { a.meta(c); });
+                        }
+                    }
+                };
+
+                using sptr = netxs::sptr<base>;
+
+                ward header;
+
+            public:
+                rect region;
+                sptr object;
+                id_t obj_id;
+                iota z_order = Z_order::plain;
+
+                node(sptr item)
+                    : object{ item }
+                {
+                    auto& inst = *item;
+                    obj_id = inst.bell::id;
+
+                    inst.SUBMIT(tier::release, e2::form::prop::zorder, order)
+                    {
+                        z_order = order;
+                    };
+                    inst.SUBMIT(tier::release, e2::size::set, size)
+                    {
+                        region.size = size;
+                    };
+                    inst.SUBMIT(tier::release, e2::coor::set, coor)
+                    {
+                        region.coor = coor;
+                    };
+                    inst.SUBMIT(tier::release, e2::form::state::mouse, state)
+                    {
+                        header.active = state;
+                    };
+                    inst.SUBMIT(tier::release, e2::form::highlight::any, state)
+                    {
+                        header.highlighted = state;
+                    };
+                    inst.SUBMIT(tier::release, e2::form::state::header, caption)
+                    {
+                        header.set(caption);
+                    };
+                    inst.SUBMIT(tier::release, e2::form::state::color, color)
+                    {
+                        header.color = color;
+                    };
+
+                    inst.SIGNAL(tier::request, e2::size::set,  region.size);
+                    inst.SIGNAL(tier::request, e2::coor::set,  region.coor);
+                    inst.SIGNAL(tier::request, e2::form::state::mouse,  header.active);
+                    inst.SIGNAL(tier::request, e2::form::state::header, header.basis);
+                    inst.SIGNAL(tier::request, e2::form::state::color,  header.color);
+
+                    header.recalc();
+                }
+                // node: Check equality.
+                bool equals(id_t id)
+                {
+                    return obj_id == id;
+                }
+                // node: Draw the anchor line func and return true
+                //       if the mold is outside the canvas area.
+                void fasten(face& canvas)
+                {
+                    auto window = canvas.area();
+                    auto origin = window.size / 2;
+                    //auto origin = twod{ 6, window.size.y - 3 };
+                    auto offset = region.coor - window.coor;
+                    auto center = offset + (region.size / 2);
+                    header.usable = window.overlap(region);
+                    auto active = header.active || header.highlighted;
+                    auto& grade = skin::grade(active ? header.color.active
+                                                     : header.color.passive);
+                    auto pset = [&](twod const& p, uint8_t k)
+                    {
+                        //canvas[p].fuse(grade[k], obj_id, p - offset);
+                        //canvas[p].fuse(grade[k], obj_id);
+                        canvas[p].link(obj_id).bgc().mix_one(grade[k].bgc());
+                    };
+                    window.coor = dot_00;
+                    netxs::online(window, origin, center, pset);
+                }
+                // node: Output the title to the canvas.
+                //void enlist(face& canvas)
+                //{
+                //    if (header)
+                //    {
+                //        auto& title = header.get();
+                //        canvas.output(title);
+                //        canvas.eol();
+                //    }
+                //}
+                // node: Visualize the underlying object.
+                void render(face& canvas)
+                {
+                    canvas.render(*object);
+                }
+
+                void postrender(face& canvas)
+                {
+                    object->SIGNAL(tier::release, e2::postrender, canvas);
+                }
+            };
+
+            class list // scene: Helper-class for the pro::scene. List of objects that can be reordered, etc.
+            {
+                std::list<sptr<node>> items;
+
+                template<class D>
+                auto search(D head, D tail, id_t id)
+                {
+                    if (items.size())
+                    {
+                        auto test = [id](auto& a) { return a->equals(id); };
+                        return std::find_if(head, tail, test);
+                    }
+                    return tail;
+                }
+
+            public:
+                operator bool () { return items.size(); }
+                auto size()      { return items.size(); }
+                void append(sptr<base> item)
+                {
+                    items.push_back(std::make_shared<node>(item));
+                }
+                // Draw backpane for spectators.
+                void prerender(face& canvas)
+                {
+                    for (auto& item : items) item->fasten(canvas); // Draw strings.
+                    for (auto& item : items) item->render(canvas); // Draw shadows.
+                }
+                // Draw windows.
+                void render(face& canvas)
+                {
+                    for (auto& item : items) item->fasten(canvas);
+                    //todo optimize
+                    for (auto& item : items) if (item->z_order == Z_order::backmost) item->render(canvas);
+                    for (auto& item : items) if (item->z_order == Z_order::plain   ) item->render(canvas);
+                    for (auto& item : items) if (item->z_order == Z_order::topmost ) item->render(canvas);
+                }
+                // Draw spectator's mouse pointers.
+                void postrender(face& canvas)
+                {
+                    for (auto& item : items) item->postrender(canvas);
+                }
+
+                rect remove(id_t id)
+                {
+                    rect area;
+                    auto head = items.begin();
+                    auto tail = items.end();
+                    auto item = search(head, tail, id);
+                    if (item != tail)
+                    {
+                        area = (**item).region;
+                        items.erase(item);
+                    }
+                    return area;
+                }
+                rect bubble(id_t id)
+                {
+                    auto head = items.rbegin();
+                    auto tail = items.rend();
+                    auto item = search(head, tail, id);
+
+                    if (item != head && item != tail)
+                    {
+                        auto& area = (**item).region;
+                        if (!area.clip((**std::prev(item)).region))
+                        {
+                            auto shadow = *item;
+                            items.erase(std::next(item).base());
+
+                            while (--item != head
+                                && !area.clip((**std::prev(item)).region))
+                            { }
+
+                            items.insert(item.base(), shadow);
+                            return area;
+                        }
+                    }
+
+                    return rect_00;
+                }
+                rect expose(id_t id)
+                {
+                    auto head = items.rbegin();
+                    auto tail = items.rend();
+                    auto item = search(head, tail, id);
+
+                    if (item != head && item != tail)
+                    {
+                        auto shadow = *item;
+                        items.erase(std::next(item).base());
+                        items.push_back(shadow);
+                        return shadow->region;
+                    }
+
+                    return rect_00;
+                }
+                auto rotate_next()
+                {
+                    items.push_back(items.front());
+                    items.pop_front();
+                    return items.back();
+                }
+                auto rotate_prev()
+                {
+                    items.push_front(items.back());
+                    items.pop_back();
+                    return items.back();
+                }
+            };
+
+            using proc = drawfx;
+            using time = moment;
+            using area = std::vector<rect>;
+
+            base& boss;
+            subs  memo;
+            area edges; // scene: wrecked regions history
+            proc paint; // scene: Render all child items to the specified canvas
+            list items; // scene: Child visual tree
+            list users; // scene: Scene spectators
+
+            sptr<registry_t>            app_registry;
+            sptr<std::list<sptr<base>>> usr_registry;
+
+        public:
+            hall(base&&) = delete;
+            hall(base& boss) : boss{ boss },
+                app_registry{ std::make_shared<registry_t>() },
+                usr_registry{ std::make_shared<std::list<sptr<base>>>() }
+            {
+                paint = [&](face& canvas, page const& titles) -> bool
+                {
+                    if (edges.size())
+                    {
+                        canvas.wipe(boss.id);
+                        canvas.output(titles);
+                        //todo revise
+                        if (users.size() > 1) users.prerender(canvas); // Draw backpane for spectators
+                        items.render    (canvas); // Draw objects of the world
+                        users.postrender(canvas); // Draw spectator's mouse pointers
+                        return true;
+                    }
+                    else return faux;
+                };
+
+                boss.SUBMIT_T(tier::preview, e2::form::proceed::detach, memo, item_ptr)
+                {
+                    auto& inst = *item_ptr;
+                    denote(items.remove(inst.id));
+                    denote(users.remove(inst.id));
+
+                    //todo unify
+                    bool found = faux;
+                    // Remove from active app registry.
+                    for (auto& [class_id, app_list] : *app_registry)
+                    {
+                        auto head = app_list.begin();
+                        auto tail = app_list.end();
+                        auto iter = std::find_if(head, tail, [&](auto& c) { return c == item_ptr; });
+                        if (iter != tail)
+                        {
+                            app_list.erase(iter);
+                            found = true;
+                            break;
+                        }
+                    }
+                    { // Remove user.
+                        auto& subset = *usr_registry;
+                        auto head = subset.begin();
+                        auto tail = subset.end();
+                        auto item = std::find_if(head, tail, [&](auto& c){ return c == item_ptr; });
+                        if (item != tail)
+                        {
+                            subset.erase(item);
+                            found = true;
+                        }
+                    }
+                    if (found)
+                        inst.SIGNAL(tier::release, e2::form::upon::vtree::detached, boss.This());
+                };
+                boss.SUBMIT_T(tier::release, e2::form::layout::bubble, memo, inst)
+                {
+                    auto region = items.bubble(inst.bell::id);
+                    denote(region);
+                };
+                boss.SUBMIT_T(tier::release, e2::form::layout::expose, memo, inst)
+                {
+                    auto region = items.expose(inst.bell::id);
+                    denote(region);
+                };
+                boss.SUBMIT_T(tier::request, e2::bindings::list::users, memo, usr_list)
+                {
+                    usr_list = usr_registry;
+                };
+                boss.SUBMIT_T(tier::request, e2::bindings::list::apps, memo, app_list)
+                {
+                    app_list = app_registry;
+                };
+
+                // scene: Proceed request for available objects (next)
+                boss.SUBMIT_T(tier::request, e2::form::proceed::attach, memo, next)
+                {
+                    if (items)
+                        if (auto next_ptr = items.rotate_next())
+                            next = next_ptr->object;
+                };
+                // scene: Proceed request for available objects (prev)
+                boss.SUBMIT_T(tier::request, e2::form::proceed::detach, memo, prev)
+                {
+                    if (items)
+                        if (auto prev_ptr = items.rotate_prev())
+                            prev = prev_ptr->object;
+                };
+            }
+
+            // scene: .
+            void redraw()
+            {
+                boss.SIGNAL(tier::release, e2::form::proceed::render, paint);
+                edges.clear();
+            }
+            // scene: Mark dirty region.
+            void denote(rect const& updateregion)
+            {
+                if (updateregion)
+                {
+                    edges.push_back(updateregion);
+                }
+            }
+
+            // scene: Attach a new item to the scene.
+            template<class S>
+            auto branch(text const& class_id, sptr<S> item)
+            {
+                items.append(item);
+                item->base::root(true); //todo move it to the window creator (main)
+                (*app_registry)[class_id].push_back(item);
+                item->SIGNAL(tier::release, e2::form::upon::vtree::attached, boss.base::This());
+
+                boss.SIGNAL(tier::release, e2::bindings::list::apps, app_registry);
+            }
+            // scene: Create a new user of the specified subtype and invite him to the scene.
+            template<class S, class ...Args>
+            auto invite(Args&&... args)
+            {
+                auto user = boss.indexer<bell>::create<S>(std::forward<Args>(args)...);
+                users.append(user);
+                usr_registry->push_back(user);
+                user->base::root(true);
+                user->SIGNAL(tier::release, e2::form::upon::vtree::attached, boss.base::This());
+
+                //todo unify
+                tone color{ tone::brighter, tone::shadow};
+                user->SIGNAL(tier::preview, e2::form::state::color, color);
+
+                boss.SIGNAL(tier::release, e2::bindings::list::users, usr_registry);
+                return user;
+            }
+        };
 
         using tick = quartz<events::reactor<>, e2::type>;
         using hndl = std::function<void(view)>;
@@ -4094,6 +4018,7 @@ namespace netxs::console
         tick synch; // host: Frame rate synchronizator.
         iota frate; // host: Frame rate value.
         hndl close; // host: Quit procedure.
+        hall scene; // host: Scene controller.
 
         void deface(rect const& region) override
         {
@@ -4104,15 +4029,9 @@ namespace netxs::console
     public:
         // host: Create a new item of the specified subtype and attach it.
         template<class T>
-        auto branch(id_t class_id, sptr<T> item_ptr)
+        auto branch(text const& class_id, sptr<T> item_ptr)
         {
-            return scene.branch(class_id, item_ptr);
-        }
-        // host: Create a new item of the specified subtype and attach it.
-        template<class T, class ...Args>
-        auto attach(id_t class_id, Args&&... args)
-        {
-            return scene.attach<T>(class_id, std::forward<Args>(args)...);
+            scene.branch(class_id, item_ptr);
         }
         //todo unify
         // host: .
@@ -4125,6 +4044,7 @@ namespace netxs::console
     protected:
         host(hndl exit_proc)
             : synch(router<tier::general>(), e2::tick.id),
+              scene{ *this },
               frate{ 0 },
               close{ exit_proc }
         {
@@ -4136,61 +4056,15 @@ namespace netxs::console
             {
                 scene.redraw();
             };
-
-            //test
-            //SUBMIT(tier::preview, bttn::click::left, gear)
-            //{
-            //	static iota i = 0;
-            //	text data = "click " + std::to_string(i++) + "\n";
-            //	SIGNAL_GLOBAL(e2::debug, data);
-            //};
-
-            SUBMIT(tier::release, bttn::click::right, gear)
+            SUBMIT(tier::general, e2::config::whereami, world_ptr)
             {
-                //auto newpos = gear.mouse.coord + gear.xview.coor;
-                this->SIGNAL(tier::general, e2::form::global::ctxmenu, gear.coord);
+                world_ptr = This();
             };
 
-            //SUBMIT(tier::release, bttn::drag::start::left, gear)
+            //SUBMIT(tier::release, bttn::click::right, gear)
             //{
-            //    if (gear.capture(bell::id))
-            //    {
-            //        robot.pacify();
-            //        gear.dismiss();
-            //    }
-            //};
-            //SUBMIT(tier::release, bttn::drag::pull::left, gear)
-            //{
-            //    if (gear.captured(bell::id))
-            //    {
-            //        auto data = cube{ gear.mouse::delta.get(), gear.area() };
-            //        this->SIGNAL(tier::preview, e2::form::layout::convey, data);
-            //        deface(rect{ dot_00, dot_11 }); //todo unify, deface all world
-            //        gear.dismiss();
-            //    }
-            //};
-            //SUBMIT(tier::release, bttn::drag::cancel::left, gear)
-            //{
-            //    if (gear.captured(bell::id))
-            //    {
-            //        gear.release();
-            //        gear.dismiss();
-            //    }
-            //};
-            //SUBMIT(tier::release, bttn::drag::stop::left, gear)
-            //{
-            //    if (gear.captured(bell::id))
-            //    {
-            //        auto boundary = gear.area();
-            //        gear.release();
-            //        robot.actify(gear.mouse::fader<quadratic<twod>>(2s), [&, boundary](auto& x)
-            //                     {
-            //                         auto data = cube{ x, boundary };
-            //                         this->SIGNAL(tier::preview, e2::form::layout::convey, data);
-            //                         deface(rect{ dot_00, dot_11 }); //todo unify, deface all world
-            //                     });
-            //        gear.dismiss();
-            //    }
+            //    //auto newpos = gear.mouse.coord + gear.xview.coor;
+            //    this->SIGNAL(tier::general, e2::form::global::ctxmenu, gear.coord);
             //};
             SUBMIT(tier::general, hids::events::die, gear)
             {
@@ -4223,13 +4097,78 @@ namespace netxs::console
                     close(reason);
                 }
             };
+            //todo move it to the gate
+            SUBMIT(tier::release, e2::form::proceed::createby, gear)
+            {
+                static iota insts_count = 0;
+                if (auto gate_ptr = bell::getref(gear.id))
+                {
+                    auto& gate = *gate_ptr;
+                    auto location = gear.slot;
+                    if (gear.meta(hids::ANYCTRL))
+                    {
+                        log("gate: area copied to clipboard ", location);
+                        sptr<core> canvas_ptr;
+                        gate.SIGNAL(tier::request, e2::form::canvas, canvas_ptr);
+                        if (canvas_ptr)
+                        {
+                            auto& canvas = *canvas_ptr;
+                            auto data = canvas.meta(location);
+                            if (data.length())
+                            {
+                                gate.SIGNAL(tier::release, e2::command::cout, ansi::setbuf(data));
+                            }
+                        }
+                    }
+                    else
+                    {
+                        auto what = decltype(e2::form::proceed::createat)::type{};
+                        what.location = gear.slot;
+                        auto data = decltype(e2::data::changed)::type{};
+                        gate.SIGNAL(tier::request, e2::data::changed, data);
+                        what.menu_item_id = data;
+                        this->SIGNAL(tier::release, e2::form::proceed::createat, what);
+                        if (auto& frame = what.frame)
+                        {
+                            insts_count++;
+                            #ifndef PROD
+                                if (insts_count > APPS_MAX_COUNT)
+                                {
+                                    log("inst: max count reached");
+                                    auto timeout = tempus::now() + APPS_DEL_TIMEOUT;
+                                    auto w_frame = ptr::shadow(frame);
+                                    frame->SUBMIT_BYVAL(tier::general, e2::tick, timestamp)
+                                    {
+                                        if (timestamp > timeout)
+                                        {
+                                            log("inst: timebomb");
+                                            if (auto frame = w_frame.lock())
+                                            {
+                                                frame->base::detach();
+                                                log("inst: frame detached: ", insts_count);
+                                            }
+                                        }
+                                    };
+                                }
+                            #endif
+
+                            frame->SUBMIT(tier::release, e2::form::upon::vtree::detached, master)
+                            {
+                                insts_count--;
+                                log("inst: detached: ", insts_count);
+                            };
+
+                            gear.kb_focus_taken = faux;
+                            frame->SIGNAL(tier::release, hids::events::upevent::kboffer, gear);
+                            frame->broadcast->SIGNAL(tier::release, e2::form::upon::created, gear); // The Tile should change the menu item.
+                        }
+                    }
+                }
+            };
         }
         ~host()
         {
             synch.cancel();
-
-            //todo why it is never called?
-            //reject();
         }
     };
 
@@ -5440,12 +5379,35 @@ again:
                     world->SIGNAL(tier::release, e2::form::proceed::create, region);
                 }
             };
+            //todo revise
             SUBMIT(tier::preview, e2::form::proceed::createby, gear)
             {
                 if (auto world = base::parent())
                 {
                     gear.slot.coor += base::coor();
                     world->SIGNAL(tier::release, e2::form::proceed::createby, gear);
+                }
+            };
+            SUBMIT(tier::preview, e2::form::proceed::focus, item_ptr)
+            {
+                if (item_ptr)
+                {
+                    auto& gear = input;
+                    //todo unify
+                    gear.force_group_focus = true;
+                    gear.kb_focus_taken = faux;
+                    item_ptr->SIGNAL(tier::release, hids::events::upevent::kboffer, gear);
+                    gear.force_group_focus = faux;
+                }
+            };
+            SUBMIT(tier::preview, e2::form::proceed::unfocus, item_ptr)
+            {
+                if (item_ptr)
+                {
+                    auto& gear = input;
+                    //todo unify
+                    gear.kb_focus_taken = faux; //todo used in base::upevent handler
+                    item_ptr->SIGNAL(tier::release, hids::events::upevent::kbannul, gear);
                 }
             };
             SUBMIT(tier::preview, hids::events::keybd::any, gear)
@@ -5584,6 +5546,7 @@ again:
         {
             uibar = item;
             item->SIGNAL(tier::release, e2::form::upon::vtree::attached, This());
+            //item->broadcast->SIGNAL(tier::release, e2::form::upon::started, This());
             return item;
         }
         // gate: Create a new item of the specified subtype and attach it.

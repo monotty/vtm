@@ -3,6 +3,8 @@ cmake_minimum_required (VERSION 3.8)
 project ("vtmd")
 project ("vtm")
 
+OPTION(DEMO "Demo mode" OFF)
+
 set (CMAKE_CXX_STANDARD 20)
 set (CMAKE_CXX_STANDARD_REQUIRED ON)
 
@@ -14,13 +16,16 @@ if (WIN32)
 
     set (CMAKE_CXX_FLAGS "/DWIN32 /D_WINDOWS /W3 /GR /EHsc /bigobj")
 else ()
+    set (CMAKE_CXX_FLAGS "-pthread")
     if (CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
         #static linkage
         #set (CMAKE_CXX_FLAGS "-static-libstdc++ -static-libgcc -pthread -s")
         #set (CMAKE_CXX_FLAGS "-pthread -s")
-    else ()
-        set (CMAKE_CXX_FLAGS "-pthread")
     endif ()
+endif ()
+
+if (DEMO)
+    set (CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -DDEMO")
 endif ()
 
 add_executable (vtmd "vtmd.cpp")

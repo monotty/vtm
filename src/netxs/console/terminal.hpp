@@ -6,41 +6,36 @@
 
 #include "../ui/controls.hpp"
 
-#include <cassert>
-
 namespace netxs::events::userland
 {
-    struct term
+    struct uiterm
     {
-        EVENTPACK( term, netxs::events::userland::root::custom )
+        EVENTPACK( uiterm, netxs::events::userland::root::custom )
         {
-            EVENT_XS( cmd   , iota ),
             GROUP_XS( layout, iota ),
-            GROUP_XS( data  , iota ),
 
             SUBSET_XS( layout )
             {
                 EVENT_XS( align , bias ),
                 EVENT_XS( wrapln, wrap ),
             };
-            SUBSET_XS( data )
-            {
-                EVENT_XS( in , view ),
-                EVENT_XS( out, view ),
-            };
         };
     };
+
 }
 
-namespace netxs::app
+// terminal: Terminal UI control.
+namespace netxs::ui
 {
-    using namespace netxs::console;
-
-    // terminal: Built-in terminal app.
-    struct term
+    class term
         : public ui::form<term>
     {
-        using events = netxs::events::userland::term;
+        static constexpr iota def_length = 20000; // term: Default scrollback history length.
+        static constexpr iota def_growup = 0;     // term: Default scrollback history grow step.
+        static constexpr iota def_tablen = 8;     // term: Default tab length.
+
+    public:
+        using events = netxs::events::userland::uiterm;
 
         struct commands
         {
@@ -68,7 +63,7 @@ namespace netxs::app
             };
             struct ui
             {
-                enum : iota
+                enum commands : iota
                 {
                     right,
                     left,
@@ -94,11 +89,7 @@ namespace netxs::app
                 };
             };
         };
-
-private:
-        static constexpr iota def_length = 20000; // term: Default scrollback history length.
-        static constexpr iota def_growup = 0;     // term: Default scrollback history grow step.
-        static constexpr iota def_tablen = 8;     // term: Default tab length.
+    private:
 
         // term: VT-buffer status.
         struct term_state
@@ -629,13 +620,13 @@ private:
                 {
                     auto status = parser::style.wrp() == wrap::none ? deco::defwrp
                                                                     : parser::style.wrp();
-                    owner.base::broadcast->SIGNAL(tier::release, app::term::events::layout::wrapln, status);
+                    owner.SIGNAL(tier::release, ui::term::events::layout::wrapln, status);
                 }
                 if (parser::style.jet() != old_style.jet())
                 {
                     auto status = parser::style.jet() == bias::none ? bias::left
                                                                     : parser::style.jet();
-                    owner.base::broadcast->SIGNAL(tier::release, app::term::events::layout::align, status);
+                    owner.SIGNAL(tier::release, ui::term::events::layout::align, status);
                 }
             }
             // bufferbase: .
@@ -2365,8 +2356,8 @@ private:
                         : c{ cy },
                           t{ ct },
                           b{ cb },
-                          block{ c.y > cs.y_end ? t = cs.y_end + 1, cs.dnbox
-                                                :                   cs.upbox }
+                          block{ c.y > cs.y_end ? (void)(t = cs.y_end + 1), cs.dnbox
+                                                :                           cs.upbox }
                          { c.y -= t; }
                    ~qt() { c.y += t; }
                    operator bool () { return b; }
@@ -2761,8 +2752,8 @@ private:
                             auto remain = (length - 1) % view.size.x + 1;
                             if (left_edge > lt_dot)
                             {
-                                if (adjust == bias::right  && left_edge <= rt_dot - remain
-                                 || adjust == bias::center && left_edge <= lt_dot + half_size - remain / 2)
+                                if ((adjust == bias::right  && left_edge <= rt_dot - remain)
+                                 || (adjust == bias::center && left_edge <= lt_dot + half_size - remain / 2))
                                 {
                                     --left_rect.size.y;
                                 }
@@ -2770,8 +2761,8 @@ private:
                             }
                             if (rght_edge < rt_dot)
                             {
-                                if (adjust == bias::left   && rght_edge >= lt_dot + remain
-                                 || adjust == bias::center && rght_edge >= lt_dot + remain + half_size - remain / 2)
+                                if ((adjust == bias::left   && rght_edge >= lt_dot + remain)
+                                 || (adjust == bias::center && rght_edge >= lt_dot + remain + half_size - remain / 2))
                                 {
                                     --rght_rect.size.y;
                                 }
@@ -3359,12 +3350,67 @@ private:
                 SUBMIT_T(tier::general, e2::tick, oneoff, t)
                 {
                     oneoff.reset();
-                    this->base::riseup<tier::release>(e2::form::quit, true);
+                    this->base::riseup<tier::release>(e2::form::quit, This());
                 };
             }
         }
 
     public:
+        void exec_cmd(commands::ui::commands cmd)
+        {
+            log("term: tier::preview, ui::commands, ", cmd);
+            scroll();
+            switch (cmd)
+            {
+                case commands::ui::left:
+                    target->style.jet(bias::left);
+                    break;
+                case commands::ui::center:
+                    target->style.jet(bias::center);
+                    break;
+                case commands::ui::right:
+                    target->style.jet(bias::right);
+                    break;
+                case commands::ui::togglewrp:
+                    target->style.wrp(target->style.wrp() == wrap::on ? wrap::off : wrap::on);
+                    break;
+                case commands::ui::reset:
+                    decstr();
+                    break;
+                case commands::ui::clear:
+                    target->ed(commands::erase::display::viewport);
+                    break;
+                default:
+                    break;
+            }
+            ondata("");
+        }
+        void data_in(view data)
+        {
+            log("term: app::term::data::in, ", utf::debase(data));
+            scroll();
+            ondata(data);
+        }
+        void data_out(view data)
+        {
+            log("term: app::term::data::out, ", utf::debase(data));
+            scroll();
+            ptycon.write(data);
+        }
+        //todo temp
+        bool started = faux;
+        void start()
+        {
+            //todo move it to the another thread (slow init)
+            //initsz = base::size();
+            //std::thread{ [&]( )
+            //{
+                //todo async command queue
+                ptycon.start(cmdarg, initsz, [&](auto utf8_shadow) { ondata(utf8_shadow); },
+                                             [&](auto exit_reason) { onexit(exit_reason); } );
+                started = true;
+            //} }.detach();
+        }
        ~term(){ active = faux; }
         term(text command_line, iota max_scrollback_size = def_length, iota grow_step = def_growup)
         //term(text command_line, iota max_scrollback_size = 50, iota grow_step = 0)
@@ -3380,53 +3426,12 @@ private:
         {
             cmdarg = command_line;
             target = &normal;
-            cursor.style(commands::cursor::def_style);
-            //cursor.style(commands::cursor::steady_box);
+            //cursor.style(commands::cursor::def_style); // default=blinking_box
+            cursor.style(commands::cursor::blinking_underline);
+            cursor.show(); //todo revise (possible bug)
 
-            #ifdef PROD
             form::keybd.accept(true); // Subscribe to keybd offers.
-            #endif
-            base::broadcast->SUBMIT_T(tier::preview, app::term::events::cmd, bell::tracker, cmd)
-            {
-                log("term: tier::preview, app::term::cmd, ", cmd);
-                scroll();
-                switch (cmd)
-                {
-                    case term::commands::ui::left:
-                        target->style.jet(bias::left);
-                        break;
-                    case term::commands::ui::center:
-                        target->style.jet(bias::center);
-                        break;
-                    case term::commands::ui::right:
-                        target->style.jet(bias::right);
-                        break;
-                    case term::commands::ui::togglewrp:
-                        target->style.wrp(target->style.wrp() == wrap::on ? wrap::off : wrap::on);
-                        break;
-                    case term::commands::ui::reset:
-                        decstr();
-                        break;
-                    case term::commands::ui::clear:
-                        target->ed(commands::erase::display::viewport);
-                        break;
-                    default:
-                        break;
-                }
-                ondata("");
-            };
-            base::broadcast->SUBMIT_T(tier::preview, app::term::events::data::in, bell::tracker, data)
-            {
-                log("term: app::term::data::in, ", utf::debase(data));
-                scroll();
-                ondata(data);
-            };
-            base::broadcast->SUBMIT_T(tier::preview, app::term::events::data::out, bell::tracker, data)
-            {
-                log("term: app::term::data::out, ", utf::debase(data));
-                scroll();
-                ptycon.write(data);
-            };
+
             SUBMIT(tier::release, e2::coor::set, new_coor)
             {
                 //todo use tier::preview bcz approx viewport position can be corrected
@@ -3438,7 +3443,7 @@ private:
             {
                 this->base::riseup<tier::request>(e2::form::prop::header, wtrack.get(ansi::OSC_TITLE));
 
-
+                //todo deprecated
                 this->SUBMIT_T(tier::release, e2::size::set, oneoff, new_sz)
                 {
                     if (new_sz.y > 0)
@@ -3472,19 +3477,19 @@ private:
                             //std::thread{ [&]()
                             //{
                                 //todo async command queue
-                                ptycon.resize(initsz);
+                                if (started) ptycon.resize(initsz);
                             //} }.detach();
 
                             new_sz.y = console.get_basis() + new_sz.y;
                         };
 
                         //todo move it to the another thread (slow init)
-                        initsz = new_sz;
-                        //std::thread{ [&]( )
-                        //{
-                            //todo async command queue
-                            ptycon.start(cmdarg, initsz, [&](auto utf8_shadow) { ondata(utf8_shadow); },
-                                                         [&](auto exit_reason) { onexit(exit_reason); } );
+//                        initsz = new_sz;
+//                        //std::thread{ [&]( )
+//                        //{
+//                            //todo async command queue
+//                            ptycon.start(cmdarg, initsz, [&](auto utf8_shadow) { ondata(utf8_shadow); },
+//                                                         [&](auto exit_reason) { onexit(exit_reason); } );
                         //} }.detach();
                     }
                 };
@@ -3494,6 +3499,9 @@ private:
                 //todo stop/finalize scrolling animations
                 scroll(true);
                 follow_cursor = true;
+                #ifndef PROD
+                    return;
+                #endif
                 //todo optimize/unify
                 auto data = gear.keystrokes;
                 if (!bpmode)

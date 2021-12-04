@@ -230,6 +230,12 @@ namespace netxs::os
         return val ? text{ val }
                    : text{};
     }
+    static text get_shell()
+    {
+        auto shell = os::get_env("SHELL");
+        return shell.ends_with("vtm") ? "bash"
+                                      : shell;
+    }
     //system: Get list of envvars using wildcard.
     static auto get_envars(text&& var)
     {
@@ -2148,8 +2154,16 @@ namespace netxs::os
                     log(" tty: compatibility mode");
                     auto imps2_init_string = "\xf3\xc8\xf3\x64\xf3\x50";
                     auto mouse_device = "/dev/input/mice";
+                    auto mouse_fallback = "/dev/input/mice_vtm";
                     auto fd = ::open(mouse_device, O_RDWR);
-                    if (fd == -1) log(" tty: error opening ", mouse_device, ", error ", errno, errno == 13 ? " - permission denied" : "");
+                    if (fd == -1)
+                    {
+                        fd = ::open(mouse_fallback, O_RDWR);
+                    }
+                    if (fd == -1)
+                    {
+                        log(" tty: error opening ", mouse_device, " and ", mouse_fallback, ", error ", errno, errno == 13 ? " - permission denied" : "");
+                    }
                     else if (os::send(fd, imps2_init_string, sizeof(imps2_init_string)))
                     {
                         char ack;
