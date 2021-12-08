@@ -232,9 +232,13 @@ namespace netxs::os
     }
     static text get_shell()
     {
-        auto shell = os::get_env("SHELL");
-        return shell.ends_with("vtm") ? "bash"
-                                      : shell;
+        #if defined(_WIN32)
+            return "cmd";
+        #else
+            auto shell = os::get_env("SHELL");
+            return shell.ends_with("vtm") ? "bash"
+                                          : shell;
+        #endif
     }
     //system: Get list of envvars using wildcard.
     static auto get_envars(text&& var)
@@ -281,13 +285,11 @@ namespace netxs::os
     }
     static auto legacy_mode()
     {
-        auto vga16colors = {
+        auto vga16colors = { // https://github.com//termstandard/colors
             "ansi",
             "linux",
-            "xterm",
             "xterm-color",
-            "dvtm",
-            "tmux",
+            "dvtm", //todo track: https://github.com/martanne/dvtm/issues/10
             "fbcon",
         };
         auto vga256colors = {
