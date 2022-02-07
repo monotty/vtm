@@ -842,8 +842,9 @@ namespace netxs::utf
     {
         if (length == 0) return text{};
 
-        auto head = utf8.data();
-        auto stop = head + utf8.size();
+        auto data = text{ utf8 };
+        auto head = data.data();
+        auto stop = head + data.size();
         auto calc = [](auto& it, auto& count, auto limit)
         {
             while (it != limit)
@@ -858,14 +859,14 @@ namespace netxs::utf
 
         if (start) calc(head, start, stop);
 
-        start = head - utf8.data();
+        start = head - data.data();
         if (length != text::npos)
         {
             auto tail = head;
             calc(tail, length, stop);
-            return utf8.substr(start, tail - head);
+            return data.substr(start, tail - head);
         }
-        else return utf8.substr(start);
+        else return data.substr(start);
     }
 
     template<class TEXT_OR_VIEW>
@@ -1006,7 +1007,8 @@ namespace netxs::utf
     auto adjust(TEXT_OR_VIEW&& utf8, size_t required_width, F const& fill_char, bool right_aligned = faux)
     {
         text crop;
-        if (utf8.empty())
+        auto data = view{ utf8 };
+        if (data.empty())
         {
             crop = repeat(fill_char, required_width);
         }
@@ -1014,15 +1016,13 @@ namespace netxs::utf
         {
             if (required_width > 0)
             {
-                crop = substr(utf8, 0, required_width);
+                crop = substr(data, 0, required_width);
             }
             auto size = length(crop);
             if (required_width > size)
             {
-                if (right_aligned)
-                    crop = repeat(fill_char, required_width - size) + crop;
-                else
-                    crop = crop + repeat(fill_char, required_width - size);
+                if (right_aligned) crop = repeat(fill_char, required_width - size) + crop;
+                else               crop = crop + repeat(fill_char, required_width - size);
             }
         }
         return crop;
@@ -1320,6 +1320,7 @@ namespace netxs::utf
     }
 
     // utf: Return a string without control chars (replace all ctrls with printables).
+    template<bool SPLIT = true>
     auto debase(view utf8)
     {
         text buff;
@@ -1331,14 +1332,22 @@ namespace netxs::utf
             switch (traits.cdpoint)
             {
                 case 033:
-                    if (head == utf8.size()) buff += "\\e";
-                    else                     buff += "\n\\e";
+                    if constexpr (SPLIT)
+                    {
+                        if (head == utf8.size()) buff += "\\e";
+                        else                     buff += "\n\\e";
+                    }
+                    else buff += "\\e";
                     break;
                 case '\n':
-                    if (utf8.size() && utf8.front() == '\033')
+                    if constexpr (SPLIT)
                     {
-                        buff += "\\n\n\\e";
-                        utf8.remove_prefix(1);
+                        if (utf8.size() && utf8.front() == '\033')
+                        {
+                            buff += "\\n\n\\e";
+                            utf8.remove_prefix(1);
+                        }
+                        else buff += "\\n\n";
                     }
                     else buff += "\\n\n";
                     break;
