@@ -1,119 +1,81 @@
 // Copyright (c) NetXS Group.
 // Licensed under the MIT license.
 
-#define MONOTTY_VER "Monotty Desktopio v0.7.5"
-
-// Enable demo apps and assign Esc key to log off.
-//#define DEMO
-
-// Enable keyboard input and unassign Esc key.
-#define PROD
-
-// Tiling limits.
-#ifndef PROD
-    #define INHERITANCE_LIMIT 12
-    #define APPS_MAX_COUNT    20
-    #define TILE_MAX_COUNT    2
-#else
-    #define INHERITANCE_LIMIT 30
-#endif
-#define APPS_DEL_TIMEOUT  1s
-
-#define MONOTTY_PREFIX "monotty_"
-#define MONOTTY_FOLDER "/.config/vtm/"
-
-// Enable to show debug overlay.
-//#define DEBUG_OVERLAY
+#define DESKTOPIO_VER "v0.8.0"
+#define DESKTOPIO_MYNAME "vtm " DESKTOPIO_VER
+#define DESKTOPIO_PREFIX "desktopio_"
+#define DESKTOPIO_MYPATH "vtm"
+#define DESKTOPIO_DEFAPP "Term"
+#define DESKTOPIO_APPINF "Desktopio Terminal " DESKTOPIO_VER
 
 // Enable to show all terminal input (keyboard/mouse etc).
 //#define KEYLOG
 
-// Highlight region ownership.
-//#define REGIONS
-
 #include "netxs/apps.hpp"
 
-#include <fstream> // Get current config from vtm.conf.
-
-using namespace netxs::console;
 using namespace netxs;
+using namespace netxs::console;
+
+enum class type
+{
+    client,
+    server,
+    runapp,
+};
 
 int main(int argc, char* argv[])
 {
-    auto syslog = logger([](auto data) { os::syslog(data); });
-    auto banner = [&]() { log(MONOTTY_VER); };
-    auto prefix = [](auto user) { return utf::concat(MONOTTY_PREFIX, user); }; //todo unify, use vtm.conf
-    auto client = true;
-    auto daemon = faux;
+    auto vtmode = os::vt_mode();
+    auto syslog = os::ipc::logger(vtmode);
+    auto banner = [&]() { log(DESKTOPIO_MYNAME); };
+    auto whoami = type::client;
+    auto params = text{};
+    auto maxfps = si32{ 60 };
     {
+        auto daemon = faux;
         auto getopt = os::args{ argc, argv };
         while (getopt)
         {
             switch (getopt.next())
             {
-                case 's': client = faux; break;
+                case 'r':
+                    whoami = type::runapp;
+                    params = getopt ? getopt.tail()
+                                    : text{ DESKTOPIO_DEFAPP };
+                    break;
+                case 's': whoami = type::server; break;
                 case 'd': daemon = true; break;
                 default:
-                    #ifndef PROD
-
-                        if (os::get_env("SHELL").ends_with("vtm"))
-                        {
-                            auto error = utf::text{ "main: interactive server is not allowed in demo mode" };
-                            if (argc > 1)
-                            {
-                                auto host = os::get_env("SSH_CLIENT");
-                                auto name = os::get_env("USER");
-                                error += "\nblock explicit shell command invocation {" + name + ", " + host + "}";
-                                for (auto i = 1; i < argc; i++)
-                                {
-                                    error += '\n';
-                                    error += utf::text(argv[i]);
-                                }
-                            }
-                            os::start_log("vtm");
-                            log(error);
-                            return 1;
-                        }
-
-                    #endif
-
                     banner();
-                    log("Usage:\n\n ", argv[0], " [OPTION...]\n\n"s
+                    log("Usage:\n\n ", os::current_module_file(), " [ -d | -s | -r [<app> [<args...>]] ]\n\n"s
                                     + " No arguments\tRun client, auto start server if is not started.\n"s
                                              + "\t-d\tRun server in background.\n"s
-                                             + "\t-s\tRun server in interactive mode.\n"s);
-                    return 0;;
+                                             + "\t-s\tRun server in interactive mode.\n"s
+                                             + "\t-r\tRun standalone application.\n"s
+                                             + "\n"s
+                                             + "\tList of registered applications:\n\n"s
+                                             + "\t\tTerm\tTerminal emulator (default)\n"s
+                                             + "\t\tText\t(Demo) Text editor\n"s
+                                             + "\t\tCalc\t(Demo) Spreadsheet calculator\n"s
+                                             + "\t\tGems\t(Demo) Desktopio application manager\n"s
+                                             );
+                    return 0;
             }
         }
 
         if (daemon)
         {
-            if (!os::daemonize(argv[0]))
+            if (!os::daemonize(os::current_module_file()))
             {
                 banner();
                 log("main: failed to daemonize");
                 return 1;
             }
-            else client = faux;
+            else whoami = type::server;
         }
     }
 
-    banner();
-
-    auto user = os::user();
-    auto spot = utf::text{};
-    auto conf = utf::text{};
-    auto path = prefix(user);
     {
-        std::ifstream config;
-        config.open(os::homepath() + MONOTTY_FOLDER "settings.ini");
-
-        if (config.is_open())
-            std::getline(config, spot);
-
-        if (spot.empty())
-            spot = "unknown region";
-
         //todo unify
         //fps
         //skin::setup(tone::lucidity, 192);
@@ -127,102 +89,119 @@ int main(int argc, char* argv[])
         skin::setup(tone::bordersz, dot_11);
     }
 
-    if (client)
+    if (whoami == type::server)
     {
-        os::start_log("vtm");
-
-        auto link = os::ipc::open<os::client>(path, 10s, [&]()
-                    {
-                        log("main: new desktop environment for user ", user);
-                        auto binary = view{ argv[0] };
-                        utf::trim_front(binary, "-"); // Sometimes "-" appears before executable.
-                        return os::exec(text{ binary }, "-d");
-                    });
-        if (!link)
+        banner();
+        auto userid = os::user();
+        auto usernm = os::get_env("USER");
+        auto hostip = os::get_env("SSH_CLIENT");
+        auto prefix = utf::concat(DESKTOPIO_PREFIX, userid);
+        auto server = os::ipc::open<os::server>(prefix);
+        if (!server)
         {
-            log("main: error: no desktop server connection");
+            log("main: error: can't start desktopio server");
             return 1;
         }
-
-        auto host = os::get_env("SSH_CLIENT");
-        auto name = os::get_env("USER");
-        auto mode = os::legacy_mode();
-
-        link->send(utf::concat(spot, ";",
-                               host, ";",
-                               name, ";",
-                               user, ";",
-                               mode, ";"));
-        auto gate = os::tty::proxy(link);
-        if (gate.ignite())
-        {
-            gate.output(ansi::esc{}.save_title()
-                                   .altbuf(true)
-                                   .vmouse(true)
-                                   .cursor(faux)
-                                   .bpmode(true)
-                                   .setutf(true));
-            gate.splice(mode);
-            gate.output(ansi::esc{}.scrn_reset()
-                                   .vmouse(faux)
-                                   .cursor(true)
-                                   .altbuf(faux)
-                                   .bpmode(faux)
-                                   .load_title());
-        }
-
-        std::this_thread::sleep_for(200ms); // Pause to complete consuming/receiving buffered input (e.g. mouse tracking) that has just been canceled.
-    }
-    else
-    {
-        auto link = os::ipc::open<os::server>(path);
-        if (!link)
-        {
-            log("main: error: can't start desktop server");
-            return 1;
-        }
-
         auto srvlog = syslog.tee<events::try_sync>([](auto utf8) { SIGNAL_GLOBAL(e2::debug::logs, utf8); });
+        auto ground = base::create<hall>(server, maxfps);
+        auto thread = os::pool{};
+        app::shared::init_app_registry(ground);
 
-        log("main: listening socket ", link,
-                         "\n\tuser: ", user,
-                         "\n\tpipe: ", path);
+        log("main: listening socket ", server,
+                         "\n\tuser: ", userid,
+                         "\n\tpipe: ", prefix);
 
-        auto world = base::create<host>(link);
-        app::shared::init_app_registry(world);
-
-        world->SIGNAL(tier::general, e2::config::fps, 60);
-
-        auto session = os::pool{};
-        while (auto peer = link->meet())
+        while (auto client = server->meet())
         {
-            if (!peer->cred(user))
+            if (!client->cred(userid))
             {
                 log("main: abort: foreign users are not allowed to the session");
                 continue;
             }
 
-            auto lock = session.lock();
-            auto conf = console::conf(peer, session.next());
-            log("main: incoming connection:", conf);
-
-            conf.background_color = app::shared::background_color; //todo unify
-
-            session.run([&, peer, conf]()
+            thread.run([&, client](auto session_id)
             {
-                if (auto client = world->invite<ui::gate>())
-                {
-                    log("user: new gate for ", peer);
-                    auto deskmenu = app::shared::creator("Desk")(utf::concat(client->id, ";", conf.os_user_id));
-                    auto bkground = app::shared::creator("Fone")("Shop;Demo;");
-                    client->run(deskmenu, bkground, peer, conf);
+                auto config = console::conf(client, session_id);
+                config.background_color = app::shared::background_color; //todo unify
+                log("user: incoming connection:", config);
 
-                    world->resign(client);
-                    log("user: ", peer, " logged out");
+                if (auto window = ground->invite<gate>(config))
+                {
+                    log("user: new gate for ", client);
+                    auto deskmenu = app::shared::creator(app::shared::type_Desk)("", utf::concat(window->id, ";", config.os_user_id));
+                    auto bkground = app::shared::creator(app::shared::type_Fone)("", "gems; About; ");
+                    window->launch(client, deskmenu, bkground);
+                    log("user: ", client, " logged out");
                 }
             });
         }
 
         SIGNAL_GLOBAL(e2::conio::quit, "main: server shutdown");
+        ground->shutdown();
+    }
+    else
+    {
+        if (whoami == type::client)
+        {
+            banner();
+            auto direct = !!(vtmode & os::legacy::direct);
+            if (!direct) os::start_log(DESKTOPIO_MYPATH);
+            auto userid = os::user();
+            auto usernm = os::get_env("USER");
+            auto hostip = os::get_env("SSH_CLIENT");
+            auto prefix = utf::concat(DESKTOPIO_PREFIX, userid);
+            auto client = os::ipc::open<os::client>(prefix, 10s, [&]()
+                        {
+                            log("main: new desktopio environment for user ", userid);
+                            auto binary = os::current_module_file();
+                            return os::exec(binary, "-d");
+                        });
+            if (!client)
+            {
+                log("main: error: no desktopio server connection");
+                return 1;
+            }
+            client->send(utf::concat(hostip, ";",
+                                     usernm, ";",
+                                     userid, ";",
+                                     vtmode, ";"));
+            auto cons = os::tty::proxy(client);
+            auto size = cons.ignite(vtmode);
+            if (size.last)
+            {
+                os::ipc::splice(cons, vtmode);
+            }
+        }
+        else if (whoami == type::runapp)
+        {
+            //todo unify
+            auto menusz = 3;
+            auto shadow = params;
+            utf::to_low(shadow);
+                 if (shadow.starts_with("text"))       log("Desktopio Text Editor (DEMO) " DESKTOPIO_VER);
+            else if (shadow.starts_with("calc"))       log("Desktopio Spreadsheet (DEMO) " DESKTOPIO_VER);
+            else if (shadow.starts_with("gems"))       log("Desktopio App Manager (DEMO) " DESKTOPIO_VER);
+            else if (shadow.starts_with("test"))       log("Desktopio App Testing (DEMO) " DESKTOPIO_VER);
+            else if (shadow.starts_with("logs"))       log("Desktopio Log Console "        DESKTOPIO_VER);
+            else if (shadow.starts_with("term"))       log("Desktopio Terminal "           DESKTOPIO_VER);
+            else if (shadow.starts_with("truecolor"))  log("Desktopio ANSI Art "           DESKTOPIO_VER);
+            else if (shadow.starts_with("headless"))   log("Desktopio Headless Terminal "  DESKTOPIO_VER);
+            else if (shadow.starts_with("settings"))   log("Desktopio Settings "           DESKTOPIO_VER);
+            else
+            {
+                menusz = 1;
+                params = DESKTOPIO_DEFAPP + " "s + params;
+                log(DESKTOPIO_APPINF);
+            }
+
+            skin::setup(tone::brighter, 0);
+
+            auto success = app::shared::start(params, DESKTOPIO_MYPATH, vtmode, maxfps, menusz);
+            if (!success)
+            {
+                log("main: console initialization error");
+                return 1;
+            }
+        }
     }
 }
