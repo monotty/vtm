@@ -39,6 +39,7 @@ namespace netxs::utf
     static constexpr auto REPLACEMENT_CHARACTER_UTF8_LEN  = size_t{ 3 };
     static constexpr auto REPLACEMENT_CHARACTER_UTF8_VIEW = view(REPLACEMENT_CHARACTER_UTF8, REPLACEMENT_CHARACTER_UTF8_LEN); // '�'
     static constexpr auto WHITESPACE_CHARACTER_UTF8_VIEW  = view(" ", 1); // ' '
+    static constexpr auto view_spaces                     = view{ " \n\r\t", 4 };
     static constexpr auto spaces                          = " \n\r\t";
 
     // utf: A grapheme cluster decoded from UTF-8.
@@ -381,6 +382,15 @@ namespace netxs::utf
     {
         using span = std::span<char>;
 
+        struct hash
+        {
+            auto operator()(qiew key) const { return std::hash<view>{}(key); }
+        };
+        struct equal
+        {
+            auto operator()(qiew lhs, qiew rhs) const { return lhs.compare(rhs) == 0; }
+        };
+
         auto     pop_front () { auto c = view::front(); view::remove_prefix(1); return c; }
         si32     front     () const { return static_cast<unsigned char>(view::front()); }
         operator bool      () const { return view::length(); }
@@ -390,6 +400,7 @@ namespace netxs::utf
         constexpr qiew(span const& v) noexcept : view(v.data(), v.size()) { }
         constexpr qiew(view const& v) noexcept : view(v) { }
                   qiew(text const& v) noexcept : view(v) { }
+                  qiew(char const& v) noexcept : view(&v, 1) { }
         template<class T, class ...Args>
         constexpr qiew(T* ptr, Args&&... len) noexcept : view(ptr, std::forward<Args>(len)...) { }
         constexpr qiew& operator = (qiew const&) noexcept = default;
@@ -407,7 +418,7 @@ namespace netxs::utf
             }
             return n;
         }
-        // Pop front a sequence of the same control points and return their count + 1.
+        // Pop front a sequence of the same chars and return their count + 1.
         auto pop_all(char c)
         {
             auto n = si32{ 1 };
@@ -441,30 +452,30 @@ namespace netxs::utf
         }
     };
 
-    template<class A = si32, class VIEW, class = std::enable_if_t<std::is_base_of<view, VIEW>::value == true, VIEW>>
+    template<class A = si32, si32 Base = 10, class VIEW, class = std::enable_if_t<std::is_base_of<view, VIEW>::value == true, VIEW>>
     inline std::optional<A> to_int(VIEW& ascii)
     {
         auto num = A{};
         auto top = ascii.data();
         auto end = ascii.length() + top;
 
-        if (auto [pos, err] = std::from_chars(top, end, num); err == std::errc())
+        if (auto [pos, err] = std::from_chars(top, end, num, Base); err == std::errc())
         {
             ascii.remove_prefix(pos - top);
             return num;
         }
         else return std::nullopt;
     }
-    template<class A = si32, class T, class = std::enable_if_t<std::is_base_of<view, T>::value == faux, T>>
+    template<class A = si32, si32 Base = 10, class T, class = std::enable_if_t<std::is_base_of<view, T>::value == faux, T>>
     inline auto to_int(T&& utf8)
     {
         auto shadow = view{ std::forward<T>(utf8) };
-        return to_int<A>(shadow);
+        return to_int<A, Base>(shadow);
     }
-    template<class T, class A>
+    template<si32 Base = 10, class T, class A>
     inline auto to_int(T&& utf8, A fallback)
     {
-        auto result = to_int<A>(std::forward<T>(utf8));
+        auto result = to_int<A, Base>(std::forward<T>(utf8));
         return result ? result.value() : fallback;
     }
     enum codepage
@@ -1171,11 +1182,11 @@ namespace netxs::utf
     {
         static constexpr auto nums = UCASE ? "0123456789ABCDEF"
                                            : "0123456789abcdef";
-        auto part = -4 + 4*width;
+        auto part = -4 + 4 * width;
         while (width--)
         {
             crop.push_back(nums[(number >> part) & 0x0f]);
-            part  -= 4;
+            part -= 4;
         }
         return crop;
     }
@@ -1253,7 +1264,7 @@ namespace netxs::utf
     template<class V1, class V2>
     auto divide(V1 const& utf8, V2 const& delimiter)
     {
-        auto mark = text(delimiter);
+        auto mark = qiew(delimiter);
         auto crop = std::vector<view>{};
 
         if (auto len = mark.size())

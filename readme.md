@@ -35,8 +35,7 @@ Text-based desktop environment inside your terminal*
   - OpenBSD
   - [`...`](https://en.wikipedia.org/wiki/POSIX#POSIX-oriented_operating_systems)
 - MS Windows
-  - Windows Desktop
-  - Windows Server
+  - Windows Server/Desktop/PE ([approx since Win8/2012](https://en.wikipedia.org/wiki/List_of_Microsoft_Windows_versions))
 
 # Building from Source
 
@@ -55,23 +54,36 @@ git clone https://github.com/netxs-group/vtm.git && cd ./vtm
 cmake ./src -DCMAKE_BUILD_TYPE=Release
 cmake --build .
 cmake --install .
+vtm
 ```
 
 ### Windows
 
 Build-time dependencies
- - `git`
- - `cmake`
- - `Visual Studio 2019` or later
+ - [`git`](https://git-scm.com/download/win)
+ - [`cmake`](https://learn.microsoft.com/en-us/cpp/build/cmake-projects-in-visual-studio?view=msvc-170#installation)
+ - [`Visual Studio 2019`](https://visualstudio.microsoft.com/downloads/) or later (Desktop development with C++)
  - `UTF-8` for worldwide language support, https://github.com/netxs-group/vtm/issues/175#issuecomment-1034734346
 
 Use `Developer Command Prompt` as a build environment
+
+`Visual Studio 2019`:
 ```cmd
-git clone https://github.com/netxs-group/vtm.git && cd ./vtm
+git clone https://github.com/netxs-group/vtm.git
+cd ./vtm
 cmake ./src -DCMAKE_BUILD_TYPE=Release "-GVisual Studio 16 2019"
 cmake --build . --config Release
-cd ./Release
-powershell ../src/install/install.ps1
+cd Release
+vtm
+```
+`Visual Studio 2022`:
+```cmd
+git clone https://github.com/netxs-group/vtm.git
+cd ./vtm
+cmake ./src -DCMAKE_BUILD_TYPE=Release "-GVisual Studio 17 2022"
+cmake --build . --config Release
+cd Release
+vtm
 ```
 
 # Binaries
@@ -85,22 +97,13 @@ powershell ../src/install/install.ps1
 
 ---
 
-# Command Line Options `vtm(.exe)`
-
-Option       | Description
--------------|-------------------------------------------------------
-No arguments | Run client (auto start server)
-` -d `       | Run server in background
-` -s `       | Run server in interactive mode
-` -r [<app>]`| Run the specified `<app>` in offline mode<br>`Term` Terminal emulator (default)<br>`Calc` (Demo) Spreadsheet calculator<br>`Text` (Demo) Text editor<br>`Gems` (Demo) Desktopio application manager
-
 # User Interface
 
 <table>
 <thead>
   <tr>
     <th rowspan="2"></th>
-    <th colspan="3">Sidebar</th>
+    <th colspan="3">Taskbar</th>
     <th colspan="4">App window</th>
     <th colspan="2">Desktop</th>
   </tr>
@@ -160,6 +163,12 @@ No arguments | Run client (auto start server)
     <td></td>
   </tr>
   <tr>
+    <th>MiddleClick</th>
+    <td colspan="5"></td>
+    <td colspan="1">Selection paste</td>
+    <td colspan="3"></td>
+  </tr>
+  <tr>
     <th>Left+RightClick</th>
     <td colspan="3"></td>
     <td colspan="5">Clear clipboard</td>
@@ -167,7 +176,7 @@ No arguments | Run client (auto start server)
   </tr>
   <tr>
     <th>LeftDrag</th>
-    <td colspan="3">Adjust sidebar width</td>
+    <td colspan="3">Adjust taskbar width</td>
     <td colspan="5">Move window or Select text</td>
     <td>Panoramic workspace scrolling</td>
   </tr>
@@ -190,7 +199,8 @@ No arguments | Run client (auto start server)
   </tr>
   <tr>
     <th>Ctrl+LeftDrag</th>
-    <td colspan="9">Modify selection</td>
+    <td colspan="3">Adjust folded width</td>
+    <td colspan="6">Modify selection</td>
   </tr>
   <tr>
   <tr>
@@ -214,59 +224,190 @@ No arguments | Run client (auto start server)
 </tbody>
 </table>
 
+# Command line Options `vtm(.exe)`
 
-# Main Menu Configuration
+ `vtm [ -c <config_file> ] [ -l | -d | -s | -r [<app> [<args...>]] ]`
 
-The main menu can be configured in the `~/.config/vtm/settings.xml` file in xml format.
+Option         | Description
+---------------|-------------------------------------------------------
+No arguments   | Run client (auto start server)
+` -c <file> `  | Use specified configuration file
+` -l `         | Show configuration and exit
+` -d `         | Run server in background
+` -s `         | Run server in interactive mode
+` -r [<app>] ` | Run the specified `<app>` in offline mode<br>`Term` Terminal emulator (default)<br>`Calc` (Demo) Spreadsheet calculator<br>`Text` (Demo) Text editor<br>`Gems` (Demo) Desktopio application manager
 
-The top-level element `<config selected=_selected_id_>` contains a list of
-  - menu items `<menuitem ... />`
-  - splitters `<splitter ... />`
-  - default attribute definitions `<defaults ... />`.
+Configuration file location precedence (descending priority):<br>
+1. Command line options `vtm -c path/to/settings.xml`<br>
+2. Environment variable `VTM_CONFIG=path/to/settings.xml`<br>
+3. Hardcoded location `~/.config/vtm/settings.xml`<br>
+4. Use predefined configuration at apps.hpp(~line:28)
 
-The value of the `selected=` attribute specifies which menu item will be selected by default at startup.
+# Settings
 
-The list of main menu items can be extended using the `VTM_CONFIG=...` environment variable. This variable should contain a list of items as inside the `<config selected=_selected_id_> ... </config>` block.
+vtm can be configured in the `~/.config/vtm/settings.xml` file in xml format. Alternative configuration file location can be specified using command line option ` -c <config_file> ` or using environment variable VTM_CONFIG.
 
-Arguments can be specified without quotes if there are no spaces.
+## Configuration file Format (settings.xml)
 
-#### Character escapes
+Configuration file format is a slightly modified XML-format which allows to store hierarchical list of key=value pairs.
 
- - `\e`  ASCII 0x1B ESC
- - `\t`  ASCII 0x09 TAB
- - `\a`  ASCII 0x07 BEL
- - `\n`  ASCII 0x0A LF
- - `\\`  ASCII 0x5C Backslash
- - `\"`  ASCII 0x22 Quotes
- - `\'`  ASCII 0x27 Single quote
- - `$0`  Current module full path
+### Key differences from the standard XML
 
-#### Menu item attributes
+ - All stored values are UTF-8 strings:
+   - `name=2000` and `name="2000"` has the same meaning.
+ - There is no distinction between XML-attribute and XML-subobject, i.e. any attributes are sub-objects:
+   - `<name param=value />` and `<name> <param=value /> </name>` has the same meaning.
+ - In addition to a set of sub-objects each object can contain its own text value:
+   - E.g. `<name=names_value param=params_value />`.
+ - Each object can be defined in any way, either using an XML-attribute or an XML-subobject syntax:
+   - `<... name=value />`, `<...> <name> "value" </name> </...>`, and `<...> <name=value /> </...>` has the same meaning.
+ - The object name that ending in an asterisk indicates that this object is not an object, but it is a template for all subsequent objects with the same name in the same scope. See `Template Example` below.
+ - Character escapes
+   - `\e`  ASCII 0x1B ESC
+   - `\t`  ASCII 0x09 TAB
+   - `\a`  ASCII 0x07 BEL
+   - `\n`  ASCII 0x0A LF
+   - `\\`  ASCII 0x5C Backslash
+   - `\"`  ASCII 0x22 Quotes
+   - `\'`  ASCII 0x27 Single quote
+   - `$0`  Current module full path
 
-Attribute  | Description                       | Value type | Mandatory | Default value
------------|-----------------------------------|------------|-----------|---------------
-`id`       |  Menu item textual identifier     | `string`   | required  | 
-`index`    |  Menu item zero-based index       | `index`    |           | 
-`alias`    |  Use existing menu item specified by `id` as template  | `string` | |
-`hidden`   |  Menu item visibility             | `boolean`  |           | `no`
-`label`    |  Menu item label text             | `string`   |           | =`id`
-`notes`    |  Menu item tooltip text           | `string`   |           | empty
-`title`    |  App window title                 | `string`   |           | empty
-`footer`   |  App window footer                | `string`   |           | empty
-`bgcolor`  |  App window background color      | `RGBA`     |           |
-`fgcolor`  |  App window foreground color      | `RGBA`     |           |
-`winsize`  |  App window 2D size               | `x;y`      |           |
-`slimmenu` |  App window menu vertical size    | `boolean`  |           | `no`
-`cwd`      |  Current working directory        | `string`   |           |
-`type`     |  App type                         | `string`   |           | `SHELL`
-`param`    |  App constructor arguments        | `string`   |           | empty
+Consider the following object hierarchy
 
-#### Value type
+- \<document\> - Top-level element
+  - \<thing\> - Second level element
+    - \<name\> - Third level element
+
+The following forms of element declaration are equivalent
+
+```xml
+<document>
+    <thing name="a">text1</thing>
+    <thing name="b">text2</thing>
+</document>
+```
+
+```xml
+<document>
+    <thing="text1" name="a"/>
+    <thing="text2" name="b"/>
+</document>
+```
+
+```xml
+<document>
+    <thing name="a">
+        "text1"
+    </thing>
+    <thing name="b">
+        "text2"
+    </thing>
+</document>
+```
+
+```xml
+<document>
+    <thing>
+        "text1"
+        <name="a"/>
+    </thing>
+    <thing>
+        <name="b"/>
+        "text2"
+    </thing>
+</document>
+```
+
+```xml
+<document>
+    <thing="t">
+        "ext"
+        <name>
+            "a"
+        </name>
+        "1"
+    </thing>
+    <thing>
+        <name>
+            "b"
+        </name>
+        "text"
+        "2"
+    </thing>
+</document>
+```
+
+#### Templates
+
+Use asterisk at the end of the element name to set defaults. Using an asterisk with the parameter name of the first element in the list without any other nested arguments indicates the beginning of the list, i.e. the list will replace the existing one when the configuration is merged.
+
+The following declarations are the same
+
+```xml
+<document>
+    <thing name="text">another_text</thing>
+    <thing name="text">another_text</thing>
+</document>
+```
+
+```xml
+<document>
+    <thing* name="text"/> <!-- skip this element and set name="text" as default for the following things -->
+    <thing>another_text</thing>
+    <thing>another_text</thing>
+</document>
+```
+
+```xml
+<document>
+    <thing* name="text"/>
+    <thing="another_text"/>
+    <thing="another_text"/>
+</document>
+```
+
+```xml
+<document>
+    <thing*="another_text" name="text"/>  <!-- skip this element and set thing="another_text" and name="text" as default for the following things -->
+    <thing/>
+    <thing/>
+</document>
+```
+
+### Configuration Structure
+
+Top-level element `<config>` contains the following base objects
+  - Single `<menu>` block - taskbar menu configuration.
+    - Single `<selected>` object - the value of this attribute specifies which menu item id will be selected by default at the environment startup.
+    - Set of `<item>` objects - a list of menu item definitions.
+    - Not implemented: Single `<autorun>` block - a list of menu item to run at the environment startup.
+  - Not implemented: Single `<hotkeys>` block - a global hotkeys/shortcuts configuration.
+
+#### Taskbar menu item attributes
+
+Attribute  | Description                                       | Value type | Mandatory | Default value
+-----------|---------------------------------------------------|------------|-----------|---------------
+`id`       |  Item textual identifier                          | `string`   | required  |
+`alias`    |  Use existing item specified by `id` as template  | `string`   |           |
+`hidden`   |  Item visibility                                  | `boolean`  |           | `no`
+`label`    |  Item label text                                  | `string`   |           | =`id`
+`notes`    |  Item tooltip text                                | `string`   |           | empty
+`title`    |  App window title                                 | `string`   |           | empty
+`footer`   |  App window footer                                | `string`   |           | empty
+`bgc`      |  App window background color                      | `RGBA`     |           |
+`fgc`      |  App window foreground color                      | `RGBA`     |           |
+`winsize`  |  App window 2D size                               | `x;y`      |           |
+`slimmenu` |  App window menu vertical size                    | `boolean`  |           | `no`
+`cwd`      |  Current working directory                        | `string`   |           |
+`type`     |  App type                                         | `string`   |           | `SHELL`
+`param`    |  App constructor arguments                        | `string`   |           | empty
+
+#### Value literals
 
 Type     | Format
 ---------|-----------------
 `RGBA`   |  `#rrggbbaa` \| `0xaabbggrr` \| `rrr,ggg,bbb,aaa` \| 256-color index
-`boolean`|  `true` \| `false` \| `yes` \| `no` \| `1` \| `0`
+`boolean`|  `true` \| `false` \| `yes` \| `no` \| `1` \| `0` \| `on` \| `off`
 `index`  |  0 .. N
 `string` |  _UTF-8 text string_
 `x;y`    |  _integer_ <any_delimeter> _integer_
@@ -281,37 +422,272 @@ Type              | Parameter
 `Group`           | [ v[`n:m:w`] \| h[`n:m:w`] ] ( id_1 \| _nested_block_ , id_2 \| _nested_block_ )]
 `Region`          | `param` attribute is not used, use attribute `title=_view_title_` to set region name
 
-#### Example of `~/.config/vtm/settings.xml`
+### Configuration Example
 
-```
-<config selected=Term>
-    <splitter label="apps"/>
-    <defaults index=-1 hidden=no slimmenu=false type=SHELL fgcolor=#00000000 bgcolor=#00000000 winsize=0x0 wincoor=0x0 />
-    <menuitem id=Term index=1 label="Term" bgcolor=#0a0a0a fgcolor=15 slimmenu notes="$0 -r Term:\nTerminal emulator" type=DirectVT param="$0 -r term bash"/>
-    <menuitem id=mc label="mc" title="mc" notes="Midnight Commander" type=SHELL param="mc"/>
-    <menuitem id=Settings index=2 label="Settings \e[45mLink\e[m" title="Settings title" footer="\e[11:2psettings status" fgcolor=15 bgcolor=0xFF562401 notes="$0\n\tRun settings" type=DirectVT param="$0 -r settings"/>
-    <menuitem id=View label=View notes="Set desktop region" type=Region title="\e[11:3pView: Region"/>"
-    <splitter label="groups"/>
-    <menuitem id=Tile1 label="Tile" notes="Tiling window manager" type=Group param="h(Term, v(mc, Term))"/>
-    <menuitem id=Tile2 label="Second TWM"
-                       notes="Tooltip for Tiling window manager"
-                       type=Group
-                       param="h(v(Term, Tile1), v(mc, Term))"/>
+Note: The following configuration sections are not implemented yet
+- config/menu/item/hotkeys
+- config/menu/autorun
+- config/hotkeys
+
+`~/.config/vtm/settings.xml`
+```xml
+<config>
+    <menu>
+        <selected=Term /> <!-- Set selected using menu item id. -->
+        <item*/>  <!-- Use asterisk at the end of the element name to set defaults.
+                       Using an asterisk with the parameter name of the first element in the list without any other nested arguments
+                       indicates the beginning of the list, i.e. the list will replace the existing one when the configuration is merged. -->
+        <item splitter label="apps">
+            <notes> 
+                " Default applications group                         \n"
+                " It can be configured in ~/.config/vtm/settings.xml "
+            </notes>
+        </item>
+        <item* hidden=no slimmenu=false type=SHELL fgc=whitedk bgc=0x00000000 winsize=0,0 wincoor=0,0 />
+        <item id=Term label="cmd" type=DirectVT title="Command Prompt" notes=" run Windows Command Prompt " param="$0 -r term"/>
+        <item id=Term label="Term" type=DirectVT title="Terminal Emulator" notes=" run built-in Terminal " param="$0 -r term">
+            <hotkeys>    <!-- not implemented -->
+                <key*/>
+                <key="Ctrl+'t'" action=start />
+                <key="Ctrl+'z'" action=close />
+            </hotkeys>
+            <config>   <!-- not implemented, only base config applied -->  <!-- The following config partially overrides the base configuration. It is valid for DirectVT apps only. -->
+                <term>
+                    <scrollback>
+                        <size=20000    />   <!-- Scrollback buffer length. -->
+                        <growstep=0    />   <!-- Scrollback buffer grow step. The buffer behaves like a ring in case of zero. -->
+                        <maxline=65535 />   <!-- Max line length. Line splits if it exceeds the limit. -->
+                        <wrap="on"     />   <!-- Lines wrapping mode. -->
+                    </scrollback>
+                    <color>
+                        <color0  = blackdk    /> <!-- See /config/set/* for the color name reference. -->
+                        <color1  = reddk      />
+                        <color2  = greendk    />
+                        <color3  = yellowdk   />
+                        <color4  = bluedk     />
+                        <color5  = magentadk  />
+                        <color6  = cyandk     />
+                        <color7  = whitedk    />
+                        <color8  = blacklt    />
+                        <color9  = redlt      />
+                        <color10 = greenlt    />
+                        <color11 = yellowlt   />
+                        <color12 = bluelt     />
+                        <color13 = magentalt  />
+                        <color14 = cyanlt     />
+                        <color15 = whitelt    />
+                        <default bgc=0 fgc=15 />  <!-- Initial colors. -->
+                        <match fx=selection bgc="0xFF007F00" fgc=whitelt />  <!-- Color of the selected text occurrences. Set fx to use cell::shaders: xlight | selection | contrast | invert | reverse -->
+                        <selection>
+                            <text fx=selection bgc=bluelt fgc=whitelt />  <!-- Highlighting of the selected text in plaintext mode. -->
+                            <ansi fx=xlight/>
+                            <rich fx=xlight/>
+                            <html fx=xlight/>
+                            <none fx=selection bgc=blacklt fgc=whitedk />  <!-- Inactive selection color. -->
+                        </selection>
+                    </color>
+                    <fields>
+                        <lucent=0xC0 /> <!-- Fields transparency level. -->
+                        <size=0 />      <!-- Left/right field size. -->
+                    </fields>
+                    <tablen=8 />        <!-- Tab length. -->
+                    <cursor>
+                        <style="underline"/> <!-- block | underline  -->
+                        <blink=400ms/>       <!-- blink period -->
+                        <show=true/>
+                    </cursor>
+                    <menu>
+                        <enabled="on"/>
+                        <slim="false"/>
+                    </menu>
+                    <selection>
+                        <mode="text"/> <!-- text | ansi | rich | html | none -->
+                    </selection>
+                    <hotkeys>    <!-- not implemented -->
+                        <key*/>
+                        <key="Alt+RightArrow" action=findNext />
+                        <key="Alt+LeftArrow"  action=findPrev />
+                    </hotkeys>
+                </term>
+            </config>
+        </item>
+        <item id=PowerShell label="PowerShell" type=DirectVT title="PowerShell"                  param="$0 -r term powershell" fgc=15 bgc=0xFF562401 notes=" run PowerShell "/>
+        <item id=WSL        label="WSL"        type=DirectVT title="Windows Subsystem for Linux" param="$0 -r term wsl"                              notes=" run default WSL profile "/>
+   <!-- <item id=Far        label="Far"        type=SHELL    title="Far Manager"                 param="far"                                         notes=" run Far Manager in its own window "/> -->
+   <!-- <item id=mc         label="mc"         type=SHELL    title="Midnight Commander"    param="mc"               notes=" run Midnight Commander in its own window "/> -->
+        <item id=Tile       label="Tile"       type=Group    title="Tiling Window Manager" param="h1:1(Term, Term)" notes=" run Tiling Window Manager with two terminals attached "/>
+        <item id=View       label=View         type=Region   title="\e[11:3pView: Region"                           notes=" set desktop region "/>
+        <item id=Settings   label=Settings     type=DirectVT title="Settings"              param="$0 -r settings"   notes=" run Settings " winsize=50,15 />
+        <item id=Logs       label=Logs         type=DirectVT title="Logs Title"            param="$0 -r logs"       notes=" run Logs "/>
+   <!-- <item splitter label="demo" notes=" Demo apps                    \n Feel the Desktopio Framework "/> -->
+   <!-- <item id=Gems       label="Gems"       type=DirectVT title="Gems Title"            param="$0 -r gems"       notes=" App Distribution Hub "/> -->
+   <!-- <item id=Text       label="Text"       type=DirectVT title="Text Title"            param="$0 -r text"       notes=" Text Editor "/> -->
+   <!-- <item id=Calc       label="Calc"       type=DirectVT title="Calc Title"            param="$0 -r calc"       notes=" Spreadsheet Calculator "/> -->
+   <!-- <item id=Test       label="Test"       type=DirectVT title="Test Title"            param="$0 -r test"       notes=" Test Page "/> -->
+   <!-- <item id=Truecolor  label="Truecolor"  type=DirectVT title="True Title"            param="$0 -r truecolor"  notes=" Truecolor Test "/> -->
+        <autorun>    <!-- not implemented -->
+            <item*/>
+            <item*=Term winsize=48%,48% /> <!-- item*=_item_id_ - assign the same _item_id_ to each item by default. -->
+            <item wincoor=0,0 />
+            <item wincoor=52%,0 />
+            <item wincoor=0,52% />
+            <item=mc wincoor=52%,52% />
+        </autorun>
+        <width>    <!-- not implemented -->
+            <folded=4/>
+            <expanded=31/>
+        </width>
+    </menu>
+    <hotkeys>    <!-- not implemented -->
+        <key*/>
+        <key="Ctrl+PgUp" action=prevWindow />
+        <key="Ctrl+PgDn" action=nextWindow />
+    </hotkeys>
+    <appearance>
+        <defaults>
+            <fps      = 60   />
+            <bordersz = 1,1  />
+            <brighter = 60   />
+            <kb_focus = 60   />
+            <shadower = 180  />
+            <shadow   = 180  />
+            <lucidity = 0xff /> <!-- not implemented -->
+            <selector = 48   />
+            <highlight  fgc=purewhite  bgc=亮蓝       />
+            <warning    fgc=whitelt    bgc=yellowdk   />
+            <danger     fgc=whitelt    bgc=redlt      />
+            <action     fgc=whitelt    bgc=greenlt    />
+            <label      fgc=blackdk    bgc=whitedk    />
+            <inactive   fgc=blacklt    bgc=nocolor    />
+            <menu_white fgc=whitelt    bgc=0x80404040 />
+            <menu_black fgc=blackdk    bgc=0x80404040 />
+        </defaults>
+        <runapp>    <!-- Override defaults. -->
+            <brighter=0 />
+        </runapp>
+    </appearance>
+    <set>         <!-- Global namespace - Unresolved literals will be taken from here. -->
+        <blackdk   = 0xFF101010 /> <!-- Color reference literals. -->
+        <reddk     = 0xFF1f0fc4 />
+        <greendk   = 0xFF0ea112 />
+        <yellowdk  = 0xFF009cc0 />
+        <bluedk    = 0xFFdb3700 />
+        <magentadk = 0xFF981787 />
+        <cyandk    = 0xFFdd963b />
+        <whitedk   = 0xFFbbbbbb />
+        <blacklt   = 0xFF757575 />
+        <redlt     = 0xFF5648e6 />
+        <greenlt   = 0xFF0cc615 />
+        <yellowlt  = 0xFFa5f1f8 />
+        <bluelt    = 0xFFff783a />
+        <magentalt = 0xFF9e00b3 />
+        <cyanlt    = 0xFFd6d660 />
+        <whitelt   = 0xFFf3f3f3 />
+        <pureblack = 0xFF000000 />
+        <purewhite = 0xFFffffff />
+        <nocolor   = 0x00000000 />
+
+        <黑     = blackdk   /> <!-- Localized color reference literals. -->
+        <红     = reddk     />
+        <绿     = greendk   />
+        <黄     = yellowdk  />
+        <蓝     = bluedk    />
+        <品红   = magentadk />
+        <青     = cyandk    />
+        <白     = whitedk   />
+        <灰     = blacklt   />
+        <亮红   = redlt     />
+        <亮绿   = greenlt   />
+        <亮黄   = yellowlt  />
+        <亮蓝   = bluelt    />
+        <亮品红 = magentalt />
+        <亮青   = cyanlt    />
+        <亮白   = whitelt   />
+    </set>
+    <client>
+        <background fgc=whitedk bgc=0xFF000000 />  <!-- Desktop background color. -->
+        <clipboard>
+            <preview enabled=true size=80x25 />
+        </clipboard>
+        <viewport coor=0,0 />
+        <tooltip timeout=500ms enabled=true />
+        <glowfx=true />                      <!-- Show glow effect around selected item. -->
+        <debug overlay=faux toggle="🐞" />  <!-- Display console debug info. -->
+        <regions enabled=faux />             <!-- Highlight UI objects boundaries. -->
+    </client>
+    <term>      <!-- Base configuration for the Term app. It can be partially overridden by the menu item's config subarg. -->
+        <scrollback>
+            <size=20000    />   <!-- Scrollback buffer length. -->
+            <growstep=0    />   <!-- Scrollback buffer grow step. The buffer behaves like a ring in case of zero. -->
+            <maxline=65535 />   <!-- Max line length. Line splits if it exceeds the limit. -->
+            <wrap="on"     />   <!-- Lines wrapping mode. -->
+        </scrollback>
+        <color>
+            <color0  = blackdk    /> <!-- See /config/set/* for the color name reference. -->
+            <color1  = reddk      />
+            <color2  = greendk    />
+            <color3  = yellowdk   />
+            <color4  = bluedk     />
+            <color5  = magentadk  />
+            <color6  = cyandk     />
+            <color7  = whitedk    />
+            <color8  = blacklt    />
+            <color9  = redlt      />
+            <color10 = greenlt    />
+            <color11 = yellowlt   />
+            <color12 = bluelt     />
+            <color13 = magentalt  />
+            <color14 = cyanlt     />
+            <color15 = whitelt    />
+            <default bgc=0 fgc=15 />  <!-- Initial colors. -->
+            <match fx=selection bgc="0xFF007F00" fgc=whitelt />  <!-- Color of the selected text occurrences. Set fx to use cell::shaders: xlight | selection | contrast | invert | reverse -->
+            <selection>
+                <text fx=selection bgc=bluelt fgc=whitelt />  <!-- Highlighting of the selected text in plaintext mode. -->
+                <ansi fx=xlight/>
+                <rich fx=xlight/>
+                <html fx=xlight/>
+                <none fx=selection bgc=blacklt fgc=whitedk />  <!-- Inactive selection color. -->
+            </selection>
+        </color>
+        <fields>
+            <lucent=0xC0 /> <!-- Fields transparency level. -->
+            <size=0      /> <!-- Left/right field size (for hz scrolling UX). -->
+        </fields>
+        <tablen=8 />   <!-- Tab length. -->
+        <cursor>
+            <style="underline"/> <!-- block | underline  -->
+            <blink=400ms/>       <!-- blink period -->
+            <show=true/>
+        </cursor>
+        <menu>
+            <enabled="on"/>
+            <slim=true />
+        </menu>
+        <selection>
+            <mode="text"/> <!-- text | ansi | rich | html | none -->
+        </selection>
+        <hotkeys>    <!-- not implemented -->
+            <key*/>
+            <key="Alt+RightArrow" action=findNext />
+            <key="Alt+LeftArrow"  action=findPrev />
+        </hotkeys>
+    </term>
+    <text>      <!-- Base configuration for the Text app. It can be overridden by param's subargs. -->
+        <!-- not implemented -->
+    </text>
+    <calc>      <!-- Base configuration for the Calc app. It can be overridden by param's subargs. -->
+        <!-- not implemented -->
+    </calc>
+    <logs>      <!-- Base configuration for the Logs app. It can be overridden by param's subargs. -->
+        <!-- not implemented -->
+    </logs>
+    <settings>      <!-- Base configuration for the Settings app. It can be overridden by param's subargs. -->
+        <!-- not implemented -->
+    </settings>
 </config>
 ```
 
 Note: `$0` will be expanded to the fully qualified current module filename when the configuration is loaded.
-
-#### Example of `VTM_CONFIG=` envar
-
-```
-VTM_CONFIG='<splitter label="envars" notes=" Menu items configured using envar VTM_CONFIG=... "/>
-            <menuitem id=Term2 notes="Run terminal" type=DirectVT label="Virtual \e[41mTerminal\e[m Emulator" param="$0 -r term"/>
-            <menuitem id=View2 label=View notes="Desktop region" type=Region title="Region 1"/>
-            <menuitem id=htop2 label=htop hidden=yes notes="htop app" type=ANSIVT param="htop"/>
-            <menuitem id=mc2 label=mc hidden=1 notes="mc app" type=SHELL param="mc"/>
-            <menuitem id=Tile2 label=Tile notes="Tiling Window Manager" type=Group title="Tiling Window Manager" param="h1:2( v1:1(htop2, mc2), Term2)"/>'
-```
 
 # Built-in Applications
 
@@ -327,21 +703,16 @@ VTM_CONFIG='<splitter label="envars" notes=" Menu items configured using envar V
    - UTF-8 Everywhere
    - Unicode clustering
    - TrueColor/256-color support
-   - Auto-wrap mode `DECAWM` (with horizontal scrolling)
-   - Focus tracking `DECSET 1004`
-   - Bracketed paste mode `DECSET 2004`
-   - SGR attributes: overline, double underline, strikethrough, and others
-   - Save/restore terminal window title `XTWINOPS 22/23`
-   - Mouse tracking `DECSET 1000/1002/1003/1006 SGR` mode
-   - Mouse tracking `DECSET 10060 Extended SGR` mode, mouse reporting outside of the terminal viewport (outside + negative arguments) #62
-   - Text selection by mouse #149
+   - [VT-100 terminal emulation](https://invisible-island.net/xterm/ctlseqs/ctlseqs.html) compatible
+   - Mouse tracking `DECSET 10060 Extended SGR` mode for mouse reporting outside of the terminal viewport; negative values support (See #62 for details)
+   - Text selection by mouse ( See #149 for details)
    - Configurable using VT-sequences
 
       Name         | Sequence                         | Description
       -------------|----------------------------------|-------------
       `CCC_SBS`    | `CSI` 24 : n : m `p`             | Set scrollback buffer size, `int32_t`<br>`n` Initial buffer size in lines; 0 — grow step is used for initial size; _default (if omitted) is 20.000_<br>`m` Grow step for unlimited buffer; _default (if omitted) is 0_ — for fixed size buffer
       `CCC_SGR`    | `CSI` 28 : Pm `p`                | Set terminal background using SGR parameters (one attribute at once)<br>`Pm` Colon-separated list of attribute parameters, 0 — reset all attributes, _default is 0_
-      `CCC_SEL`    | `CSI` 29 : n `p`                 | Set selection mode, _default is 0_<br>`n = 0` Selection is off<br>`n = 1`Select and copy as plaintext<br>`n = 2` Select and copy as ANSI-text
+      `CCC_SEL`    | `CSI` 29 : n `p`                 | Set selection mode, _default is 0_<br>`n = 0` Selection is off<br>`n = 1` Select and copy as plaintext<br>`n = 2` Select and copy as ANSI/VT text<br>`n = 3` Select and copy as RTF-document<br>`n = 4` Select and copy as HTML-code
       `CCC_PAD`    | `CSI` 30 : n `p`                 | Set scrollbuffer side padding<br>`n` Width in cells, _max = 255, default is 0_
       `CCC_RST`    | `CSI` 1 `p`                      | Reset all parameters to default
       `CCC_TBS`    | `CSI` 5 : n `p`                  | Set tabulation length<br>`n` Length in cells, _max = 256, default is 8_
@@ -364,16 +735,7 @@ VTM_CONFIG='<splitter label="envars" notes=" Menu items configured using envar V
      - `LeftClick` -- Set exclusive focus
      - `Ctrl+LeftClick`/`RightClick` -- Set/Unset group focus
      - `double LeftClick` -- Maxixmize/restore
-   - Configurable via environment variable `VTM_CONFIG*`
-     ```
-     # Configuration example:
-
-     VTM_CONFIG='<menuitem id=Term notes="Run terminal" type=DirectVT label="Virtual \e[41mTerminal\e[m] Emulator" param="$0 -r term"/>
-                 <menuitem id=View label=View notes="Desktop region" type=Region title="Region 1"/>
-                 <menuitem id=htop label=htop hidden=yes notes="htop app" type=ANSIVT param="htop"/>
-                 <menuitem id=mc label=mc hidden=1 notes="mc app" type=SHELL param="mc"/>
-                 <menuitem id=Tile label=Tile notes="Tiling Window Manager" type=Group title="Tiling Window Manager" param="h1:2( v1:1(htop, mc), Term)"/>'
-     ```
+   - Configurable via settings (See configuration eexample above).
 
 </p></details>
 

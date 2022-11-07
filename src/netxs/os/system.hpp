@@ -77,7 +77,7 @@
 
     #if defined(__linux__)
         #include <sys/vt.h> // ::console_ioctl()
-        #ifdef __ANDROID__
+        #if defined(__ANDROID__)
             #include <linux/kd.h>   // ::console_ioctl()
         #else
             #include <sys/kd.h>     // ::console_ioctl()
@@ -109,27 +109,28 @@ namespace netxs::os
     using namespace std::chrono_literals;
     using namespace std::literals;
     using namespace netxs::ui::atoms;
+    using page = console::page;
     using para = console::para;
     using rich = console::rich;
 
     enum role { client, server };
 
-    static constexpr si32 STDIN_BUF = 1024;
-    static bool is_daemon = faux;
+    static constexpr auto stdin_buf_size = si32{ 1024 };
+    static auto is_daemon = faux;
 
     #if defined(_WIN32)
 
         using fd_t = HANDLE;
         using conmode = DWORD[2];
-        static const fd_t INVALID_FD = INVALID_HANDLE_VALUE;
-        static const fd_t STDIN_FD  = ::GetStdHandle(STD_INPUT_HANDLE);
-        static const fd_t STDOUT_FD = ::GetStdHandle(STD_OUTPUT_HANDLE);
-        static const fd_t STDERR_FD = ::GetStdHandle(STD_ERROR_HANDLE);
-        static const si32 PIPE_BUF = 65536;
+        static const auto INVALID_FD   = fd_t{ INVALID_HANDLE_VALUE              };
+        static const auto STDIN_FD     = fd_t{ ::GetStdHandle(STD_INPUT_HANDLE)  };
+        static const auto STDOUT_FD    = fd_t{ ::GetStdHandle(STD_OUTPUT_HANDLE) };
+        static const auto STDERR_FD    = fd_t{ ::GetStdHandle(STD_ERROR_HANDLE)  };
+        static const auto PIPE_BUF     = si32{ 65536 };
         static const auto WR_PIPE_PATH = "\\\\.\\pipe\\w_";
         static const auto RD_PIPE_PATH = "\\\\.\\pipe\\r_";
 
-        //static constexpr char* security_descriptor_string =
+        //static constexpr auto security_descriptor_string =
         //	//"D:P(A;NP;GA;;;SY)(A;NP;GA;;;BA)(A;NP;GA;;;WD)";
         //	"O:AND:P(A;NP;GA;;;SY)(A;NP;GA;;;BA)(A;NP;GA;;;CO)";
         //	//"D:P(A;NP;GA;;;SY)(A;NP;GA;;;BA)(A;NP;GA;;;AU)";// Authenticated users
@@ -154,10 +155,10 @@ namespace netxs::os
 
         using fd_t = int;
         using conmode = ::termios;
-        static constexpr fd_t INVALID_FD = -1;
-        static constexpr fd_t STDIN_FD  = STDIN_FILENO;
-        static constexpr fd_t STDOUT_FD = STDOUT_FILENO;
-        static constexpr fd_t STDERR_FD = STDERR_FILENO;
+        static constexpr auto INVALID_FD = fd_t{ -1            };
+        static constexpr auto STDIN_FD   = fd_t{ STDIN_FILENO  };
+        static constexpr auto STDOUT_FD  = fd_t{ STDOUT_FILENO };
+        static constexpr auto STDERR_FD  = fd_t{ STDERR_FILENO };
 
         void fdcleanup() // Close all file descriptors except the standard ones.
         {
@@ -196,6 +197,26 @@ namespace netxs::os
                 ++iter;
             }
             return '\0';
+        }
+        // args: Return parameter.
+        auto param()
+        {
+            auto crop = text{};
+            if (iter < argc)
+            {
+                auto arg = view{ argv[iter++] };
+                if (arg.find(' ') == view::npos)
+                {
+                    crop += arg;
+                }
+                else
+                {
+                    crop.push_back('\"');
+                    crop += arg;
+                    crop.push_back('\"');
+                }
+            }
+            return crop;
         }
         // args: Return the rest of the command line arguments.
         auto tail()
@@ -251,7 +272,7 @@ namespace netxs::os
     template<class ...Args>
     auto fail(Args&&... msg)
     {
-        log("  os: ", msg..., " (", os::error(), ") ");
+        log("  os: ", ansi::fgc(tint::redlt), msg..., " (", os::error(), ") ", ansi::nil());
         return nothing{};
     };
     template<class T>
@@ -438,26 +459,26 @@ namespace netxs::os
                                ULONG       opts = {},
                                HANDLE      boss = {})
             {
-                    auto hndl = INVALID_FD;
-                    auto wtxt = utf::to_utf(path);
-                    auto size = wtxt.size() * sizeof(wtxt[0]);
-                    auto attr = OBJECT_ATTRIBUTES{};
-                    auto stat = IO_STATUS_BLOCK{};
-                    auto name = UNICODE_STRING{
-                        .Length        = (decltype(UNICODE_STRING::Length)       )(size),
-                        .MaximumLength = (decltype(UNICODE_STRING::MaximumLength))(size + sizeof(wtxt[0])),
-                        .Buffer        = wtxt.data(),
-                    };
-                    InitializeObjectAttributes(&attr, &name, flag, boss, nullptr);
-                    auto status = nt::OpenFile(&hndl, mask, &attr, &stat, FILE_SHARE_READ
-                                                                        | FILE_SHARE_WRITE
-                                                                        | FILE_SHARE_DELETE, opts);
-                    if (status != nt::status::success)
-                    {
-                        log("  os: unexpected result when access system object '", path, "', ntstatus ", status);
-                        return INVALID_FD;
-                    }
-                    else return hndl;
+                auto hndl = INVALID_FD;
+                auto wtxt = utf::to_utf(path);
+                auto size = wtxt.size() * sizeof(wtxt[0]);
+                auto attr = OBJECT_ATTRIBUTES{};
+                auto stat = IO_STATUS_BLOCK{};
+                auto name = UNICODE_STRING{
+                    .Length        = (decltype(UNICODE_STRING::Length)       )(size),
+                    .MaximumLength = (decltype(UNICODE_STRING::MaximumLength))(size + sizeof(wtxt[0])),
+                    .Buffer        = wtxt.data(),
+                };
+                InitializeObjectAttributes(&attr, &name, flag, boss, nullptr);
+                auto status = nt::OpenFile(&hndl, mask, &attr, &stat, FILE_SHARE_READ
+                                                                    | FILE_SHARE_WRITE
+                                                                    | FILE_SHARE_DELETE, opts);
+                if (status != nt::status::success)
+                {
+                    log("  os: unexpected result when access system object '", path, "', ntstatus ", status);
+                    return INVALID_FD;
+                }
+                else return hndl;
             }
 
             struct console
@@ -804,7 +825,7 @@ namespace netxs::os
                 }
                 else
                 {
-                    os::fail("send: error write to socket=", fd, " count=", count, " size=", size, " IS_TTY=", IS_TTY ?"true":"faux");
+                    log("send: aborted write to socket=", fd, " count=", count, " size=", size, " IS_TTY=", IS_TTY ?"true":"faux");
                     return faux;
                 }
             }
@@ -947,6 +968,11 @@ namespace netxs::os
             static auto start = text{};
             return start;
         }
+        static auto& get_setup()
+        {
+            static auto setup = text{};
+            return setup;
+        }
         static auto& get_ready()
         {
             static auto ready = faux;
@@ -967,9 +993,9 @@ namespace netxs::os
             else result = "fresh";
             return result;
         }
-        static void send_dmd(fd_t m_pipe_w, twod const& winsz)
+        static void send_dmd(fd_t m_pipe_w, twod const& winsz, view config)
         {
-            auto buffer = ansi::dtvt::binary::marker{ winsz };
+            auto buffer = ansi::dtvt::binary::marker{ winsz, config.size() };
             os::send<true>(m_pipe_w, buffer.data, buffer.size);
         }
         static auto peek_dmd(fd_t stdin_fd)
@@ -978,10 +1004,12 @@ namespace netxs::os
             auto& winsz = get_winsz();
             auto& state = get_state();
             auto& start = get_start();
+            auto& setup = get_setup();
+            auto cfsize = size_t{};
             if (ready) return state;
             ready = true;
-
             #if defined(_WIN32)
+
                 // ::WaitForMultipleObjects() does not work with pipes (DirectVT).
                 auto buffer = ansi::dtvt::binary::marker{};
                 auto length = DWORD{ 0 };
@@ -995,14 +1023,16 @@ namespace netxs::os
                     if (length)
                     {
                         state = buffer.size == length
-                             && buffer.get_sz(winsz);
+                             && buffer.get_sz(winsz, cfsize);
                         if (state)
                         {
                             os::recv(stdin_fd, buffer.data, buffer.size);
                         }
                     }
                 }
+
             #else
+
                 os::select<true>(stdin_fd, [&]
                 {
                     auto buffer = ansi::dtvt::binary::marker{};
@@ -1011,14 +1041,33 @@ namespace netxs::os
                     if (length)
                     {
                         state = buffer.size == length
-                             && buffer.get_sz(winsz);
+                             && buffer.get_sz(winsz, cfsize);
                         if (!state)
                         {
                             start = header; //todo use it when the reading thread starts
                         }
                     }
                 });
+
             #endif
+            if (cfsize)
+            {
+                setup.resize(cfsize);
+                auto buffer = setup.data();
+                while (cfsize)
+                {
+                    if (auto crop = os::recv(stdin_fd, buffer, cfsize))
+                    {
+                        cfsize -= crop.size();
+                        buffer += crop.size();
+                    }
+                    else
+                    {
+                        state = faux;
+                        break;
+                    }
+                }
+            }
             return state;
         }
     };
@@ -1038,17 +1087,31 @@ namespace netxs::os
         log(args...);
         os::exit(code);
     }
-    auto get_env(text&& var)
+    auto get_env(view variable)
     {
+        auto var = text{ variable };
         auto val = std::getenv(var.c_str());
         return val ? text{ val }
                    : text{};
     }
+    auto set_env(view variable, view value)
+    {
+        auto var = text{ variable };
+        auto val = text{ value    };
+        #if defined(_WIN32)
+            ok(::SetEnvironmentVariableA(var.c_str(), val.c_str()), "::SetEnvironmentVariableA unexpected result");
+        #else
+            ok(::setenv(var.c_str(), val.c_str(), 1), "::setenv unexpected result");
+        #endif
+    }
     text get_shell()
     {
         #if defined(_WIN32)
+
             return "cmd";
+
         #else
+
             auto shell = os::get_env("SHELL");
             if (shell.empty()
              || shell.ends_with("vtm"))
@@ -1057,6 +1120,7 @@ namespace netxs::os
                 log("  os: using '", shell, "' as a fallback login shell");
             }
             return shell;
+
         #endif
     }
     auto homepath()
@@ -1086,7 +1150,7 @@ namespace netxs::os
     auto local_mode()
     {
         auto conmode = -1;
-        #if defined (__linux__)
+        #if defined(__linux__)
 
             if (-1 != ::ioctl(STDOUT_FD, KDGETMODE, &conmode))
             {
@@ -1099,78 +1163,91 @@ namespace netxs::os
             }
 
         #endif
-
         return conmode != -1;
     }
     auto vt_mode()
     {
         auto mode = si32{ legacy::clean };
-
         if (os::legacy::peek_dmd(STDIN_FD))
         {
             log("  os: DirectVT detected");
             mode |= legacy::direct;
         }
-        else if (auto term = os::get_env("TERM"); term.size())
+        else
         {
-            log("  os: terminal type \"", term, "\"");
+            #if defined(_WIN32) // Set vt-mode and UTF-8 codepage unconditionally.
 
-            auto vga16colors = { // https://github.com//termstandard/colors
-                "ansi",
-                "linux",
-                "xterm-color",
-                "dvtm", //todo track: https://github.com/martanne/dvtm/issues/10
-                "fbcon",
-            };
-            auto vga256colors = {
-                "rxvt-unicode-256color",
-            };
-
-            if (term.ends_with("16color") || term.ends_with("16colour"))
-            {
-                mode |= legacy::vga16;
-            }
-            else
-            {
-                for (auto& type : vga16colors)
+                auto outmode = DWORD{};
+                if(::GetConsoleMode(STDOUT_FD, &outmode))
                 {
-                    if (term == type)
-                    {
-                        mode |= legacy::vga16;
-                        break;
-                    }
+                    outmode |= nt::console::outmode::vt;
+                    ::SetConsoleMode(STDOUT_FD, outmode);
+                    ::SetConsoleOutputCP(65001);
+                    ::SetConsoleCP(65001);
                 }
-                if (!mode)
+
+            #endif
+            if (auto term = os::get_env("TERM"); term.size())
+            {
+                log("  os: terminal type \"", term, "\"");
+
+                auto vga16colors = { // https://github.com//termstandard/colors
+                    "ansi",
+                    "linux",
+                    "xterm-color",
+                    "dvtm", //todo track: https://github.com/martanne/dvtm/issues/10
+                    "fbcon",
+                };
+                auto vga256colors = {
+                    "rxvt-unicode-256color",
+                };
+
+                if (term.ends_with("16color") || term.ends_with("16colour"))
                 {
-                    for (auto& type : vga256colors)
+                    mode |= legacy::vga16;
+                }
+                else
+                {
+                    for (auto& type : vga16colors)
                     {
                         if (term == type)
                         {
-                            mode |= legacy::vga256;
+                            mode |= legacy::vga16;
                             break;
                         }
                     }
+                    if (!mode)
+                    {
+                        for (auto& type : vga256colors)
+                        {
+                            if (term == type)
+                            {
+                                mode |= legacy::vga256;
+                                break;
+                            }
+                        }
+                    }
                 }
+
+                if (os::get_env("TERM_PROGRAM") == "Apple_Terminal")
+                {
+                    log("  os: macOS Apple_Terminal detected");
+                    if (!(mode & legacy::vga16)) mode |= legacy::vga256;
+                }
+
+                if (os::local_mode()) mode |= legacy::mouse;
+
+                log("  os: color mode: ", mode & legacy::vga16  ? "16-color"
+                                        : mode & legacy::vga256 ? "256-color"
+                                                                : "true-color");
+                log("  os: mouse mode: ", mode & legacy::mouse ? "console" : "VT-style");
             }
-
-            if (os::get_env("TERM_PROGRAM") == "Apple_Terminal")
-            {
-                log("  os: macOS Apple_Terminal detected");
-                if (!(mode & legacy::vga16)) mode |= legacy::vga256;
-            }
-
-            if (os::local_mode()) mode |= legacy::mouse;
-
-            log("  os: color mode: ", mode & legacy::vga16  ? "16-color"
-                                    : mode & legacy::vga256 ? "256-color"
-                                                            : "true-color");
-            log("  os: mouse mode: ", mode & legacy::mouse ? "console" : "VT-style");
         }
         return mode;
     }
     auto vgafont_update(si32 mode)
     {
-        #if defined (__linux__)
+        #if defined(__linux__)
 
             if (mode & legacy::mouse)
             {
@@ -1244,7 +1321,6 @@ namespace netxs::os
     auto current_module_file()
     {
         auto result = text{};
-
         #if defined(_WIN32)
 
             auto handle = ::GetCurrentProcess();
@@ -1307,7 +1383,6 @@ namespace netxs::os
             }
 
         #endif
-
         #if not defined(_WIN32)
 
             if (result.empty())
@@ -1323,7 +1398,6 @@ namespace netxs::os
             }
 
         #endif
-
         if (result.empty())
         {
             os::fail("can't get current module file path, fallback to '", DESKTOPIO_MYPATH, "`");
@@ -1375,10 +1449,10 @@ namespace netxs::os
 
         return args;
     }
+    template<bool Quiet = faux>
     auto exec(text binary, text params = {}, int window_state = 0)
     {
-        log("exec: executing '", binary, " ", params, "'");
-
+        if constexpr (!Quiet) log("exec: '", binary, params.empty() ? "'"s : " " + params + "'");
         #if defined(_WIN32)
 
             auto ShExecInfo = ::SHELLEXECUTEINFO{};
@@ -1417,22 +1491,16 @@ namespace netxs::os
             }
 
         #endif
-
         log("exec: failed to spawn '", binary, "' with args '", params, "', error ", os::error());
         return faux;
     }
     void start_log(text srv_name)
     {
         is_daemon = true;
-
         #if defined(_WIN32)
-
             //todo implement
-
         #else
-
             ::openlog(srv_name.c_str(), LOG_NOWAIT | LOG_PID, LOG_USER);
-
         #endif
     }
     void stdlog(view data)
@@ -1444,26 +1512,23 @@ namespace netxs::os
     {
         if (os::is_daemon)
         {
-
-        #if defined(_WIN32)
-
-            //todo implement
-
-        #else
-
-            auto copy = text{ data };
-            ::syslog(LOG_NOTICE, "%s", copy.c_str());
-
-        #endif
-
+            #if defined(_WIN32)
+                //todo implement
+            #else
+                auto copy = text{ data };
+                ::syslog(LOG_NOTICE, "%s", copy.c_str());
+            #endif
         }
         else std::cout << data << std::flush;
     }
-    auto daemonize(text srv_name)
+    auto daemonize(text srv_name, text params)
     {
         #if defined(_WIN32)
 
-            return true;
+            if (os::exec<true>(srv_name, params))
+            {
+                os::exit(0); // Child forked successfully.
+            }
 
         #else
 
@@ -1504,14 +1569,13 @@ namespace netxs::os
             {
                 os::exit(0); // Child forked and exited successfully.
             }
-            return faux;
 
         #endif
+        return faux;
     }
     auto host_name()
     {
         auto hostname = text{};
-
         #if defined(_WIN32)
 
             auto dwSize = DWORD{ 0 };
@@ -1557,37 +1621,33 @@ namespace netxs::os
     auto is_mutex_exists(text&& mutex_name)
     {
         auto result = faux;
-
         #if defined(_WIN32)
 
             auto mutex = ::CreateMutex(0, 0, mutex_name.c_str());
             result = ::GetLastError() == ERROR_ALREADY_EXISTS;
             ::CloseHandle(mutex);
-            return result;
 
         #else
 
             //todo linux implementation
-            return true;
+            result = true;
 
         #endif
+        return result;
     }
     auto process_id()
     {
         auto result = ui32{};
-
         #if defined(_WIN32)
             result = ::GetCurrentProcessId();
         #else
             result = ::getpid();
         #endif
-
         return result;
     }
     static auto logged_in_users(view domain_delimiter = "\\", view record_delimiter = "\0") //  static required by ::WTSQuerySessionInformation
     {
         auto active_users_array = text{};
-
         #if defined(_WIN32)
 
             auto SessionInfo_pointer = PWTS_SESSION_INFO{};
@@ -1682,6 +1742,157 @@ namespace netxs::os
             return id;
 
         #endif
+    }
+    auto set_clipboard(view mime, view utf8)
+    {
+        // Generate the following formats:
+        //   clip::textonly | clip::disabled
+        //        CF_UNICODETEXT: Raw UTF-16
+        //   clip::ansitext
+        //               cf_rich: RTF-group UTF-8
+        //        CF_UNICODETEXT: ANSI-text UTF-16
+        //   clip::richtext
+        //               cf_rich: RTF-group UTF-8
+        //        CF_UNICODETEXT: Plaintext UTF-16
+        //   clip::htmltext
+        //               cf_html: HTML-code UTF-8
+        //        CF_UNICODETEXT: HTML-code UTF-16
+        //
+        using ansi::clip;
+
+        auto success = faux;
+        #if defined(_WIN32)
+
+            static auto cf_rich = ::RegisterClipboardFormatA("Rich Text Format");
+            static auto cf_html = ::RegisterClipboardFormatA("HTML Format");
+            static auto cf_text = CF_UNICODETEXT;
+            static auto cf_utf8 = CF_TEXT;
+            auto send = [&](auto cf_format, view data)
+            {
+                auto _send = [&](auto const& data)
+                {
+                    auto size = (data.size() + 1/*null terminator*/) * sizeof(*(data.data()));
+                    if (auto gmem = ::GlobalAlloc(GMEM_MOVEABLE, size))
+                    {
+                        if (auto dest = ::GlobalLock(gmem))
+                        {
+                            std::memcpy(dest, data.data(), size);
+                            ::GlobalUnlock(gmem);
+                            ok(::SetClipboardData(cf_format, gmem) && (success = true), "unexpected result from ::SetClipboardData cf_format=" + std::to_string(cf_format));
+                        }
+                        else log("  os: ::GlobalLock returns unexpected result");
+                        ::GlobalFree(gmem);
+                    }
+                    else log("  os: ::GlobalAlloc returns unexpected result");
+                };
+                cf_format == cf_text ? _send(utf::to_utf(data))
+                                     : _send(data);
+            };
+
+            ok(::OpenClipboard(nullptr), "::OpenClipboard");
+            ok(::EmptyClipboard(), "::EmptyClipboard");
+            if (mime.size() < 5 || mime.starts_with(ansi::mimetext))
+            {
+                send(cf_text, utf8);
+            }
+            else
+            {
+                auto post = page{ utf8 };
+                auto info = CONSOLE_FONT_INFOEX{ sizeof(CONSOLE_FONT_INFOEX) };
+                ::GetCurrentConsoleFontEx(STDOUT_FD, faux, &info);
+                auto font = utf::to_utf(info.FaceName);
+                if (mime.starts_with(ansi::mimerich))
+                {
+                    auto rich = post.to_rich(font);
+                    auto utf8 = post.to_utf8();
+                    send(cf_rich, rich);
+                    send(cf_text, utf8);
+                }
+                else if (mime.starts_with(ansi::mimehtml))
+                {
+                    auto [html, code] = post.to_html(font);
+                    send(cf_html, html);
+                    send(cf_text, code);
+                }
+                else if (mime.starts_with(ansi::mimeansi))
+                {
+                    auto rich = post.to_rich(font);
+                    send(cf_rich, rich);
+                    send(cf_text, utf8);
+                }
+                else
+                {
+                    send(cf_utf8, utf8);
+                }
+            }
+            ok(::CloseClipboard(), "::CloseClipboard");
+
+        #elif defined(__APPLE__)
+
+            auto send = [&](auto& data)
+            {
+                if (auto fd = ::popen("/usr/bin/pbcopy", "w"))
+                {
+                    ::fwrite(data.data(), data.size(), 1, fd);
+                    ::pclose(fd);
+                    success = true;
+                }
+            };
+            if (mime.starts_with(ansi::mimerich))
+            {
+                auto post = page{ utf8 };
+                auto rich = post.to_rich();
+                send(rich);
+            }
+            else if (mime.starts_with(ansi::mimehtml))
+            {
+                auto post = page{ utf8 };
+                auto [html, code] = post.to_html();
+                send(code);
+            }
+            else
+            {
+                send(utf8);
+            }
+
+        #else
+
+            auto yield = ansi::esc{};
+            if (mime.starts_with(ansi::mimerich))
+            {
+                auto post = page{ utf8 };
+                auto rich = post.to_rich();
+                yield.clipbuf(clip::richtext, rich);
+            }
+            else if (mime.starts_with(ansi::mimehtml))
+            {
+                auto post = page{ utf8 };
+                auto [html, code] = post.to_html();
+                yield.clipbuf(clip::htmltext, code);
+            }
+            else if (mime.starts_with(ansi::mimeansi))
+            {
+                yield.clipbuf(clip::ansitext, utf8);
+            }
+            else
+            {
+                yield.clipbuf(clip::textonly, utf8);
+            }
+            os::send<true>(STDOUT_FD, yield.data(), yield.size());
+            success = true;
+
+            #if defined(__ANDROID__)
+
+                //todo implement
+
+            #else
+
+                //todo implement X11 clipboard server
+
+            #endif
+
+        #endif
+        return success;
     }
 
     #if defined(_WIN32)
@@ -2662,7 +2873,7 @@ namespace netxs::os
                             //       members of the Everyone groupand the anonymous account.
                             //       Without write access, the desktop will be inaccessible to non-owners.
                         }
-                        else os::fail("not active");
+                        else if (active) os::fail("not active");
 
                         return next_waiting_point;
                     };
@@ -2670,14 +2881,16 @@ namespace netxs::os
                     auto r = next_link(handle.get_r(), to_server, PIPE_ACCESS_INBOUND);
                     if (r == INVALID_FD)
                     {
-                        return os::fail("CreateNamedPipe error (read)");
+                        return active ? os::fail("::CreateNamedPipe unexpected (read)")
+                                      : nothing{};
                     }
 
                     auto w = next_link(handle.get_w(), to_client, PIPE_ACCESS_OUTBOUND);
                     if (w == INVALID_FD)
                     {
                         ::CloseHandle(r);
-                        return os::fail("CreateNamedPipe error (write)");
+                        return active ? os::fail("::CreateNamedPipe unexpected (write)")
+                                      : nothing{};
                     }
 
                     auto connector = std::make_shared<ipc::socket>(std::move(handle));
@@ -2734,8 +2947,9 @@ namespace netxs::os
                     // Interrupt ::ConnectNamedPipe(). Disconnection order does matter.
                     auto to_client = WR_PIPE_PATH + scpath;
                     auto to_server = RD_PIPE_PATH + scpath;
-                    if (handle.get_w() != INVALID_FD) ok(::DeleteFileA(to_client.c_str()));
-                    if (handle.get_r() != INVALID_FD) ok(::DeleteFileA(to_server.c_str()));
+                    // This may fail, but this is ok - it means the client is already disconnected.
+                    if (handle.get_w() != INVALID_FD) ::DeleteFileA(to_client.c_str());
+                    if (handle.get_r() != INVALID_FD) ::DeleteFileA(to_server.c_str());
                     handle.close();
 
                 #else
@@ -2750,8 +2964,9 @@ namespace netxs::os
                 #if defined(_WIN32)
 
                     // Disconnection order does matter.
-                    if (handle.get_w() != INVALID_FD) ok(::DisconnectNamedPipe(handle.get_w()));
-                    if (handle.get_r() != INVALID_FD) ok(::DisconnectNamedPipe(handle.get_r()));
+                    // This may fail, but this is ok - it means the client is already disconnected.
+                    if (handle.get_w() != INVALID_FD) ::DisconnectNamedPipe(handle.get_w());
+                    if (handle.get_r() != INVALID_FD) ::DisconnectNamedPipe(handle.get_r());
 
                 #else
 
@@ -2851,32 +3066,32 @@ namespace netxs::os
                     auto r = pipe(to_server, PIPE_ACCESS_INBOUND);
                     if (r == INVALID_FD)
                     {
-                        return os::fail("CreateNamedPipe error (read)");
+                        return os::fail("::CreateNamedPipe unexpected (read)");
                     }
 
                     auto w = pipe(to_client, PIPE_ACCESS_OUTBOUND);
                     if (w == INVALID_FD)
                     {
                         ::CloseHandle(r);
-                        return os::fail("CreateNamedPipe error (write)");
+                        return os::fail("::CreateNamedPipe unexpected (write)");
                     }
 
                     r_sock = r;
                     w_sock = w;
 
                     DWORD inpmode = 0;
-                    ok(::GetConsoleMode(STDIN_FD , &inpmode), "GetConsoleMode(STDIN_FD) failed");
+                    ok(::GetConsoleMode(STDIN_FD , &inpmode), "::GetConsoleMode(STDIN_FD) unexpected");
                     inpmode |= 0
                             | nt::console::inmode::quickedit
                             ;
-                    ok(::SetConsoleMode(STDIN_FD, inpmode), "SetConsoleMode(STDIN_FD) failed");
+                    ok(::SetConsoleMode(STDIN_FD, inpmode), "::SetConsoleMode(STDIN_FD) unexpected");
 
                     DWORD outmode = 0
                                 | nt::console::outmode::preprocess
                                 | nt::console::outmode::vt
                                 | nt::console::outmode::no_auto_cr
                                 ;
-                    ok(::SetConsoleMode(STDOUT_FD, outmode), "SetConsoleMode(STDOUT_FD) failed");
+                    ok(::SetConsoleMode(STDOUT_FD, outmode), "::SetConsoleMode(STDOUT_FD) unexpected");
                 }
                 else if constexpr (ROLE == role::client)
                 {
@@ -3024,13 +3239,17 @@ namespace netxs::os
         {
             gate.output(ansi::esc{}.save_title()
                                    .altbuf(true)
-                                   .vmouse(true)
+                                   #if not defined(_WIN32) // Use win32 console api only.
+                                    .vmouse(true)
+                                   #endif
                                    .cursor(faux)
                                    .bpmode(true)
                                    .setutf(true));
             gate.splice(vtmode);
             gate.output(ansi::esc{}.scrn_reset()
-                                   .vmouse(faux)
+                                   #if not defined(_WIN32) // Use win32 console api only.
+                                    .vmouse(faux)
+                                   #endif
                                    .cursor(true)
                                    .altbuf(faux)
                                    .bpmode(faux)
@@ -3048,6 +3267,7 @@ namespace netxs::os
     class tty
     {
         fire signal;
+        text buffer;
 
         template<class V>
         struct _globals
@@ -3070,7 +3290,6 @@ namespace netxs::os
                         winsz({ cinfo.srWindow.Right  - cinfo.srWindow.Left + 1,
                                 cinfo.srWindow.Bottom - cinfo.srWindow.Top  + 1 });
                     }
-
                 #else
 
                     auto size = winsize{};
@@ -3078,9 +3297,7 @@ namespace netxs::os
                     {
                         winsz({ size.ws_col, size.ws_row });
                     }
-
                 #endif
-
                     else
                     {
                         log("xtty: fallback tty window size ", winsz_fallback, " (consider using 'ssh -tt ...')");
@@ -3282,12 +3499,12 @@ namespace netxs::os
 
             #else
 
-                bool legacy_mouse = mode & os::legacy::mouse;
-                bool legacy_color = mode & os::legacy::vga16;
+                auto legacy_mouse = !!(mode & os::legacy::mouse);
+                auto legacy_color = !!(mode & os::legacy::vga16);
                 auto micefd = INVALID_FD;
-                twod mcoor;
-                auto buffer = text(STDIN_BUF, '\0');
-                si32 ttynum = 0;
+                auto mcoor = twod{};
+                auto buffer = text(os::stdin_buf_size, '\0');
+                auto ttynum = si32{ 0 };
 
                 struct
                 {
@@ -3298,9 +3515,9 @@ namespace netxs::os
                 } state;
                 auto get_kb_state = []
                 {
-                    si32 state = 0;
+                    auto state = si32{ 0 };
                     #if defined(__linux__)
-                        si32 shift_state = 6;
+                        auto shift_state = si32{ 6 };
                         ok(::ioctl(STDIN_FD, TIOCLINUX, &shift_state), "ioctl(STDIN_FD, TIOCLINUX) failed");
                         state = 0
                             | (shift_state & (1 << KG_ALTGR)) >> 1 // 0x1
@@ -3378,7 +3595,7 @@ namespace netxs::os
                     total += accum;
                     auto strv = view{ total };
 
-                    //#ifdef KEYLOG
+                    //#if defined(KEYLOG)
                     //    log("link: input data (", total.size(), " bytes):\n", utf::debase(total));
                     //#endif
 
@@ -3428,7 +3645,7 @@ namespace netxs::os
                                 // Pass Esc.
                                 auto id = 0;
                                 auto& k = gears[id].keybd;
-                                k.keybdid = id;
+                                k.id      = id;
                                 k.pressed = true;
                                 k.cluster = strv.substr(0, 1);
                                 //notify(e2::conio::keybd, k);
@@ -3450,7 +3667,7 @@ namespace netxs::os
                                 // Pass Esc.
                                 auto id = 0;
                                 auto& k = gears[id].keybd;
-                                k.keybdid = id;
+                                k.id      = id;
                                 k.pressed = true;
                                 k.cluster = strv.substr(0, 1);
                                 //notify(e2::conio::keybd, k);
@@ -3475,7 +3692,7 @@ namespace netxs::os
                                 {
                                     auto id = 0;
                                     auto& f = gears[id].focus;
-                                    f.focusid = id;
+                                    f.id      = id;
                                     f.enabled = true;
                                     //notify(e2::conio::focus, f);
                                     wired.focus.send(ipcio,
@@ -3489,7 +3706,7 @@ namespace netxs::os
                                 {
                                     auto id = 0;
                                     auto& f = gears[id].focus;
-                                    f.focusid = id;
+                                    f.id      = id;
                                     f.enabled = faux;
                                     //notify(e2::conio::focus, f);
                                     wired.focus.send(ipcio,
@@ -3551,7 +3768,7 @@ namespace netxs::os
                                                             if (ctl & 0x10) m.ctlstat |= input::hids::LCtrl;
                                                             ctl = ctl & ~0b00011100;
 
-                                                            m.mouseid = id;
+                                                            m.id      = id;
                                                             m.shuffle = faux;
                                                             m.wheeled = faux;
                                                             m.wheeldt = 0;
@@ -3679,7 +3896,7 @@ namespace netxs::os
                             {
                                 auto id = 0;
                                 auto& k = gears[id].keybd;
-                                k.keybdid = id;
+                                k.id      = id;
                                 k.pressed = true;
                                 k.cluster = strv.substr(0, i);
                                 //notify(e2::conio::keybd, k);
@@ -3788,6 +4005,34 @@ namespace netxs::os
         }
         bool output(view utf8)
         {
+            static auto ocs52head = "\033]52;"sv;
+
+            if (buffer.size() || utf8.starts_with(ocs52head))
+            {
+                buffer += utf8;
+                utf8 = view{ buffer };
+                auto data = utf8.substr(ocs52head.size());
+                if (auto p = data.find(';');
+                         p!= view::npos)
+                {
+                    auto mime = data.substr(0, p);
+                    data.remove_prefix(p + 1/* ; */);
+                    if (auto p = data.find(ansi::C0_BEL);
+                             p!= view::npos)
+                    {
+                        auto base = data.substr(0, p);
+                        if (os::set_clipboard(mime, utf::unbase64(base)))
+                        {
+                            utf8 = data.substr(p + 1/* C0_BEL */);
+                        }
+                        auto result = utf8.size() ? os::send<true>(STDOUT_FD, utf8.data(), utf8.size())
+                                                  : true;
+                        buffer.clear();
+                        return result;
+                    }
+                }
+                return true;
+            }
             return os::send<true>(STDOUT_FD, utf8.data(), utf8.size());
         }
         auto ignite(si32 vtmode)
@@ -3821,8 +4066,9 @@ namespace netxs::os
                               | nt::console::outmode::vt
                               | nt::console::outmode::no_auto_cr
                               };
+                
                 ok(::SetConsoleMode(STDOUT_FD, outmode), "SetConsoleMode(STDOUT_FD) failed");
-                ok(::SetConsoleCtrlHandler(sig_hndl, TRUE), "SetConsoleCtrlHandler failed");
+                ok(::SetConsoleCtrlHandler(reinterpret_cast<PHANDLER_ROUTINE>(sig_hndl), TRUE), "SetConsoleCtrlHandler failed");
 
             #else
 
@@ -3882,22 +4128,22 @@ namespace netxs::os
     template<class Term>
     class pty // Note: STA.
     {
-    #if defined(_WIN32)
+        #if defined(_WIN32)
 
-        #include "consrv.hpp"
+            #include "consrv.hpp"
 
-        consrv      con_serv;
-        DWORD       proc_pid{ 0          };
-        HANDLE      prochndl{ INVALID_FD };
-        HANDLE      srv_hndl{ INVALID_FD };
-        HANDLE      ref_hndl{ INVALID_FD };
-        std::thread waitexit;
+            consrv      con_serv;
+            DWORD       proc_pid{ 0          };
+            HANDLE      prochndl{ INVALID_FD };
+            HANDLE      srv_hndl{ INVALID_FD };
+            HANDLE      ref_hndl{ INVALID_FD };
+            std::thread waitexit;
 
-    #else
+        #else
 
-        pid_t proc_pid = 0;
+            pid_t proc_pid = 0;
 
-    #endif
+        #endif
 
         Term&                     terminal;
         ipc::ptycon               termlink;
@@ -3910,32 +4156,28 @@ namespace netxs::os
 
     public:
 
-    #if defined(_WIN32)
-
-        pty(Term& terminal)
-            : terminal{ terminal },
-              con_serv{ terminal, srv_hndl }
-        { }
-
-    #else
-
-        pty(Term& terminal)
-            : terminal{ terminal }
-        { }
-
-    #endif
-
-        auto connected()
-        {
         #if defined(_WIN32)
 
-            return srv_hndl != INVALID_FD;
+            pty(Term& terminal)
+                : terminal{ terminal },
+                  con_serv{ terminal, srv_hndl }
+            { }
 
         #else
 
-            return !!termlink;
+            pty(Term& terminal)
+                : terminal{ terminal }
+            { }
 
         #endif
+
+        auto connected()
+        {
+            #if defined(_WIN32)
+                return srv_hndl != INVALID_FD;
+            #else
+                return !!termlink;
+            #endif
         }
 
        ~pty()
@@ -4116,6 +4358,10 @@ namespace netxs::os
                     argv.push_back(nullptr);
 
                     ::setenv("TERM", "xterm-256color", 1); //todo too hacky
+                    if (os::get_env("TERM_PROGRAM") == "Apple_Terminal")
+                    {
+                        ::setenv("TERM_PROGRAM", "vtm", 1);
+                    }
                     ::execvp(argv.front(), argv.data());
 
                     auto errcode = errno;
@@ -4223,15 +4469,17 @@ namespace netxs::os
             {
                 std::swap(cache, writebuf);
                 guard.unlock();
+                #if defined(_WIN32)
 
-            #if defined(_WIN32)
-                con_serv.events.write(cache);
-                cache.clear();
-            #else
-                if (termlink.send(cache)) cache.clear();
-                else                      break;
-            #endif
+                    con_serv.events.write(cache);
+                    cache.clear();
 
+                #else
+
+                    if (termlink.send(cache)) cache.clear();
+                    else                      break;
+
+                #endif
                 guard.lock();
             }
             log("xpty: id: ", stdwrite.get_id(), " writing thread ended");
@@ -4257,19 +4505,19 @@ namespace netxs::os
         void reset()
         {
             #if defined(_WIN32)
-            con_serv.reset();
+                con_serv.reset();
             #endif
         }
         void keybd(input::hids& gear, bool decckm)
         {
             #if defined(_WIN32)
-            con_serv.events.keybd(gear, decckm);
+                con_serv.events.keybd(gear, decckm);
             #endif
         }
         void mouse(input::hids& gear, bool moved, bool wheeled, bool dblclick = faux)
         {
             #if defined(_WIN32)
-            con_serv.events.mouse(gear, moved, wheeled, dblclick);
+                con_serv.events.mouse(gear, moved, wheeled, dblclick);
             #endif
         }
         void write(view data)
@@ -4285,14 +4533,10 @@ namespace netxs::os
         class pty
         {
             #if defined(_WIN32)
-
                 HANDLE prochndl{ INVALID_FD };
                 DWORD  proc_pid{ 0          };
-
             #else
-
                 pid_t proc_pid = 0;
-
             #endif
 
             ipc::direct               termlink{};
@@ -4336,10 +4580,10 @@ namespace netxs::os
 
             operator bool () { return termlink; }
 
-            auto start(text cwd, text cmdline, twod winsz, std::function<void(view)> input_hndl,
-                                                           std::function<void(view)> logs_hndl,
-                                                           std::function<void(si32)> preclose_hndl,
-                                                           std::function<void(si32)> shutdown_hndl)
+            auto start(text cwd, text cmdline, twod winsz, text config, std::function<void(view)> input_hndl,
+                                                                        std::function<void(view)> logs_hndl,
+                                                                        std::function<void(si32)> preclose_hndl,
+                                                                        std::function<void(si32)> shutdown_hndl)
             {
                 receiver = input_hndl;
                 loggerfx = logs_hndl;
@@ -4368,11 +4612,11 @@ namespace netxs::os
                         sa.nLength = sizeof(SECURITY_ATTRIBUTES);
                         sa.lpSecurityDescriptor = NULL;
                         sa.bInheritHandle = TRUE;
-                        if (::CreatePipe(&m_pipe_r, &s_pipe_w, &sa, 0)
-                         && ::CreatePipe(&s_pipe_r, &m_pipe_w, &sa, 0)
+                        if (::CreatePipe(&s_pipe_r, &m_pipe_w, &sa, 0)
+                         && ::CreatePipe(&m_pipe_r, &s_pipe_w, &sa, 0)
                          && ::CreatePipe(&m_pipe_l, &s_pipe_l, &sa, 0))
                         {
-                            os::legacy::send_dmd(m_pipe_w, winsz);
+                            os::legacy::send_dmd(m_pipe_w, winsz, config);
 
                             startinf.StartupInfo.dwFlags    = STARTF_USESTDHANDLES;
                             startinf.StartupInfo.hStdInput  = s_pipe_r;
@@ -4447,12 +4691,12 @@ namespace netxs::os
                     fd_t to_server[2] = { INVALID_FD, INVALID_FD };
                     fd_t to_client[2] = { INVALID_FD, INVALID_FD };
                     fd_t to_srvlog[2] = { INVALID_FD, INVALID_FD };
-                    ok(::pipe(to_server), "dtvt: server ipc error");
-                    ok(::pipe(to_client), "dtvt: client ipc error");
-                    ok(::pipe(to_srvlog), "dtvt: srvlog ipc error");
+                    ok(::pipe(to_server), "dtvt: server ipc unexpected result");
+                    ok(::pipe(to_client), "dtvt: client ipc unexpected result");
+                    ok(::pipe(to_srvlog), "dtvt: srvlog ipc unexpected result");
 
                     termlink.set(to_server[0], to_client[1], to_srvlog[0]);
-                    os::legacy::send_dmd(to_client[1], winsz);
+                    os::legacy::send_dmd(to_client[1], winsz, config);
 
                     proc_pid = ::fork();
                     if (proc_pid == 0) // Child branch.
@@ -4506,6 +4750,12 @@ namespace netxs::os
 
                 #endif
 
+                if (config.size())
+                {
+                    auto guard = std::lock_guard{ writemtx };
+                    writebuf = config + writebuf;
+                }
+
                 stdinput = std::thread([&] { read_socket_thread(); });
                 stdwrite = std::thread([&] { send_socket_thread(); });
                 stderror = std::thread([&] { logs_socket_thread(); });
@@ -4531,45 +4781,44 @@ namespace netxs::os
 
                 if (proc_pid != 0)
                 {
-                #if defined(_WIN32)
+                    #if defined(_WIN32)
 
-                    auto code = DWORD{ 0 };
-                    if (!::GetExitCodeProcess(prochndl, &code))
-                    {
-                        log("dtvt: GetExitCodeProcess() return code: ", ::GetLastError());
-                    }
-                    else if (code == STILL_ACTIVE)
-                    {
-                        log("dtvt: child process still running");
-                        //std::this_thread::sleep_for(15s);
-                        auto result = WAIT_OBJECT_0 == ::WaitForSingleObject(prochndl, 10000 /*10 seconds*/);
-                        if (!result || !::GetExitCodeProcess(prochndl, &code))
+                        auto code = DWORD{ 0 };
+                        if (!::GetExitCodeProcess(prochndl, &code))
                         {
-                            ::TerminateProcess(prochndl, 0);
-                            code = 0;
+                            log("dtvt: GetExitCodeProcess() return code: ", ::GetLastError());
                         }
-                    }
-                    else log("dtvt: child process exit code ", code);
-                    exit_code = code;
-                    os::close(prochndl);
+                        else if (code == STILL_ACTIVE)
+                        {
+                            log("dtvt: child process still running");
+                            auto result = WAIT_OBJECT_0 == ::WaitForSingleObject(prochndl, 10000 /*10 seconds*/);
+                            if (!result || !::GetExitCodeProcess(prochndl, &code))
+                            {
+                                ::TerminateProcess(prochndl, 0);
+                                code = 0;
+                            }
+                        }
+                        else log("dtvt: child process exit code ", code);
+                        exit_code = code;
+                        os::close(prochndl);
 
-                #else
+                    #else
 
-                    int status;
-                    ok(::kill(proc_pid, SIGKILL), "kill(pid, SIGKILL) failed");
-                    ok(::waitpid(proc_pid, &status, 0), "waitpid(pid) failed"); // Wait for the child to avoid zombies.
-                    if (WIFEXITED(status))
-                    {
-                        exit_code = WEXITSTATUS(status);
-                        log("dtvt: child process exit code ", exit_code);
-                    }
-                    else
-                    {
-                        exit_code = 0;
-                        log("dtvt: warning: child process exit code not detected");
-                    }
+                        int status;
+                        ok(::kill(proc_pid, SIGKILL), "kill(pid, SIGKILL) failed");
+                        ok(::waitpid(proc_pid, &status, 0), "waitpid(pid) failed"); // Wait for the child to avoid zombies.
+                        if (WIFEXITED(status))
+                        {
+                            exit_code = WEXITSTATUS(status);
+                            log("dtvt: child process exit code ", exit_code);
+                        }
+                        else
+                        {
+                            exit_code = 0;
+                            log("dtvt: warning: child process exit code not detected");
+                        }
 
-                #endif
+                    #endif
                 }
                 log("dtvt: child waiting complete");
                 return exit_code;

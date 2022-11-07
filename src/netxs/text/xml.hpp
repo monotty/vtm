@@ -5,14 +5,15 @@
 #define NETXS_XML_HPP
 
 #include "../ui/layout.hpp"
+#include "../datetime/quartz.hpp"
 
 namespace netxs::xml
 {
     using namespace netxs::utf;
     using namespace netxs::ui::atoms;
-    using dict = std::unordered_map<text, text>;
+    using namespace netxs::datetime;
 
-    static constexpr auto spaces = " \n\r\t";
+    static constexpr auto spaces = " \n\r\t"sv;
     enum class type_old
     {
         none,
@@ -70,121 +71,69 @@ namespace netxs::xml
         }
         return crop;
     }
-    auto open(view& data, type_old& next)
-    {
-        auto iter = data.find('<');
-        if (iter != view::npos)
-        {
-            data.remove_prefix(iter + 1);
-            next = type_old::open;
-            return true;
-        }
-        else
-        {
-            next = type_old::none;
-            return faux;
-        }
-    }
-    auto attr(view& data, text& item, type_old& next)
-    {
-        utf::trim_front(data, spaces);
-        item.clear();
-        if (data.empty()) next = type_old::none;
-        else
-        {
-            auto c = data.front();
-            if (c == '/')
-            {
-                data.remove_prefix(1);
-                if (data.size() && data.front() == '>')
-                {
-                    data.remove_prefix(1);
-                    next = type_old::close;
-                }
-                else next = type_old::none;
-            }
-            else
-            {
-                item = get_tail(data, " \t\n\r=");
-                next = type_old::token;
-                utf::to_low(item);
-            }
-        }
-        return next == type_old::token;
-    }
-    auto value(view& data)
-    {
-        auto crop = text{};
-        utf::trim_front(data, spaces);
 
-        if (data.empty() || data.front() != '=') return crop;
-        data.remove_prefix(1); // remove '='.
-        utf::trim_front(data, spaces);
-
-        auto delim = data.front();
-        if (delim != '/')
-        {
-            if (delim != '\'' && delim != '\"') crop = utf::get_tail(data, " \t\n\r/>");
-            else                                crop = utf::get_quote(data, view(&delim, 1));
-            crop = xml::unescape(crop);
-        }
-        return crop;
-    }
     template<class T>
-    auto take(dict& item, text const& attr, T fallback = {})
-    { }
-    template<>
-    auto take<si32>(dict& item, text const& attr, si32 result)
+    auto take(view utf8) -> std::optional<T>
     {
-        if (auto v = utf::to_int(item[attr]))
+        if (utf8.starts_with("0x"))
         {
-            result = v.value();
+            utf8.remove_prefix(2);
+            return utf::to_int<T, 16>(utf8);
         }
-        return result;
+        else return utf::to_int<T, 10>(utf8);
     }
     template<>
-    auto take<view>(dict& item, text const& attr, view result)
+    auto take<text>(view utf8) -> std::optional<text>
     {
-        if (auto iter = item.find(attr); iter != item.end())
-        {
-            result = view{ iter->second };
-        }
-        return result;
+        return text{ utf8 };
     }
     template<>
-    auto take<bool>(dict& item, text const& attr, bool result)
+    auto take<bool>(view utf8) -> std::optional<bool>
     {
-        if (auto iter = item.find(attr); iter != item.end())
-        {
-            auto& value = utf::to_low(iter->second);
-            result = value.empty() || value.starts_with("1")  // 1 - true
-                                   || value.starts_with("o")  // on
-                                   || value.starts_with("y")  // yes
-                                   || value.starts_with("t"); // true
-        }
-        return result;
+        auto value = text{ utf8 };
+        utf::to_low(value);
+        return value.empty() || value.starts_with("1")  // 1 - true
+                             || value.starts_with("on") // on
+                             || value.starts_with("y")  // yes
+                             || value.starts_with("t"); // true
     }
     template<>
-    auto take<twod>(dict& item, text const& attr, twod result)
+    auto take<twod>(view utf8) -> std::optional<twod>
     {
-        if (auto iter = item.find(attr); iter != item.end())
+        utf::trim_front(utf8, " ({[\"\'");
+        if (auto x = utf::to_int(utf8))
         {
-            auto shadow = view{ iter->second };
-            utf::trim_front(shadow, " ({[\"\'");
-            if (auto x = utf::to_int(shadow))
+            utf::trim_front(utf8, " ,.x/:;");
+            if (auto y = utf::to_int(utf8))
             {
-                utf::trim_front(shadow, " ,.x/:;");
-                if (auto y = utf::to_int(shadow))
-                {
-                    result.x = x.value();
-                    result.y = y.value();
-                }
+                return twod{ x.value(), y.value() };
             }
         }
-        return result;
+        return std::nullopt;
     }
     template<>
-    auto take<rgba>(dict& item, text const& attr, rgba result)
+    auto take<period>(view utf8) -> std::optional<period>
+    {
+        using namespace std::chrono;
+        utf::trim_front(utf8, " ({[\"\'");
+        if (auto x = utf::to_int(utf8))
+        {
+            auto v = x.value();
+            auto p = period{};
+                 if (utf8.empty()
+                  || utf8.starts_with("ms" )) return period{ milliseconds{ v } };
+            else if (utf8.starts_with("us" )) return period{ microseconds{ v } };
+            else if (utf8.starts_with("ns" )) return period{  nanoseconds{ v } };
+            else if (utf8.starts_with("s"  )) return period{      seconds{ v } };
+            else if (utf8.starts_with("min")) return period{      minutes{ v } };
+            else if (utf8.starts_with("h"  )) return period{        hours{ v } };
+            else if (utf8.starts_with("d"  )) return period{         days{ v } };
+            else if (utf8.starts_with("w"  )) return period{        weeks{ v } };
+        }
+        return std::nullopt;
+    }
+    template<>
+    auto take<rgba>(view utf8) -> std::optional<rgba>
     {
         auto tobyte = [](auto c)
         {
@@ -193,81 +142,85 @@ namespace netxs::xml
             else                           return 0;
         };
 
-        if (auto iter = item.find(attr); iter != item.end())
+        auto value = text{ utf8 };
+        utf::to_low(value);
+        auto result = rgba{};
+        auto shadow = view{ value };
+        utf::trim_front(shadow, " ({[\"\'");
+        if (shadow.starts_with('#')) // hex: #rrggbbaa
         {
-            auto& value = utf::to_low(iter->second);
-            auto shadow = view{ value };
-            utf::trim_front(shadow, " ({[\"\'");
-            if (shadow.starts_with('#')) // hex: #rrggbbaa
+            shadow.remove_prefix(1);
+            if (shadow.size() >= 8) // hex: #rrggbbaa
             {
-                shadow.remove_prefix(1);
-                if (shadow.size() >= 8) // hex: #rrggbbaa
-                {
-                    result.chan.r = (tobyte(shadow[0]) << 4) + tobyte(shadow[1]);
-                    result.chan.g = (tobyte(shadow[2]) << 4) + tobyte(shadow[3]);
-                    result.chan.b = (tobyte(shadow[4]) << 4) + tobyte(shadow[5]);
-                    result.chan.a = (tobyte(shadow[6]) << 4) + tobyte(shadow[7]);
-                }
-                else if (shadow.size() >= 6) // hex: #rrggbb
-                {
-                    result.chan.r = (tobyte(shadow[0]) << 4) + tobyte(shadow[1]);
-                    result.chan.g = (tobyte(shadow[2]) << 4) + tobyte(shadow[3]);
-                    result.chan.b = (tobyte(shadow[4]) << 4) + tobyte(shadow[5]);
-                    result.chan.a = 0xff;
-                }
-                else log(" xml: unknown hex rgba format: { ", value, " }, expected #rrggbbaa or #rrggbb rgba hex value");
+                result.chan.r = (tobyte(shadow[0]) << 4) + tobyte(shadow[1]);
+                result.chan.g = (tobyte(shadow[2]) << 4) + tobyte(shadow[3]);
+                result.chan.b = (tobyte(shadow[4]) << 4) + tobyte(shadow[5]);
+                result.chan.a = (tobyte(shadow[6]) << 4) + tobyte(shadow[7]);
+                return result;
             }
-            else if (shadow.starts_with("0x")) // hex: 0xaabbggrr
+            else if (shadow.size() >= 6) // hex: #rrggbb
             {
-                shadow.remove_prefix(2);
-                if (shadow.size() >= 8) // hex: 0xaabbggrr
-                {
-                    result.chan.a = (tobyte(shadow[0]) << 4) + tobyte(shadow[1]);
-                    result.chan.b = (tobyte(shadow[2]) << 4) + tobyte(shadow[3]);
-                    result.chan.g = (tobyte(shadow[4]) << 4) + tobyte(shadow[5]);
-                    result.chan.r = (tobyte(shadow[6]) << 4) + tobyte(shadow[7]);
-                }
-                else if (shadow.size() >= 6) // hex: 0xbbggrr
-                {
-                    result.chan.b = (tobyte(shadow[0]) << 4) + tobyte(shadow[1]);
-                    result.chan.g = (tobyte(shadow[2]) << 4) + tobyte(shadow[3]);
-                    result.chan.r = (tobyte(shadow[4]) << 4) + tobyte(shadow[5]);
-                    result.chan.a = 0xff;
-                }
-                else log(" xml: unknown hex rgba format: { ", value, " }, expected 0xaabbggrr or 0xbbggrr rgba hex value");
+                result.chan.r = (tobyte(shadow[0]) << 4) + tobyte(shadow[1]);
+                result.chan.g = (tobyte(shadow[2]) << 4) + tobyte(shadow[3]);
+                result.chan.b = (tobyte(shadow[4]) << 4) + tobyte(shadow[5]);
+                result.chan.a = 0xff;
+                return result;
             }
-            else if (utf::check_any(shadow, ",;/")) // dec: 000,000,000,000
+            else log(" xml: unknown hex rgba format: { ", value, " }, expected #rrggbbaa or #rrggbb rgba hex value");
+        }
+        else if (shadow.starts_with("0x")) // hex: 0xaabbggrr
+        {
+            shadow.remove_prefix(2);
+            if (shadow.size() >= 8) // hex: 0xaabbggrr
             {
-                if (auto r = utf::to_int(shadow))
+                result.chan.a = (tobyte(shadow[0]) << 4) + tobyte(shadow[1]);
+                result.chan.b = (tobyte(shadow[2]) << 4) + tobyte(shadow[3]);
+                result.chan.g = (tobyte(shadow[4]) << 4) + tobyte(shadow[5]);
+                result.chan.r = (tobyte(shadow[6]) << 4) + tobyte(shadow[7]);
+                return result;
+            }
+            else if (shadow.size() >= 6) // hex: 0xbbggrr
+            {
+                result.chan.b = (tobyte(shadow[0]) << 4) + tobyte(shadow[1]);
+                result.chan.g = (tobyte(shadow[2]) << 4) + tobyte(shadow[3]);
+                result.chan.r = (tobyte(shadow[4]) << 4) + tobyte(shadow[5]);
+                result.chan.a = 0xff;
+                return result;
+            }
+            else log(" xml: unknown hex rgba format: { ", value, " }, expected 0xaabbggrr or 0xbbggrr rgba hex value");
+        }
+        else if (utf::check_any(shadow, ",;/")) // dec: 000,000,000,000
+        {
+            if (auto r = utf::to_int(shadow))
+            {
+                result.chan.r = r.value();
+                utf::trim_front(shadow, ",./:;");
+                if (auto g = utf::to_int(shadow))
                 {
-                    result.chan.r = r.value();
+                    result.chan.g = g.value();
                     utf::trim_front(shadow, ",./:;");
-                    if (auto g = utf::to_int(shadow))
+                    if (auto b = utf::to_int(shadow))
                     {
-                        result.chan.g = g.value();
+                        result.chan.b = b.value();
                         utf::trim_front(shadow, ",./:;");
-                        if (auto b = utf::to_int(shadow))
-                        {
-                            result.chan.b = b.value();
-                            utf::trim_front(shadow, ",./:;");
-                            if (auto a = utf::to_int(shadow)) result.chan.a = a.value();
-                            else                              result.chan.a = 0xff;
-                            return result;
-                        }
+                        if (auto a = utf::to_int(shadow)) result.chan.a = a.value();
+                        else                              result.chan.a = 0xff;
+                        return result;
                     }
                 }
-                log(" xml: unknown rgba format: { ", value, " }, expected 000,000,000,000 decimal rgba value");
             }
-            else // Single ANSI color value
-            {
-                if (auto c = utf::to_int(shadow); c.value() >=0 && c.value() <=255)
-                {
-                    result = rgba::color256[c.value()];
-                }
-                else log(" xml: unknown ANSI 256-color value format: { ", value, " }, expected 0-255 decimal value");
-            }
+            log(" xml: unknown rgba format: { ", value, " }, expected 000,000,000,000 decimal rgba value");
         }
-        return result;
+        else if (auto c = utf::to_int(shadow)) // Single ANSI color value
+        {
+            if (c.value() >=0 && c.value() <=255)
+            {
+                result = rgba::color256[c.value()];
+                return result;
+            }
+            else log(" xml: unknown ANSI 256-color value format: { ", value, " }, expected 0-255 decimal value");
+        }
+        return std::nullopt;
     }
 
 
@@ -296,35 +249,35 @@ namespace netxs::xml
         tag_value,     //
     };
 
-    class document
+    struct document
     {
-        class suit
+        struct suit
         {
-            class literal
+            struct literal
             {
-            public:
                 using list = std::list<literal>;
                 using iter = std::list<literal>::iterator;
 
                 suit& boss;
-                iter  upto;
                 type  kind;
+                iter  upto;
                 frag  part;
 
                 template<class ...Args>
                 literal(suit& boss, type kind, Args&&... args)
                     : boss{ boss },
                       kind{ kind },
+                      upto{ boss.data.end() },
                       part{ std::make_shared<text>(std::forward<Args>(args)...) }
                 { }
                 literal(suit& boss, type kind, frag part)
                     : boss{ boss },
                       kind{ kind },
+                      upto{ boss.data.end() },
                       part{ part }
                 { }
             };
 
-        public:
             using list = literal::list;
 
             list data;
@@ -333,6 +286,7 @@ namespace netxs::xml
             si32 deep;
             text file;
 
+            suit(suit&&) = default;
             suit(text file = {})
                 : live{ true },
                   fail{ faux },
@@ -369,20 +323,28 @@ namespace netxs::xml
                 }
                 return std::max(1_sz, count);
             }
+            auto utf8()
+            {
+                auto crop = text{};
+                for (auto& item : data)
+                {
+                    crop += *item.part;
+                }
+                return crop;
+            }
         };
 
-        class elem;
+        struct elem;
         using sptr = netxs::sptr<elem>;
         using wptr = netxs::wptr<elem>;
         using byid = std::unordered_map<text, sptr>;
         using list = std::vector<frag>;
         using vect = std::vector<sptr>;
-        using subs = std::unordered_map<text, vect>;
+        using subs = std::unordered_map<text, vect, qiew::hash, qiew::equal>;
 
-        class elem
+        struct elem
             : public std::enable_shared_from_this<elem>
         {
-        public:
             elem(suit& page, wptr parent_wptr)
                 : page{ page },
                   parent_wptr{ parent_wptr }
@@ -398,6 +360,46 @@ namespace netxs::xml
                 }
             }
 
+            auto enumerate(qiew path_str)
+            {
+                using utf::text;
+                path_str = utf::trim(path_str, '/');
+                auto root = shared_from_this();
+                auto crop = vect{}; //auto& items = config.root->sub["menu"][0]->sub["item"]...;
+                auto temp = text{};
+                auto path = utf::divide(path_str, '/');
+                if (path.size())
+                {
+                    auto head = path.begin();
+                    auto tail = path.end();
+                    auto item = root;
+                    while (head != tail)
+                    {
+                        temp = *head++;
+                        if (auto iter = item->sub.find(temp);
+                                iter!= item->sub.end())
+                        {
+                            auto& i = iter->second;
+                            crop.reserve(i.size());
+                            if (head == tail)
+                            {
+                                for (auto& item : i)
+                                {
+                                    if (!item->is_template) crop.push_back(item);
+                                }
+                            }
+                            else if (i.size() && i.front())
+                            {
+                                item = i.front();
+                            }
+                            else break;
+                        }
+                        else break;
+                    }
+                }
+                return crop;
+            }
+
             static auto create(suit& page, wptr parent_wptr = {})
             {
                 return std::make_shared<elem>(page, parent_wptr);
@@ -411,7 +413,7 @@ namespace netxs::xml
 
             static auto& map()
             {
-                static byid map;
+                static auto map = byid{};
                 return map;
             }
             template<class T>
@@ -431,21 +433,45 @@ namespace netxs::xml
             bool  is_template{};
             iter  start_iter;
 
-            static constexpr auto spaces = " \n\r\t";
-            static constexpr auto find_start = "<";
-            static constexpr auto rawtext_delims = " \t\n\r/><";
-            static constexpr auto token_delims = " \t\n\r=*/><";
+            auto get_value()
+            {
+                auto crop = text{};
+                for (auto& v : val_ptr_list)
+                {
+                    crop += *v;
+                }
+                return crop;
+            }
+            template<class T>
+            auto take(qiew attr, T fallback = {})
+            {
+                if (auto iter = sub.find(attr); iter != sub.end())
+                {
+                    auto& item_set = iter->second;
+                    if (item_set.size()) // Take the first item only.
+                    {
+                        auto crop = item_set.front()->get_value();
+                        if (auto result = xml::take<T>(crop)) return result.value();
+                        else                                  return fallback;
+                    }
+                }
+                if (auto def_ptr = def_wptr.lock()) return def_ptr->take(attr, fallback);
+                else                                return fallback;
+            }
 
-            static constexpr view view_comment_begin = "<!--";
-            static constexpr view view_comment_close = "-->" ;
-            static constexpr view view_close_tag     = "</"  ;
-            static constexpr view view_begin_tag     = "<"   ;
-            static constexpr view view_empty_tag     = "/>"  ;
-            static constexpr view view_slash         = "/"   ;
-            static constexpr view view_close_inline  = ">"   ;
-            static constexpr view view_quoted_text   = "\""  ;
-            static constexpr view view_equal         = "="   ;
-            static constexpr view view_defaults      = "*"   ;
+            static constexpr auto find_start         = "<"sv;
+            static constexpr auto rawtext_delims     = " \t\n\r/><"sv;
+            static constexpr auto token_delims       = " \t\n\r=*/><"sv;
+            static constexpr auto view_comment_begin = "<!--"sv;
+            static constexpr auto view_comment_close = "-->"sv;
+            static constexpr auto view_close_tag     = "</"sv;
+            static constexpr auto view_begin_tag     = "<"sv;
+            static constexpr auto view_empty_tag     = "/>"sv;
+            static constexpr auto view_slash         = "/"sv;
+            static constexpr auto view_close_inline  = ">"sv;
+            static constexpr auto view_quoted_text   = "\""sv;
+            static constexpr auto view_equal         = "="sv;
+            static constexpr auto view_defaults      = "*"sv;
 
             auto peek(view temp, type& what, type& last)
             {
@@ -462,13 +488,13 @@ namespace netxs::xml
                 else if (temp.starts_with(view_close_tag    )) what = type::close_tag;
                 else if (temp.starts_with(view_begin_tag    )) what = type::begin_tag;
                 else if (temp.starts_with(view_empty_tag    )) what = type::empty_tag;
-                else if (temp.starts_with(view_slash        ))
-                         what = type::unknown;
+                else if (temp.starts_with(view_slash        )) what = type::unknown;
                 else if (temp.starts_with(view_close_inline )) what = type::close_inline;
                 else if (temp.starts_with(view_quoted_text  )) what = type::quoted_text;
                 else if (temp.starts_with(view_equal        )) what = type::equal;
                 else if (temp.starts_with(view_defaults     )
-                      && last == type::token)        what = type::defaults;
+                      && last == type::token)                  what = type::defaults;
+                else if (view_spaces.find(temp.front()) != view::npos) what = type::whitespaces;
                 else if (last == type::close_tag
                       || last == type::begin_tag
                       || last == type::token
@@ -481,7 +507,7 @@ namespace netxs::xml
             {
                 auto item = utf::get_tail(data, token_delims);
                 utf::to_low(item);
-                return std::move(item);
+                return item;
             }
             template<bool Append_page = true>
             auto take_value(view& data)
@@ -593,8 +619,7 @@ namespace netxs::xml
             }
             auto check_spaces()
             {
-                auto& a = page.data.back();
-                if (page.last_type() != type::whitespaces)
+                if (page.data.empty() || page.last_type() != type::whitespaces)
                 {
                     page.append(type::whitespaces, "");
                 }
@@ -627,7 +652,7 @@ namespace netxs::xml
 
                 if (what == type::equal)
                 {
-                    diff(data, temp, type::whitespaces);
+                    diff(temp, data, type::whitespaces);
                     data=temp;
 
                     page.append(type::equal, skip(data, what));
@@ -917,7 +942,6 @@ namespace netxs::xml
             }
         };
 
-    public:
         suit page;
         sptr root;
 
@@ -931,23 +955,52 @@ namespace netxs::xml
         {
             
         }
+        auto utf8()
+        {
+            return page.utf8();
+        }
+        auto enumerate(view path_str)
+        {
+            if (path_str == "/") return vect{ root };
+            else
+            {
+                path_str = utf::trim(path_str, '/');
+                auto tmp = utf::cutoff(path_str, '/');
+                if (root && root->tag_ptr && *(root->tag_ptr) == tmp)
+                {
+                    return root->enumerate(path_str.substr(tmp.size()));
+                }
+            }
+            return vect{};
+        }
         auto show()
         {
-            static const rgba top_token_fg = 0xFFffd799;
-            static const rgba end_token_fg = 0xFFb3966a;
-            static const rgba token_fg     = 0xFFdab883;
-            static const rgba liter_fg     = 0xFF808080;
-            static const rgba comment_fg   = 0xFF4e4e4e;
-            static const rgba defaults_fg  = 0xFF9e9e9e;
-            static const rgba quotes_fg    = 0xFFBBBBBB;
-            static const rgba value_fg     = 0xFFf09690;
-            static const rgba value_bg     = 0xFF202020;
+            static constexpr auto top_token_fg = rgba{ 0xFFffd799 };
+            static constexpr auto end_token_fg = rgba{ 0xFFb3966a };
+            static constexpr auto token_fg     = rgba{ 0xFFdab883 };
+            static constexpr auto liter_fg     = rgba{ 0xFF808080 };
+            static constexpr auto comment_fg   = rgba{ 0xFF4e4e4e };
+            static constexpr auto defaults_fg  = rgba{ 0xFF9e9e9e };
+            static constexpr auto quotes_fg    = rgba{ 0xFFBBBBBB };
+            static constexpr auto value_fg     = rgba{ 0xFFf09690 };
+            static constexpr auto value_bg     = rgba{ 0xFF202020 };
+
+            //test
+            //auto tmp = page.data.front().upto;
+            //auto clr = 0;
 
             auto yield = ansi::esc{};
             for (auto& item : page.data)
             {
                 auto kind = item.kind;
                 auto data_ptr = item.part;
+
+                //test
+                //if (item.upto == page.data.end() || tmp != item.upto)
+                //{
+                //    clr++;
+                //    tmp = item.upto;
+                //}
 
                 auto fgc = rgba{};
                 auto bgc = rgba{};
@@ -974,17 +1027,13 @@ namespace netxs::xml
                     default: break;
                 }
                 auto& data = *data_ptr;
+                //test
+                //yield.bgc((tint)(clr % 8));
                 if (kind == type::tag_value)
                 {
                     auto temp = data;
-                    if (fgc)
-                    {
-                        //if (bgc) yield.fgc(fgc).bgc(bgc);
-                        //else     yield.fgc(fgc);
-                        //yield.add(xml::escape(temp)).nil();
-                        yield.fgc(fgc).add(xml::escape(temp)).nil();
-                    }
-                    else yield.add(xml::escape(temp));
+                    if (fgc) yield.fgc(fgc).add(xml::escape(temp)).nil();
+                    else     yield.add(xml::escape(temp));
                 }
                 else
                 {
@@ -1010,11 +1059,127 @@ namespace netxs::xml
             return yield;
         }
 
+        document(document&&) = default;
         document(view data, text file = "")
             : page{ file },
               root{ elem::root(page, data) }
         {
             if (page.fail) log(" xml: inconsistent xml data from ", page.file, "\n", show());
+        }
+    };
+
+    struct settings
+    {
+        netxs::sptr<xml::document> fallback; // = std::make_shared<xml::document>(default_config, "");
+        netxs::sptr<xml::document> document; // = fallback;
+        xml::document::vect list{};
+        xml::document::vect temp{};
+        text cwd{};
+        text defaults{};
+
+        settings(view default_config)
+            : fallback{ std::make_shared<xml::document>(default_config, "") },
+              document{ fallback }
+        { }
+        settings(settings const& other)
+            : fallback{ other.fallback },
+              document{ other.document }
+        { }
+        settings() = default;
+
+        auto cd(view path, view defpath = {})
+        {
+            defaults = utf::trim(defpath, '/');
+            if (path.empty()) return faux;
+            if (path.front() == '/')
+            {
+                path = utf::trim(path, '/');
+                cwd = "/" + text{ path };
+                temp = document->enumerate(cwd);
+                if (temp.empty()) temp = fallback->enumerate(cwd);
+            }
+            else
+            {
+                path = utf::trim(path, '/');
+                cwd += "/" + text{ path };
+                if (temp.size())
+                {
+                    temp = temp.front()->enumerate(path);
+                    if (temp.empty()) temp = fallback->enumerate(cwd);
+                }
+            }
+            auto test = !!temp.size();
+            if (!test)
+            {
+                log(" xml:" + ansi::fgc(redlt) + " xml path not found: " + ansi::nil() + cwd);
+            }
+            return test;
+        }
+        template<class T = si32>
+        auto take(view path, T defval = {})
+        {
+            if (path.empty()) return defval;
+            auto crop = text{};
+            auto dest = text{};
+            if (path.front() == '/')
+            {
+                dest = utf::trim(path, '/');
+                list = document->enumerate(dest);
+            }
+            else
+            {
+                path = utf::trim(path, '/');
+                dest = cwd + "/" + text{ path };
+                if (temp.size()) list = temp.front()->enumerate(path);
+                if (list.empty() && defaults.size())
+                {
+                    dest = defaults + "/" + text{ path };
+                    list = document->enumerate(dest);
+                }
+            }
+            if (list.empty()) list = fallback->enumerate(dest);
+            if (list.size() ) crop = list.back()->get_value();
+            else              log(" xml:" + ansi::fgc(redlt) + " xml path not found: " + ansi::nil() + dest);
+            list.clear();
+            if (auto result = xml::take<T>(crop)) return result.value();
+            else
+            {
+                if (crop.size()) return take("/config/set/" + crop, defval);
+                else             return defval;
+            }
+        }
+        template<class T>
+        auto take(view path, T defval, std::unordered_map<text, T> dict)
+        {
+            if (path.empty()) return defval;
+            auto crop = take(path, ""s);
+            auto iter = dict.find(crop);
+            return iter == dict.end() ? defval
+                                      : iter->second;
+        }
+        auto take(view path, cell defval)
+        {
+            if (path.empty()) return defval;
+            auto fgc_path = text{ path } + '/' + "fgc";
+            auto bgc_path = text{ path } + '/' + "bgc";
+            auto crop = cell{};
+            crop.fgc(take(fgc_path, defval.fgc()));
+            crop.bgc(take(bgc_path, defval.bgc()));
+            return crop;
+        }
+        auto take_list(view path)
+        {
+            auto list = document->enumerate(path);
+            if (list.empty()) list = fallback->enumerate(path);
+            return list;
+        }
+        auto utf8()
+        {
+            return document->utf8();
+        }
+        auto merge(view run_config)
+        {
+            //todo implement
         }
     };
 }
