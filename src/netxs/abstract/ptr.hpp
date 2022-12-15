@@ -16,21 +16,29 @@ namespace netxs
         T    last = {};
         bool test = faux;
 
-        bool operator () (T newvalue)
+        bool test_and_set(T newvalue)
         {
             prev = last;
             test = last != newvalue;
             if (test) last = newvalue;
             return test;
         }
-        operator T& () { return last; }
+        bool operator () (T newvalue)
+        {
+            return test_and_set(newvalue);
+        }
+        operator auto& ()       { return last; }
+        operator auto& () const { return last; }
         auto reset()
         {
             auto temp = test;
             test = faux;
             return temp;
         }
-        testy() = default;
+        testy()                          = default;
+        testy(testy&&)                   = default;
+        testy(testy const&)              = default;
+        testy& operator = (testy const&) = default;
         testy(T const& value)
             : prev{ value },
               last{ value },
@@ -55,6 +63,11 @@ namespace netxs
         auto shadow(sptr<T> p)
         {
             return std::weak_ptr<T>{ p };
+        }
+        template <class T>
+        auto shared(T&& from)
+        {
+            return std::make_shared<std::decay_t<T>>(std::forward<T>(from));
         }
     }
 

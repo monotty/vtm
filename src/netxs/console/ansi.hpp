@@ -6,6 +6,7 @@
 
 #include "../ui/layout.hpp"
 #include "../abstract/tree.hpp"
+#include "../datetime/quartz.hpp"
 
 #include <mutex>
 #include <array>
@@ -259,7 +260,6 @@ namespace netxs::ansi
     static const auto CCC_CHY    = 22 ; // CSI 22: y       p  - caret V absolute position 0-based.
     static const auto CCC_REF    = 23 ; // CSI 23: id      p  - create the reference to the existing paragraph.
     static const auto CCC_SBS    = 24 ; // CSI 24: n: m    p  - define scrollback size: n: max size, m: grow_by step.
-    static const auto CCC_EXT    = 25 ; // CSI 25: b       p  - extended functionality support.
     static const auto CCC_SMS    = 26 ; // CSI 26: b       p  - Should the mouse poiner to be drawn.
 
     static const auto CCC_SGR    = 28 ; // CSI 28: ...     p  - Set the default SGR attribute for the built-in terminal background (one attribute per command).
@@ -270,6 +270,7 @@ namespace netxs::ansi
     static const auto mimeansi = "text/xterm"sv;
     static const auto mimehtml = "text/html"sv;
     static const auto mimerich = "text/rtf"sv;
+    static const auto mimesafe = "text/protected"sv;
 
     struct clip
     {
@@ -280,16 +281,91 @@ namespace netxs::ansi
             ansitext,
             richtext,
             htmltext,
+            safetext, // mime: Sensitive textonly data.
             count,
         };
 
-        text utf8{};
-        mime kind{ mime::ansitext };
+        twod size;
+        text utf8;
+        mime kind;
 
+        clip()
+            : kind{ mime::ansitext }
+        { }
+        clip(twod const& size, view utf8, mime kind)
+            : size{ size },
+              utf8{ utf8 },
+              kind{ kind }
+        { }
+        void set(clip const& data)
+        {
+            size = dot_00;
+            auto rawdata = view{ data.utf8 };
+            if (data.kind == mime::disabled)
+            {
+                auto valid = true;
+                kind = ansi::clip::textonly;
+                // rawdata=mime/size_x/size_y;data
+                     if (rawdata.starts_with(ansi::mimeansi)) { rawdata.remove_prefix(ansi::mimeansi.length()); kind = mime::ansitext; }
+                else if (rawdata.starts_with(ansi::mimetext)) { rawdata.remove_prefix(ansi::mimetext.length()); kind = mime::textonly; }
+                else if (rawdata.starts_with(ansi::mimerich)) { rawdata.remove_prefix(ansi::mimerich.length()); kind = mime::richtext; }
+                else if (rawdata.starts_with(ansi::mimehtml)) { rawdata.remove_prefix(ansi::mimehtml.length()); kind = mime::htmltext; }
+                else if (rawdata.starts_with(ansi::mimesafe)) { rawdata.remove_prefix(ansi::mimesafe.length()); kind = mime::safetext; }
+                else
+                {
+                    valid = faux;
+                    kind = mime::textonly;
+                    auto pos = rawdata.find(';');
+                    if (pos != text::npos)
+                    {
+                        rawdata = rawdata.substr(pos + 1);
+                    }
+                    else rawdata = {};
+                }
+                if (valid && rawdata.size())
+                {
+                    if (rawdata.front() == '/') // Proceed preview size if present.
+                    {
+                        rawdata.remove_prefix(1);
+                        if (auto v = utf::to_int(rawdata))
+                        {
+                            static constexpr auto max_value = twod{ 2000, 1000 }; //todo unify
+                            size.x = v.value();
+                            if (rawdata.size())
+                            {
+                                rawdata.remove_prefix(1);
+                                if (auto v = utf::to_int(rawdata))
+                                {
+                                    size.y = v.value();
+                                }
+                                else size.x = 0;
+                            }
+                            size = std::clamp(size, dot_00, max_value);
+                        }
+                    }
+                    if (rawdata.size() && rawdata.front() == ';')
+                    {
+                        rawdata.remove_prefix(1);
+                    }
+                    else // Unknown format.
+                    {
+                        size = {};
+                        rawdata = {};
+                    }
+                }
+            }
+            else kind = data.kind;
+            utf8 = rawdata;
+            size = rawdata.empty() ? dot_00
+                 : size            ? size
+                 : data.size       ? data.size
+                                   : twod{ 80,25 }; //todo make it configurable
+        }
         void clear()
         {
             utf8.clear();
             kind = mime::ansitext;
+            size = dot_00;
         }
     };
 
@@ -636,12 +712,13 @@ namespace netxs::ansi
         auto& save_palette()        { return add("\033[#P"                           ); } // esc: Push palette onto stack XTPUSHCOLORS.
         auto& load_palette()        { return add("\033[#Q"                           ); } // esc: Pop  palette from stack XTPOPCOLORS.
         auto& old_palette_reset()   { return add("\033]R"                            ); } // esc: Reset color palette (Linux console).
-        auto& clipbuf(clip::mime kind, view utf8) // esc: Set clipboard buffer.
+        auto& clipbuf(twod size, view utf8, clip::mime kind) // esc: Set clipboard buffer.
         {
             return add("\033]52;", kind == clip::htmltext ? mimehtml
                                  : kind == clip::richtext ? mimerich
                                  : kind == clip::ansitext ? mimeansi
-                                                          : mimetext, ";", utf::base64(utf8), C0_BEL);
+                                 : kind == clip::safetext ? mimesafe
+                                                          : mimetext, "/", size.x, "/", size.y, ";", utf::base64(utf8), C0_BEL);
         }
         auto& old_palette(si32 i, rgba const& c) // esc: Set color palette (Linux console).
         {
@@ -675,14 +752,110 @@ namespace netxs::ansi
             osc_palette(15, rgba::color256[tint::whitelt  ]);
             return *this;
         }
-        auto& mouse_sgr(si32 ctrl, twod const& coor, bool ispressed) // esc: Mouse tracking report (SGR).
+        template<class T, class S>
+        auto& mouse_sgr(T const& gear, S const& cached, twod const& coor) // esc: Mouse tracking report (SGR).
         {
+            using hids = T;
+            static constexpr auto left     = si32{ 0  };
+            static constexpr auto mddl     = si32{ 1  };
+            static constexpr auto rght     = si32{ 2  };
+            static constexpr auto btup     = si32{ 3  };
+            static constexpr auto idle     = si32{ 32 };
+            static constexpr auto wheel_up = si32{ 64 };
+            static constexpr auto wheel_dn = si32{ 65 };
+
+            auto ctrl = si32{};
+            if (gear.m.ctlstat & hids::anyShift) ctrl |= 0x04;
+            if (gear.m.ctlstat & hids::anyAlt  ) ctrl |= 0x08;
+            if (gear.m.ctlstat & hids::anyCtrl ) ctrl |= 0x10;
+
+            auto m_bttn = std::bitset<8>{ gear.m.buttons };
+            auto s_bttn = std::bitset<8>{ cached.buttons };
+            auto m_left = m_bttn[hids::left  ];
+            auto m_rght = m_bttn[hids::right ];
+            auto m_mddl = m_bttn[hids::middle];
+            auto s_left = s_bttn[hids::left  ];
+            auto s_rght = s_bttn[hids::right ];
+            auto s_mddl = s_bttn[hids::middle];
+            auto pressed = bool{};
+
+            if (m_left != s_left)
+            {
+                ctrl |= left;
+                pressed = m_left;
+            }
+            else if (m_rght != s_rght)
+            {
+                ctrl |= rght;
+                pressed = m_rght;
+            }
+            else if (m_mddl != s_mddl)
+            {
+                ctrl |= mddl;
+                pressed = m_mddl;
+            }
+            else if (gear.m.wheeled)
+            {
+                ctrl |= gear.m.wheeldt > 0 ? wheel_up
+                                           : wheel_dn;
+                pressed = true;
+            }
+            else if (gear.m.buttons)
+            {
+                     if (m_left) ctrl |= left;
+                else if (m_rght) ctrl |= rght;
+                else if (m_mddl) ctrl |= mddl;
+                ctrl |= idle;
+                pressed = true;
+            }
+            else
+            {
+                ctrl |= idle + btup;
+                pressed = faux;
+            }
             return add("\033[<", ctrl, ';',
                            coor.x + 1, ';',
-                           coor.y + 1, ispressed ? 'M' : 'm');
+                           coor.y + 1, pressed ? 'M' : 'm');
         }
-        auto& mouse_x11(si32 ctrl, twod const& coor) // esc: Mouse tracking report (X11).
+        template<class T, class S>
+        auto& mouse_x11(T const& gear, S const& cached, twod const& coor) // esc: Mouse tracking report (X11).
         {
+            using hids = T;
+            static constexpr auto left     = si32{ 0  };
+            static constexpr auto mddl     = si32{ 1  };
+            static constexpr auto rght     = si32{ 2  };
+            static constexpr auto btup     = si32{ 3  };
+            static constexpr auto idle     = si32{ 32 };
+            static constexpr auto wheel_up = si32{ 64 };
+            static constexpr auto wheel_dn = si32{ 65 };
+
+            auto ctrl = si32{};
+            if (gear.m.ctlstat & hids::anyShift) ctrl |= 0x04;
+            if (gear.m.ctlstat & hids::anyAlt  ) ctrl |= 0x08;
+            if (gear.m.ctlstat & hids::anyCtrl ) ctrl |= 0x10;
+
+            auto m_bttn = std::bitset<8>{ gear.m.buttons };
+            auto s_bttn = std::bitset<8>{ cached.buttons };
+            auto m_left = m_bttn[hids::left  ];
+            auto m_rght = m_bttn[hids::right ];
+            auto m_mddl = m_bttn[hids::middle];
+            auto s_left = s_bttn[hids::left  ];
+            auto s_rght = s_bttn[hids::right ];
+            auto s_mddl = s_bttn[hids::middle];
+
+                 if (m_left != s_left) ctrl |= m_left ? left : btup;
+            else if (m_rght != s_rght) ctrl |= m_rght ? rght : btup;
+            else if (m_mddl != s_mddl) ctrl |= m_mddl ? mddl : btup;
+            else if (gear.m.wheeled  ) ctrl |= gear.m.wheeldt > 0 ? wheel_up
+                                                                  : wheel_dn;
+            else if (gear.m.buttons)
+            {
+                     if (m_left) ctrl |= left;
+                else if (m_rght) ctrl |= rght;
+                else if (m_mddl) ctrl |= mddl;
+                ctrl |= idle;
+            }
+            else ctrl |= idle + btup;
             return add("\033[M", static_cast<char>(std::clamp(ctrl,       0, 255-32) + 32),
                                  static_cast<char>(std::clamp(coor.x + 1, 1, 255-32) + 32),
                                  static_cast<char>(std::clamp(coor.y + 1, 1, 255-32) + 32));
@@ -728,7 +901,6 @@ namespace netxs::ansi
         auto& rlf_or(feed n)     { return add("\033[18:", n  , CSI_CCC); } // esc: Reverse line feed.
         auto& idx(si32 i)        { return add("\033[19:", i  , CSI_CCC); } // esc: Split the text run and associate the fragment with an id.
         auto& ref(si32 i)        { return add("\033[23:", i  , CSI_CCC); } // esc: Create the reference to the existing paragraph.
-        auto& ext(si32 b)        { return add("\033[25:", b  , CSI_CCC); } // esc: Extended functionality support, 0 - faux, 1 - true.
         auto& show_mouse(si32 b) { return add("\033[26:", b  , CSI_CCC); } // esc: Should the mouse poiner to be drawn.
     };
 
@@ -782,7 +954,6 @@ namespace netxs::ansi
     static auto mgr(si32 n)           { return esc{}.mgr(n);        } // ansi: Right margin.
     static auto mgt(si32 n)           { return esc{}.mgt(n);        } // ansi: Top margin.
     static auto mgb(si32 n)           { return esc{}.mgb(n);        } // ansi: Bottom margin.
-    static auto ext(bool b)           { return esc{}.ext(b);        } // ansi: Extended functionality.
     static auto fcs(bool b)           { return esc{}.fcs(b);        } // ansi: Terminal window focus.
     static auto jet(bias n)           { return esc{}.jet(n);        } // ansi: Text alignment.
     static auto wrp(wrap n)           { return esc{}.wrp(n);        } // ansi: Text wrapping.
@@ -1126,7 +1297,6 @@ namespace netxs::ansi
                     csi_ccc[CCC_IDX] = nullptr;
                     csi_ccc[CCC_REF] = nullptr;
                     csi_ccc[CCC_SBS] = nullptr;
-                    csi_ccc[CCC_EXT] = nullptr;
                     csi_ccc[CCC_SMS] = nullptr;
                     csi_ccc[CCC_SGR] = nullptr;
                     csi_ccc[CCC_SEL] = nullptr;
@@ -2063,6 +2233,27 @@ namespace netxs::ansi
                     auto crop = qiew(head, iter - head);
                     return crop;
                 }
+                // stream: .
+                template<class T, class P, bool Plain = std::is_same_v<void, std::invoke_result_t<P, qiew>>>
+                static void reading_loop(T& link, P&& proc)
+                {
+                    auto flow = text{};
+                    while (link)
+                    {
+                        auto shot = link.recv();
+                        if (shot && link)
+                        {
+                            flow += shot;
+                            if (auto crop = purify(flow))
+                            {
+                                if constexpr (Plain) proc(crop);
+                                else            if (!proc(crop)) break;
+                                flow.erase(0, crop.size()); // Delete processed data.
+                            }
+                        }
+                        else break;
+                    }
+                }
 
                 // stream: .
                 auto length() const
@@ -2302,11 +2493,32 @@ namespace netxs::ansi
                         stream::reset();                                              \
                         stream::add(SEQ_NAME(WRAP(struct_members)) noop{});           \
                     }                                                                 \
+                    template<class T>                                                 \
+                    void set(T&& source)                                              \
+                    {                                                                 \
+                        SEQ_TEMP(WRAP(struct_members))                                \
+                        stream::reset();                                              \
+                        stream::add(SEQ_NAME(WRAP(struct_members)) noop{});           \
+                    }                                                                 \
                     void get(view& _data)                                             \
                     {                                                                 \
                         int _tmp;                                                     \
                         std::tie(SEQ_NAME(WRAP(struct_members)) _tmp) =               \
                             stream::take<SEQ_TYPE(WRAP(struct_members)) noop>(_data); \
+                    }                                                                 \
+                    void wipe()                                                       \
+                    {                                                                 \
+                        SEQ_WIPE(WRAP(struct_members))                                \
+                        stream::reset();                                              \
+                    }                                                                 \
+                                                                                      \
+                    friend std::ostream& operator << (std::ostream& s,                \
+                                                        CAT(struct_name, _t) const& o)\
+                    {                                                                 \
+                        s << #struct_name " {";                                       \
+                        SEQ_LOGS(WRAP(struct_members))                                \
+                        s << " }";                                                    \
+                        return s;                                                     \
                     }                                                                 \
                 };                                                                    \
                 using struct_name = wrapper<CAT(struct_name, _t)>;
@@ -2320,19 +2532,30 @@ namespace netxs::ansi
                     { }                                                               \
                     void set() {}                                                     \
                     void get(view& data) {}                                           \
+                                                                                      \
+                    friend std::ostream& operator << (std::ostream& s,                \
+                                                        CAT(struct_name, _t) const& o)\
+                    {                                                                 \
+                        return s << #struct_name " { }";                              \
+                    }                                                                 \
                 };                                                                    \
                 using struct_name = wrapper<CAT(struct_name, _t)>;
 
             using imap = netxs::imap<text, text>;
+            //todo unify
+            static auto& operator << (std::ostream& s, imap const& o) { return s << "{...}"; }
+            static auto& operator << (std::ostream& s, wchr const& o) { return s << "0x" << utf::to_hex(o); }
+
             // Output stream.
             STRUCT(frame_element,     (frag, data))
             STRUCT(jgc_element,       (ui64, token) (text, cluster))
             STRUCT(tooltip_element,   (id_t, gear_id) (text, tip_text))
-            STRUCT(mouse_event,       (id_t, gear_id) (hint, cause) (twod, coord))
+            STRUCT(mouse_event,       (id_t, gear_id) (hint, cause) (twod, coord) (twod, delta) (ui32, buttons))
             STRUCT(set_clipboard,     (id_t, gear_id) (twod, clip_prev_size) (text, clipdata) (si32, mimetype))
             STRUCT(request_clipboard, (id_t, gear_id))
             STRUCT(set_focus,         (id_t, gear_id) (bool, combine_focus) (bool, force_group_focus))
             STRUCT(off_focus,         (id_t, gear_id))
+            STRUCT(maximize,          (id_t, gear_id))
             STRUCT(form_header,       (id_t, window_id) (text, new_header))
             STRUCT(form_footer,       (id_t, window_id) (text, new_footer))
             STRUCT(warping,           (id_t, window_id) (dent, warpdata))
@@ -2342,17 +2565,25 @@ namespace netxs::ansi
             STRUCT_LITE(request_debug)
 
             // Input stream.
-            STRUCT(focus,             (id_t, gear_id) (bool, state) (bool, combine_focus) (bool, force_group_focus))
+            STRUCT(sysfocus,          (id_t, gear_id) (bool, enabled) (bool, combine_focus) (bool, force_group_focus))
+            STRUCT(syskeybd,          (id_t, gear_id) (ui32, ctlstat) (ui32, winctrl) (ui32, virtcod) (ui32, scancod) (bool, pressed) (ui32, imitate) (text, cluster) (wchr, winchar))
+            STRUCT(sysmouse,          (id_t, gear_id)  // sysmouse: Devide id.
+                                      (ui32, enabled)  // sysmouse: Mouse device health status.
+                                      (ui32, ctlstat)  // sysmouse: Keybd modifiers state.
+                                      (ui32, winctrl)  // sysmouse: Windows specific keybd modifier state.
+                                      (ui32, buttons)  // sysmouse: Buttons bit state.
+                                      (bool, doubled)  // sysmouse: Double click.
+                                      (bool, wheeled)  // sysmouse: Vertical scroll wheel.
+                                      (bool, hzwheel)  // sysmouse: Horizontal scroll wheel.
+                                      (si32, wheeldt)  // sysmouse: Scroll delta.
+                                      (twod, coordxy)  // sysmouse: Cursor coordinates.
+                                      (ui32, changed)) // sysmouse: Update stamp.
+            STRUCT(mouse_show,        (bool, mode)) // CCC_SMS/* 26:1p */
             STRUCT(winsz,             (id_t, gear_id) (twod, winsize))
             STRUCT(clipdata,          (id_t, gear_id) (text, data) (si32, mimetype))
+            STRUCT(osclipdata,        (id_t, gear_id) (text, data) (si32, mimetype))
             STRUCT(plain,             (id_t, gear_id) (text, utf8txt))
             STRUCT(ctrls,             (id_t, gear_id) (ui32, ctlstat))
-            STRUCT(keybd,             (id_t, gear_id) (ui32, ctlstat) (ui32, winctrl) (ui32, virtcod) (ui32, scancod) (bool, pressed) (ui32, imitate) (text, cluster) (wchr, winchar))
-            STRUCT(mouse,             (id_t, gear_id) (ui32, ctlstat) (ui32, winctrl) (ui32, buttons) (ui32, msflags) (ui32, wheeldt) (twod, coordxy))
-            STRUCT(mouse_stop,        (id_t, gear_id))
-            STRUCT(mouse_halt,        (id_t, gear_id))
-            STRUCT(mouse_show,        (bool, mode)) // CCC_SMS/* 26:1p */
-            STRUCT(native,            (bool, mode)) // CCC_EXT/* 25:1p */
             STRUCT(unknown_gc,        (ui64, token))
             STRUCT(fps,               (si32, frame_rate))
             STRUCT(bgc,               (rgba, color))
@@ -2360,6 +2591,7 @@ namespace netxs::ansi
             STRUCT(slimmenu,          (bool, menusize))
             STRUCT(debugdata,         (text, data))
             STRUCT(debuglogs,         (text, data))
+            STRUCT(debugtext,         (text, data))
 
             #undef STRUCT
             #undef STRUCT_LITE
@@ -2612,6 +2844,7 @@ namespace netxs::ansi
                 X(request_clipboard) /* Request main clipboard data.                  */\
                 X(off_focus        ) /* Request to remove focus.                      */\
                 X(set_focus        ) /* Request to set focus.                         */\
+                X(maximize         ) /* Request to maximize/restore                   */\
                 X(form_header      ) /* Set window title.                             */\
                 X(form_footer      ) /* Set window footer.                            */\
                 X(warping          ) /* Warp resize.                                  */\
@@ -2623,17 +2856,15 @@ namespace netxs::ansi
                 X(jgc_element      ) /* jumbo GC: gc.token + gc.view.                 */\
                 X(request_debug    ) /* Request debug output redirection to stdin.    */\
                 /* Input stream                                                       */\
-                X(focus            ) /* Set/unset focus.                              */\
+                X(sysfocus         ) /* System focus state.                           */\
+                X(syskeybd         ) /* System keybd device.                          */\
+                X(sysmouse         ) /* System mouse device.                          */\
+                X(mouse_show       ) /* Show mouse cursor.                            */\
                 X(winsz            ) /* Window resize.                                */\
                 X(clipdata         ) /* Clipboard raw data.                           */\
+                X(osclipdata       ) /* OS clipboard data.                            */\
                 X(plain            ) /* Raw text input.                               */\
                 X(ctrls            ) /* Keyboard modifiers state.                     */\
-                X(keybd            ) /* Keybd events.                                 */\
-                X(mouse            ) /* Mouse events.                                 */\
-                X(mouse_stop       ) /* Mouse disconnected.                           */\
-                X(mouse_halt       ) /* Mouse leaves window.                          */\
-                X(mouse_show       ) /* Show mouse cursor.                            */\
-                X(native           ) /* Set native/desktopio mode.                    */\
                 X(request_gc       ) /* Unknown gc token list.                        */\
                 X(unknown_gc       ) /* Unknown gc token.                             */\
                 X(fps              ) /* Set frame rate.                               */\
@@ -2641,7 +2872,8 @@ namespace netxs::ansi
                 X(fgc              ) /* Set foreground color.                         */\
                 X(slimmenu         ) /* Set window menu size.                         */\
                 X(debugdata        ) /* Debug data.                                   */\
-                X(debuglogs        ) /* Debug logs.                                   */
+                X(debuglogs        ) /* Debug logs.                                   */\
+                X(debugtext        ) /* Debug forwarding.                             */
 
                 struct xs
                 {

@@ -192,7 +192,7 @@ namespace netxs::app::shop
             return std::tuple{ appstore_head, appstore_body, desktopio_body };
         };
 
-        auto build = [](text cwd, text arg, xml::settings& config)
+        auto build = [](text cwd, text arg, xml::settings& config, text patch)
         {
             auto highlight_color = skin::color(tone::highlight);
             auto c3 = highlight_color;
@@ -216,7 +216,9 @@ namespace netxs::app::shop
             auto object = window->attach(ui::fork::ctor(axis::Y))
                                 ->colors(whitelt, 0);
                 auto menu_object = object->attach(slot::_1, ui::fork::ctor(axis::Y));
-                    menu_object->attach(slot::_1, app::shared::custom_menu(faux, {}));
+                    config.cd("/config/gems/", "/config/defapp/");
+                    auto [menu_block, cover, menu_data] = app::shared::custom_menu(config, {});
+                    menu_object->attach(slot::_1, menu_block);
                     menu_object->attach(slot::_2, ui::post::ctor())
                                ->plugin<pro::limit>(twod{ 37,-1 }, twod{ -1,-1 })
                                ->upload(appstore_head)
