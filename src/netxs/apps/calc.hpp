@@ -192,7 +192,7 @@ namespace netxs::ui
                     data = " =SUM(" + ansi::fgc(bluedk).add(data).fgc(blacklt).add(")");
                 }
                 else data = " =SUM(" + ansi::itc(true).fgc(reddk).add("select cells by dragging").itc(faux).fgc(blacklt).add(")");
-                log("calc: DATA ", data, ansi::nil());
+                log(prompt::calc, "DATA ", data, ansi::nil());
                 boss.SIGNAL(tier::release, e2::data::utf8, data);
             }
             // pro::cell_highlight: Configuring the mouse button to operate.
@@ -292,7 +292,7 @@ namespace netxs::app::calc
                     if (!(i % 2))
                     {
                         auto c0 = base;
-                        for (auto i = 0; i < label.length(); i++)
+                        for (auto i = 0_sz; i < label.length(); i++)
                         {
                             cellatix_rows += ansi::bgc(c0) + label[i];
                             c0 += step;
@@ -304,7 +304,7 @@ namespace netxs::app::calc
                     else
                     {
                         auto c0 = base + step * (si32)label.length();
-                        for (auto i = 0; i < label.length(); i++)
+                        for (auto i = 0_sz; i < label.length(); i++)
                         {
                             cellatix_rows += ansi::bgc(c0) + label[i];
                             c0 -= step;
@@ -337,9 +337,9 @@ namespace netxs::app::calc
                   ->invoke([&](auto& boss)
                   {
                       //boss.keybd.accept(true);
-                      boss.LISTEN(tier::anycast, e2::form::proceed::quit::any, item)
+                      boss.LISTEN(tier::anycast, e2::form::proceed::quit::any, fast)
                       {
-                          boss.RISEUP(tier::release, e2::form::proceed::quit::one, item);
+                          boss.RISEUP(tier::release, e2::form::proceed::quit::one, fast);
                       };
                       boss.LISTEN(tier::release, e2::form::upon::vtree::attached, parent)
                       {

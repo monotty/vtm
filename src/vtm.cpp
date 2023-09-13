@@ -21,8 +21,6 @@ int main(int argc, char* argv[])
     auto defaults = 
     #include "vtm.xml"
 
-    auto vtmode = os::tty::vtmode();
-    auto banner = [&]{ log(app::vtm::desc, ' ', app::shared::version); };
     auto whoami = type::client;
     auto params = text{};
     auto cfpath = text{};
@@ -53,7 +51,7 @@ int main(int argc, char* argv[])
             vtpipe = getopt.next();
             if (vtpipe.empty())
             {
-                errmsg = "custom pipe not specified";
+                errmsg = "Custom pipe not specified";
                 break;
             }
         }
@@ -70,20 +68,25 @@ int main(int argc, char* argv[])
             cfpath = getopt.next();
             if (cfpath.empty())
             {
-                errmsg = "config file path not specified";
+                errmsg = "Config file path not specified";
                 break;
             }
         }
         else if (getopt.match("-?", "-h", "--help"))
         {
-            errmsg = ansi::nil().add("show help message");
+            errmsg = ansi::nil().add("Show help message");
             break;
         }
         else if (getopt.match("-v", "--version"))
         {
-            auto syslog = os::tty::logger(vtmode, true);
+            netxs::logger::wipe();
+            auto syslog = os::tty::logger();
             log(app::shared::version);
             return 0;
+        }
+        else if (getopt.match("--onlylog"))
+        {
+            os::dtvt::vtmode |= os::dtvt::onlylog;
         }
         else if (getopt.match("--"))
         {
@@ -91,32 +94,34 @@ int main(int argc, char* argv[])
         }
         else
         {
-            errmsg = utf::concat("unknown option '", getopt.next(), "'");
+            errmsg = utf::concat("Unknown option '", getopt.next(), "'");
             break;
         }
     }
 
-    auto syslog = os::tty::logger(vtmode);
-    banner();
+    auto syslog = os::tty::logger();
+    auto direct = os::dtvt::active;
+    log(prompt::vtm, app::shared::version);
     if (errmsg.size())
     {
         os::fail(errmsg);
         auto myname = os::process::binary<true>();
-        log("\nTerminal multiplexer with window manager and session sharing.\n\n"s
+        log("\nVirtual terminal multiplexer with window manager and session sharing.\n\n"s
             + "  Syntax:\n\n    " + myname + " [ -c <file> ] [ -p <pipe> ] [ -q ] [ -l | -m | -d | -s | -r [<app> [<args...>]] ]\n"s
             + "\n"s
             + "  Options:\n\n"s
-            + "    No arguments        Run client, auto start server if it is not running.\n"s
-            + "    -c | --config <..>  Use specified configuration file.\n"s
-            + "    -p | --pipe   <..>  Set the pipe to connect to.\n"s
-            + "    -q | --quiet        Disable logging.\n"s
-            + "    -l | --listconfig   Show configuration and exit.\n"s
-            + "    -m | --monitor      Monitor server log.\n"s
-            + "    -d | --daemon       Run server in background.\n"s
-            + "    -s | --server       Run server in interactive mode.\n"s
-            + "    -r | --runapp <..>  Run standalone application.\n"s
-            + "    -v | --version      Show version and exit.\n"s
-            + "    -? | -h | --help    Show usage message.\n"s
+            + "    No arguments       Run client, auto start server if it is not running.\n"s
+            + "    -c, --config <..>  Use specified configuration file.\n"s
+            + "    -p, --pipe   <..>  Set the pipe to connect to.\n"s
+            + "    -q, --quiet        Disable logging.\n"s
+            + "    -l, --listconfig   Show configuration and exit.\n"s
+            + "    -m, --monitor      Monitor server log.\n"s
+            + "    -d, --daemon       Run server in background.\n"s
+            + "    -s, --server       Run server in interactive mode.\n"s
+            + "    -r, --runapp <..>  Run standalone application.\n"s
+            + "    -v, --version      Show version and exit.\n"s
+            + "    -?, -h, --help     Show usage message.\n"s
+            + "    --onlylog          Disable interactive user input.\n"s
             + "\n"s
             + "  Configuration precedence (descending priority):\n\n"s
             + "    1. Command line options: " + myname + " -c path/to/settings.xml\n"s
@@ -126,6 +131,7 @@ int main(int argc, char* argv[])
             + "\n"s
             + "  Registered applications:\n\n"s
             + "    Term  Terminal emulator (default)\n"s
+            + "    DTVT  DirectVT Proxy Console\n"s
             + "    Text  (Demo) Text editor\n"s
             + "    Calc  (Demo) Spreadsheet calculator\n"s
             + "    Gems  (Demo) Desktopio application manager\n"s
@@ -133,83 +139,97 @@ int main(int argc, char* argv[])
     }
     else if (whoami == type::config)
     {
-        log("Running configuration:\n", app::shared::load::settings<true>(defaults, cfpath, os::dtvt::config()));
+        log("Running configuration", ":\n", app::shared::load::settings<true>(defaults, cfpath, os::dtvt::config));
     }
     else if (whoami == type::logger)
     {
         auto userid = os::env::user();
         auto prefix = (vtpipe.empty() ? utf::concat(app::shared::desktopio, '_', userid) : vtpipe) + app::shared::logsuffix;
-        log("main: waiting for server...");
-        while (true)
+        log("%%Waiting for server...", prompt::main);
+        auto online = flag{ true };
+        auto active = flag{ faux };
+        auto stream = sptr<os::ipc::socket>{};
+        auto readln = os::tty::readline([&](auto line)
         {
-            if (auto stream = os::ipc::socket::open<os::role::client, faux>(prefix))
+            if (active) stream->send(line);
+            else log("%%No server connected", prompt::main);
+        }, [&]
+        {
+            online.exchange(faux);
+            if (active) stream->shut();
+        });
+        while (online)
+        {
+            stream = os::ipc::socket::open<os::role::client, faux>(prefix);
+            if (stream)
             {
-                log("main: connected");
-                while (os::io::send(stream->recv()))
-                { }
-                return 0;
+                log("%%Connected", prompt::main);
+                stream->send(utf::concat(os::process::id.first));
+                active.exchange(true);
+                while (online)
+                {
+                    if (auto data = stream->recv()) log<faux>(data);
+                    else online.exchange(faux);
+                }
             }
-            std::this_thread::sleep_for(500ms);
+            else std::this_thread::sleep_for(500ms);
         }
     }
     else if (whoami == type::runapp)
     {
-        auto config = app::shared::load::settings(defaults, cfpath, os::dtvt::config());
+        auto config = app::shared::load::settings(defaults, cfpath, os::dtvt::config);
         auto shadow = params;
+        auto apname = view{};
+        auto aclass = text{};
         utf::to_low(shadow);
-             if (shadow.starts_with(app::term::id))      log(app::term::desc,      ' ', app::shared::version);
-        else if (shadow.starts_with(app::calc::id))      log(app::calc::desc,      ' ', app::shared::version);
-        else if (shadow.starts_with(app::shop::id))      log(app::shop::desc,      ' ', app::shared::version);
-        else if (shadow.starts_with(app::test::id))      log(app::test::desc,      ' ', app::shared::version);
-        else if (shadow.starts_with(app::textancy::id))  log(app::textancy::desc,  ' ', app::shared::version);
-        else if (shadow.starts_with(app::headless::id))  log(app::headless::desc,  ' ', app::shared::version);
-        else if (shadow.starts_with(app::settings::id))  log(app::settings::desc,  ' ', app::shared::version);
-        else if (shadow.starts_with(app::truecolor::id)) log(app::truecolor::desc, ' ', app::shared::version);
+             if (shadow.starts_with(app::term::id))      { aclass = app::term::id;      apname = app::term::desc;      }
+        else if (shadow.starts_with(app::dtvt::id))      { aclass = app::dtvt::id;      apname = app::dtvt::desc;      }
+        else if (shadow.starts_with(app::calc::id))      { aclass = app::calc::id;      apname = app::calc::desc;      }
+        else if (shadow.starts_with(app::shop::id))      { aclass = app::shop::id;      apname = app::shop::desc;      }
+        else if (shadow.starts_with(app::test::id))      { aclass = app::test::id;      apname = app::test::desc;      }
+        else if (shadow.starts_with(app::directvt::id))  { aclass = app::directvt::id;  apname = app::directvt::desc;  }
+        else if (shadow.starts_with(app::textancy::id))  { aclass = app::textancy::id;  apname = app::textancy::desc;  }
+        else if (shadow.starts_with(app::headless::id))  { aclass = app::headless::id;  apname = app::headless::desc;  }
+        else if (shadow.starts_with(app::settings::id))  { aclass = app::settings::id;  apname = app::settings::desc;  }
+        else if (shadow.starts_with(app::truecolor::id)) { aclass = app::truecolor::id; apname = app::truecolor::desc; }
         else
         {
-            params = app::term::id + " "s + params;
-            log(app::term::desc, ' ', app::shared::version);
+            params = " "s + params;
+            aclass = app::term::id;
+            apname = app::term::desc;
         }
-
-        auto success = app::shared::start(params, app::vtm::id, vtmode, config);
-        if (!success)
-        {
-            os::fail("console initialization error");
-            return 1;
-        }
+        log("%appname% %version%", apname, app::shared::version);
+        params = utf::remain(params, ' ');
+        app::shared::start(params, aclass, os::dtvt::vtmode, os::dtvt::win_sz, config);
     }
     else
     {
         auto userid = os::env::user();
-        auto config = app::shared::load::settings(defaults, cfpath, os::dtvt::config());
+        auto config = app::shared::load::settings(defaults, cfpath, os::dtvt::config);
         auto prefix = vtpipe.empty() ? utf::concat(app::shared::desktopio, '_', userid) : vtpipe;
 
         if (whoami == type::client)
         {
             auto client = os::ipc::socket::open<os::role::client>(prefix, 10s, [&]
             {
-                log("main: new vtm session for ", userid);
+                log("%%New vtm session for %userid%", prompt::main, userid);
                 auto success = faux;
-                if (os::process::fork(success, prefix, config.utf8())) whoami = type::server;
+                if (os::process::fork(success, prefix, config.utf8()))
+                {
+                    os::dtvt::vtmode |= os::dtvt::onlylog;
+                    whoami = type::server;
+                }
                 return success;
             });
             if (client)
             {
-                os::tty::globals().wired.init.send(client, userid, vtmode, config.utf8());;
-                if (vtmode & os::vt::direct)
-                {
-                    os::tty::direct(client);
-                }
-                else
-                {
-                    os::logging::start(app::vtm::id);
-                    os::tty::splice(client, vtmode);
-                }
+                os::tty::stream.init.send(client, userid, os::dtvt::vtmode, os::dtvt::win_sz, config.utf8());
+                os::tty::splice(client);
                 return 0;
             }
             else if (whoami != type::server)
             {
-                os::fail("no vtm server connection");
+                os::fail("No vtm server connection");
                 return 1;
             }
         }
@@ -219,11 +239,12 @@ int main(int argc, char* argv[])
             auto success = faux;
             if (os::process::fork(success, prefix, config.utf8()))
             {
+                os::dtvt::vtmode |= os::dtvt::onlylog;
                 whoami = type::server;
             }
             else 
             {
-                if (!success) os::fail("failed to daemonize");
+                if (!success) os::fail("Failed to daemonize");
                 return !success;
             }
         }
@@ -231,62 +252,69 @@ int main(int argc, char* argv[])
         auto server = os::ipc::socket::open<os::role::server>(prefix);
         if (!server)
         {
-            os::fail("can't start vtm server");
+            os::fail("Can't start vtm server");
             return 1;
         }
         auto logger = os::ipc::socket::open<os::role::server>(prefix + app::shared::logsuffix);
         if (!logger)
         {
-            os::fail("can't start vtm logger");
+            os::fail("Can't start vtm logger");
             return 1;
         }
         using e2 = netxs::ui::e2;
         config.cd("/config/appearance/defaults/");
         auto domain = ui::base::create<app::vtm::hall>(server, config, app::shell::id);
-        auto srvlog = syslog.tee<events::try_sync>([&](auto utf8) { domain->SIGNAL(tier::general, e2::conio::logs, utf8); });
-        auto thread = os::process::pool{};
         domain->autorun();
 
-        log("main: listening socket ", server,
-          "\n      user: ", userid,
-          "\n      pipe: ", prefix);
+        log("%%Server started"
+          "\n      user: %userid%"
+          "\n      pipe: %prefix%", prompt::main, userid, prefix);
 
         auto stdlog = std::thread{ [&]
         {
-            while (auto stream = logger->meet())
+            while (auto monitor = logger->meet())
             {
-                thread.run([&, stream](auto session_id)
+                domain->run([&, monitor](auto session_id)
                 {
-                    log("logs: monitor ", stream, " connected");
+                    auto id = monitor->recv().str();
+                    log("%%Monitor [%id%] connected", prompt::logs, id);
                     auto tokens = subs{};
-                    domain->LISTEN(tier::general, e2::conio::quit, utf8, tokens) { stream->shut(); };
-                    domain->LISTEN(tier::general, e2::conio::logs, utf8, tokens) { stream->send(utf8); };
-                    stream->recv();
-                    log("logs: monitor ", stream, " disconnected");
+                    auto writer = netxs::logger::attach([&](auto utf8) { monitor->send(utf8); });
+                    domain->LISTEN(tier::general, e2::conio::quit, deal, tokens) { monitor->shut(); };
+                    //todo send/receive dtvt events and signals
+                    while (auto line = monitor->recv())
+                    {
+                        domain->SIGNAL(tier::release, e2::conio::readline, line);
+                    }
+                    log("%%Monitor [%id%] disconnected", prompt::logs, id);
                 });
             }
         }};
 
         auto settings = config.utf8();
+        auto readline = os::tty::readline([&](auto line){ domain->SIGNAL(tier::release, e2::conio::readline, line); },
+                                          [&]{ domain->SIGNAL(tier::general, e2::shutdown, msg, (utf::concat(prompt::main, "Shutdown on signal"))); });
         while (auto client = server->meet())
         {
             if (client->auth(userid))
             {
-                thread.run([&, client, settings](auto session_id)
+                domain->run([&, client, settings](auto session_id)
                 {
-                    log("user: new gate for ", client);
+                    auto id = utf::concat(*client);
+                    if constexpr (debugmode) log("%%Client connected %id%", prompt::user, id);
                     auto config = xmls{ settings };
-                    auto packet = os::tty::globals().wired.init.recv(client);
+                    auto packet = os::tty::stream.init.recv(client);
                     config.fuse(packet.config);
-                    domain->invite(client, packet.user, packet.mode, config, session_id);
-                    log("user: ", client, " logged out");
+                    domain->invite(client, packet.user, packet.mode, packet.winsz, config, session_id);
+                    if constexpr (debugmode) log("%%Client disconnected %id%", prompt::user, id);
                 });
             }
         }
-        logger->stop(); // Logger must be stopped first to prevent reconnection.
-        domain->SIGNAL(tier::general, e2::conio::quit, "main: server shutdown");
-        events::dequeue();
-        domain->shutdown();
+        readline.stop();
+        logger->stop(); // Monitor listener endpoint must be closed first to prevent reconnections.
         stdlog.join();
+        domain->stop();
     }
+
+    os::release();
 }

@@ -16,18 +16,13 @@ namespace netxs::events::userland
             EVENT_XS( die    , input::hids ), // release::global: Notify about the mouse controller is gone. Signal to delete gears inside dtvt-objects.
             EVENT_XS( halt   , input::hids ), // release::global: Notify about the mouse controller is outside.
             EVENT_XS( spawn  , input::hids ), // release::global: Notify about the mouse controller is appear.
-            GROUP_XS( clipbrd, input::hids ), // release/request: Set/get clipboard data.
+            EVENT_XS( clipbrd, input::hids ), // release/request: Set/get clipboard data.
             GROUP_XS( keybd  , input::hids ),
             GROUP_XS( mouse  , input::hids ),
             GROUP_XS( focus  , input::hids ), // release::global: Notify about the focus got/lost.
             GROUP_XS( notify , input::hids ), // Form events that should be propagated down to the visual branch.
             GROUP_XS( device , input::hids ), // Primary device event group for forwarding purposes.
 
-            SUBSET_XS( clipbrd )
-            {
-                EVENT_XS( get, input::hids ), // release: Get clipboard data.
-                EVENT_XS( set, input::hids ), // release: Set clipboard data.
-            };
             SUBSET_XS( notify )
             {
                 GROUP_XS( mouse, input::hids ),
@@ -275,10 +270,237 @@ namespace netxs::events::userland
 
 namespace netxs::input
 {
-    using netxs::ansi::clip;
     using netxs::ui::base;
     using netxs::ui::face;
     using netxs::ui::page;
+
+    namespace key
+    {
+        static constexpr auto ExtendedKey = 0x0100;
+        static constexpr auto NumLockMode = 0x0020;
+
+        struct map
+        {
+            sz_t hash; // map: Key hash.
+
+            static auto& mask()
+            {
+                static auto m = std::vector<si32>(256);
+                return m;
+            }
+            static auto& mask(si32 vk)
+            {
+                return mask()[vk & 0xFF];
+            }
+            static auto& name()
+            {
+                static auto n = std::vector<view>(256);
+                return n;
+            }
+            static auto& name(si32 keycode)
+            {
+                return name()[keycode];
+            }
+
+            map(si32 vk, si32 sc, ui32 cs)
+                : hash{ static_cast<sz_t>(mask(vk) & (vk | (sc << 8) | (cs << 16))) }
+            { }
+            map(si32 vk, si32 sc, ui32 cs, si32 keymask, view keyname, si32 id)
+            {
+                mask(vk) = keymask;
+                name(id) = keyname;
+                hash = static_cast<sz_t>(keymask & (vk | (sc << 8) | (cs << 16)));
+            }
+
+            bool operator == (map const& m) const = default;
+            struct hashproc
+            {
+                auto operator()(map const& m) const
+                {
+                    return m.hash;
+                }
+            };
+        };
+
+        #define key_list \
+            /*Id   Vkey  Scan    CtrlState          Mask  Name            */\
+            X(0,      0,    0,           0, 0x0000'00'FF, undef            )\
+            X(2,   0x11, 0x1D,           0, 0x0100'00'FF, LeftCtrl         )\
+            X(4,   0x11, 0x1D, ExtendedKey, 0x0100'00'FF, RightCtrl        )\
+            X(6,   0x12, 0x38,           0, 0x0100'00'FF, LeftAlt          )\
+            X(8,   0x12, 0x38, ExtendedKey, 0x0100'00'FF, RightAlt         )\
+            X(10,  0x10, 0x2A,           0, 0x0000'FF'FF, LeftShift        )\
+            X(11,  0x10, 0x36,           0, 0x0000'FF'FF, RightShift       )\
+            X(12,  0x5B, 0x5B, ExtendedKey, 0x0000'00'FF, LeftWin          )\
+            X(13,  0x5D, 0x5D, ExtendedKey, 0x0000'00'FF, Apps             )\
+            X(14,  0x5C, 0x5C, ExtendedKey, 0x0000'00'FF, RightWin         )\
+            X(15,  0x90, 0x45,           0, 0x0000'00'FF, NumLock          )\
+            X(16,  0x14, 0x3A,           0, 0x0000'00'FF, CapsLock         )\
+            X(17,  0x91, 0x45,           0, 0x0000'00'FF, ScrollLock       )\
+            X(18,  0x1B, 0x01,           0, 0x0000'00'FF, Esc              )\
+            X(20,  0x20, 0x39,           0, 0x0000'00'FF, Space            )\
+            X(22,  0x08, 0x0E,           0, 0x0000'00'FF, Backspace        )\
+            X(24,  0x09, 0x0F,           0, 0x0000'00'FF, Tab              )\
+            X(26,  0x03, 0x46,           0, 0x0000'FF'FF, Break            )\
+            X(28,  0x13, 0x45,           0, 0x0000'FF'FF, Pause            )\
+            X(30,  0x29,    0,           0, 0x0000'00'FF, Select           )\
+            X(32,  0x2C, 0x54,           0, 0x0000'FF'FF, SysRq            )\
+            X(34,  0x2C, 0x37, ExtendedKey, 0x0100'FF'FF, PrintScreen      )\
+            X(36,  0x0D, 0x1C,           0, 0x0100'00'FF, Enter            )\
+            X(37,  0x0D, 0x1C, ExtendedKey, 0x0100'00'FF, NumpadEnter      )\
+            X(38,  0x21, 0x49, ExtendedKey, 0x0100'00'FF, PageUp           )\
+            X(39,  0x21, 0x49,           0, 0x0100'00'FF, NumpadPageUp     )\
+            X(40,  0x22, 0x51, ExtendedKey, 0x0100'00'FF, PageDown         )\
+            X(41,  0x22, 0x51,           0, 0x0100'00'FF, NumpadPageDown   )\
+            X(42,  0x23, 0x4F, ExtendedKey, 0x0100'00'FF, End              )\
+            X(43,  0x23, 0x4F,           0, 0x0100'00'FF, NumpadEnd        )\
+            X(44,  0x24, 0x47, ExtendedKey, 0x0100'00'FF, Home             )\
+            X(45,  0x24, 0x47,           0, 0x0100'00'FF, NumpadHome       )\
+            X(46,  0x25, 0x4B, ExtendedKey, 0x0100'00'FF, LeftArrow        )\
+            X(47,  0x25, 0x4B,           0, 0x0100'00'FF, NumpadLeftArrow  )\
+            X(48,  0x26, 0x48, ExtendedKey, 0x0100'00'FF, UpArrow          )\
+            X(49,  0x26, 0x48,           0, 0x0100'00'FF, NumpadUpArrow    )\
+            X(50,  0x27, 0x4D, ExtendedKey, 0x0100'00'FF, RightArrow       )\
+            X(51,  0x27, 0x4D,           0, 0x0100'00'FF, NumpadRightArrow )\
+            X(52,  0x28, 0x50, ExtendedKey, 0x0100'00'FF, DownArrow        )\
+            X(53,  0x28, 0x50,           0, 0x0100'00'FF, NumpadDownArrow  )\
+            X(54,  0x30, 0x0B,           0, 0x0000'FF'FF, Key0             )\
+            X(55,  0x60, 0x52, NumLockMode, 0x0000'FF'FF, Numpad0          )\
+            X(56,  0x31, 0x02,           0, 0x0000'FF'FF, Key1             )\
+            X(57,  0x61, 0x4F, NumLockMode, 0x0000'FF'FF, Numpad1          )\
+            X(58,  0x32, 0x03,           0, 0x0000'FF'FF, Key2             )\
+            X(59,  0x62, 0x50, NumLockMode, 0x0000'FF'FF, Numpad2          )\
+            X(60,  0x33, 0x04,           0, 0x0000'FF'FF, Key3             )\
+            X(61,  0x63, 0x51, NumLockMode, 0x0000'FF'FF, Numpad3          )\
+            X(62,  0x34, 0x05,           0, 0x0000'FF'FF, Key4             )\
+            X(63,  0x64, 0x4B, NumLockMode, 0x0000'FF'FF, Numpad4          )\
+            X(64,  0x35, 0x06,           0, 0x0000'FF'FF, Key5             )\
+            X(65,  0x65, 0x4C, NumLockMode, 0x0000'FF'FF, Numpad5          )\
+            X(66,  0x36, 0x07,           0, 0x0000'FF'FF, Key6             )\
+            X(67,  0x66, 0x4D, NumLockMode, 0x0000'FF'FF, Numpad6          )\
+            X(68,  0x37, 0x08,           0, 0x0000'FF'FF, Key7             )\
+            X(69,  0x67, 0x47, NumLockMode, 0x0000'FF'FF, Numpad7          )\
+            X(70,  0x38, 0x09,           0, 0x0000'FF'FF, Key8             )\
+            X(71,  0x68, 0x48, NumLockMode, 0x0000'FF'FF, Numpad8          )\
+            X(72,  0x39, 0x0A,           0, 0x0000'FF'FF, Key9             )\
+            X(73,  0x69, 0x49, NumLockMode, 0x0000'FF'FF, Numpad9          )\
+            X(74,  0x2D, 0x52, ExtendedKey, 0x0100'00'FF, Insert           )\
+            X(75,  0x2D, 0x52,           0, 0x0100'00'FF, NumpadInsert     )\
+            X(76,  0x2E, 0x53, ExtendedKey, 0x0100'00'FF, Delete           )\
+            X(77,  0x2E, 0x55,           0, 0x0100'00'FF, NumpadDelete     )\
+            X(78,  0x0C, 0x4C, ExtendedKey, 0x0100'00'FF, Clear            )\
+            X(79,  0x0C, 0x4C,           0, 0x0100'00'FF, NumpadClear      )\
+            X(80,  0x6A, 0x09,           0, 0x0000'FF'FF, Multiply         )\
+            X(81,  0x6A, 0x37,           0, 0x0000'FF'FF, NumpadMultiply   )\
+            X(82,  0x6B, 0x0D,           0, 0x0000'FF'FF, Plus             )\
+            X(83,  0x6B, 0x4E,           0, 0x0000'FF'FF, NumpadPlus       )\
+            X(84,  0x6C,    0,           0, 0x0020'00'FF, Separator        )\
+            X(85,  0x6C,    0, NumLockMode, 0x0020'00'FF, NumpadSeparator  )\
+            X(86,  0xBD, 0x0C,           0, 0x0000'00'FF, Minus            )\
+            X(87,  0x6D, 0x4A,           0, 0x0000'00'FF, NumpadMinus      )\
+            X(88,  0xBE, 0x34,           0, 0x0000'00'FF, Period           )\
+            X(89,  0x6E, 0x53, NumLockMode, 0x0000'00'FF, NumpadDecimal    )\
+            X(90,  0xBF, 0x35,           0, 0x0000'00'FF, Slash            )\
+            X(91,  0x6F, 0x35, ExtendedKey, 0x0000'00'FF, NumpadSlash      )\
+            X(92,  0xDC, 0x2B,           0, 0x0000'00'FF, BackSlash        )\
+            X(94,  0xDB, 0x1A,           0, 0x0000'00'FF, OpenBracket      )\
+            X(96,  0xDD, 0x1B,           0, 0x0000'00'FF, ClosedBracket    )\
+            X(98,  0xBB, 0x0D,           0, 0x0000'00'FF, Equal            )\
+            X(100, 0xC0, 0x29,           0, 0x0000'00'FF, BackQuote        )\
+            X(102, 0xDE, 0x28,           0, 0x0000'00'FF, SingleQuote      )\
+            X(104, 0xBC, 0x33,           0, 0x0000'00'FF, Comma            )\
+            X(106, 0xBA, 0x27,           0, 0x0000'00'FF, Semicolon        )\
+            X(108, 0x70, 0x3B,           0, 0x0000'00'FF, F1               )\
+            X(110, 0x71, 0x3C,           0, 0x0000'00'FF, F2               )\
+            X(112, 0x72, 0x3D,           0, 0x0000'00'FF, F3               )\
+            X(114, 0x73, 0x3E,           0, 0x0000'00'FF, F4               )\
+            X(116, 0x74, 0x3F,           0, 0x0000'00'FF, F5               )\
+            X(118, 0x75, 0x40,           0, 0x0000'00'FF, F6               )\
+            X(120, 0x76, 0x41,           0, 0x0000'00'FF, F7               )\
+            X(122, 0x77, 0x42,           0, 0x0000'00'FF, F8               )\
+            X(124, 0x78, 0x43,           0, 0x0000'00'FF, F9               )\
+            X(126, 0x79, 0x44,           0, 0x0000'00'FF, F10              )\
+            X(128, 0x7A, 0x57,           0, 0x0000'00'FF, F11              )\
+            X(130, 0x7B, 0x5B,           0, 0x0000'00'FF, F12              )\
+            X(132, 0x7C,    0,           0, 0x0000'00'FF, F13              )\
+            X(134, 0x7D,    0,           0, 0x0000'00'FF, F14              )\
+            X(136, 0x7E,    0,           0, 0x0000'00'FF, F15              )\
+            X(138, 0x7F,    0,           0, 0x0000'00'FF, F16              )\
+            X(140, 0x80,    0,           0, 0x0000'00'FF, F17              )\
+            X(142, 0x81,    0,           0, 0x0000'00'FF, F18              )\
+            X(144, 0x82,    0,           0, 0x0000'00'FF, F19              )\
+            X(146, 0x83,    0,           0, 0x0000'00'FF, F20              )\
+            X(148, 0x84,    0,           0, 0x0000'00'FF, F21              )\
+            X(150, 0x85,    0,           0, 0x0000'00'FF, F22              )\
+            X(152, 0x86,    0,           0, 0x0000'00'FF, F23              )\
+            X(154, 0x87,    0,           0, 0x0000'00'FF, F24              )\
+            X(156, 0x41,    0,           0, 0x0100'00'FF, KeyA             )\
+            X(158, 0x42,    0,           0, 0x0100'00'FF, KeyB             )\
+            X(160, 0x43,    0,           0, 0x0100'00'FF, KeyC             )\
+            X(162, 0x44,    0,           0, 0x0100'00'FF, KeyD             )\
+            X(164, 0x45,    0,           0, 0x0100'00'FF, KeyE             )\
+            X(166, 0x46,    0,           0, 0x0100'00'FF, KeyF             )\
+            X(168, 0x47,    0,           0, 0x0100'00'FF, KeyG             )\
+            X(170, 0x48,    0,           0, 0x0100'00'FF, KeyH             )\
+            X(172, 0x49,    0,           0, 0x0100'00'FF, KeyI             )\
+            X(174, 0x4A,    0,           0, 0x0100'00'FF, KeyJ             )\
+            X(176, 0x4B,    0,           0, 0x0100'00'FF, KeyK             )\
+            X(178, 0x4C,    0,           0, 0x0100'00'FF, KeyL             )\
+            X(180, 0x4D,    0,           0, 0x0100'00'FF, KeyM             )\
+            X(182, 0x4E,    0,           0, 0x0100'00'FF, KeyN             )\
+            X(184, 0x4F,    0,           0, 0x0100'00'FF, KeyO             )\
+            X(186, 0x50,    0,           0, 0x0100'00'FF, KeyP             )\
+            X(188, 0x51,    0,           0, 0x0100'00'FF, KeyQ             )\
+            X(190, 0x52,    0,           0, 0x0100'00'FF, KeyR             )\
+            X(192, 0x53,    0,           0, 0x0100'00'FF, KeyS             )\
+            X(194, 0x54,    0,           0, 0x0100'00'FF, KeyT             )\
+            X(196, 0x55,    0,           0, 0x0100'00'FF, KeyU             )\
+            X(198, 0x56,    0,           0, 0x0100'00'FF, KeyV             )\
+            X(200, 0x57,    0,           0, 0x0100'00'FF, KeyW             )\
+            X(202, 0x58,    0,           0, 0x0100'00'FF, KeyX             )\
+            X(204, 0x59,    0,           0, 0x0100'00'FF, KeyY             )\
+            X(206, 0x5A,    0,           0, 0x0100'00'FF, KeyZ             )\
+            X(208, 0x5F,    0, ExtendedKey, 0x0100'00'FF, Sleep            )\
+            X(210, 0xB7,    0, ExtendedKey, 0x0100'00'FF, Calculator       )\
+            X(212, 0x48,    0, ExtendedKey, 0x0100'00'FF, Mail             )\
+            X(214, 0xAD,    0, ExtendedKey, 0x0100'00'FF, MediaVolMute     )\
+            X(216, 0xAE,    0, ExtendedKey, 0x0100'00'FF, MediaVolDown     )\
+            X(218, 0xAF,    0, ExtendedKey, 0x0100'00'FF, MediaVolUp       )\
+            X(220, 0xB0,    0, ExtendedKey, 0x0100'00'FF, MediaNext        )\
+            X(222, 0xB1,    0, ExtendedKey, 0x0100'00'FF, MediaPrev        )\
+            X(224, 0xB2,    0, ExtendedKey, 0x0100'00'FF, MediaStop        )\
+            X(226, 0xB3,    0, ExtendedKey, 0x0100'00'FF, MediaPlayPause   )\
+            X(228, 0xB5,    0, ExtendedKey, 0x0100'00'FF, MediaSelect      )\
+            X(230, 0xA6,    0, ExtendedKey, 0x0100'00'FF, BrowserBack      )\
+            X(232, 0xA7,    0, ExtendedKey, 0x0100'00'FF, BrowserForward   )\
+            X(234, 0xA8,    0, ExtendedKey, 0x0100'00'FF, BrowserRefresh   )\
+            X(236, 0xA9,    0, ExtendedKey, 0x0100'00'FF, BrowserStop      )\
+            X(238, 0xAA,    0, ExtendedKey, 0x0100'00'FF, BrowserSearch    )\
+            X(240, 0xAB,    0, ExtendedKey, 0x0100'00'FF, BrowserFavorites )\
+            X(242, 0xAC,    0, ExtendedKey, 0x0100'00'FF, BrowserHome      )
+
+        #define X(KeyId, Vkey, Scan, CtrlState, Mask, Name) \
+            static constexpr auto Name = KeyId;
+            key_list
+        #undef X
+
+        static const auto keymap = std::unordered_map<map, si32, map::hashproc>
+        {
+            #define X(KeyId, Vkey, Scan, CtrlState, Mask, Name) \
+                { map{ Vkey, Scan, CtrlState, Mask, #Name, Name }, Name, },
+                key_list
+            #undef X
+        };
+
+        #undef key_list
+
+        template<class ...Args>
+        auto xlat(Args&&... args)
+        {
+            auto iter = keymap.find(map{ args... });
+            return iter != keymap.end() ? iter->second : input::key::undef;
+        }
+    }
 
     struct foci
     {
@@ -299,6 +521,25 @@ namespace netxs::input
         using mouse_event = netxs::events::userland::hids::mouse;
         using click = mouse_event::button::click;
 
+        enum mode
+        {
+            none = 0,
+            bttn = 1 << 0,
+            drag = 1 << 1,
+            move = 1 << 2,
+            over = 1 << 3,
+            utf8 = 1 << 4,
+            buttons_press = bttn,
+            buttons_drags = bttn | drag,
+            all_movements = bttn | drag | move,
+            negative_args = bttn | drag | move | over,
+        };
+        enum prot
+        {
+            x11,
+            sgr,
+            w32,
+        };
         enum buttons
         {
             left      = click::left     .index(),
@@ -433,9 +674,10 @@ namespace netxs::input
             m_buttons[leftright] = (bttns[leftright].pressed && (m_buttons[left] || m_buttons[right]))
                                                              || (m_buttons[left] && m_buttons[right]);
             m0.buttons = static_cast<ui32>(m_buttons.to_ulong());
+            auto modschanged = m.ctlstat != m0.ctlstat;
             m.set(m0);
             auto busy = captured();
-            if (busy && fire_fast()) //todo fire_fast on mods press
+            if (busy && fire_fast())
             {
                 delta.set(m.coordxy - prime);
                 coord = m.coordxy;
@@ -464,7 +706,7 @@ namespace netxs::input
             bttns[left ].blocked = m_buttons[leftright] || bttns[leftright].pressed;
             bttns[right].blocked = bttns[left].blocked;
 
-            if (m.coordxy != prime)
+            if (m.coordxy != prime || modschanged)
             {
                 delta.set(m.coordxy - prime);
                 auto active = si32{};
@@ -629,85 +871,196 @@ namespace netxs::input
     // console: Keybd tracker.
     struct keybd
     {
-        struct key
+        enum prot
         {
-            enum
-            {
-                Backspace = 0x08,
-                Tab       = 0x09,
-                //CLEAR     = 0x0C,
-                Enter     = 0x0D,
-                Shift     = 0x10,
-                Control   = 0x11,
-                Alt       = 0x12,
-                Pause     = 0x13,
-                Escape    = 0x1B,
-                PageUp    = 0x21,
-                PageDown  = 0x22,
-                End       = 0x23,
-                Home      = 0x24,
-                Left      = 0x25,
-                Up        = 0x26,
-                Right     = 0x27,
-                Down      = 0x28,
-                Insert    = 0x2D,
-                Delete    = 0x2E,
-                F1        = 0x70,
-                F2        = 0x71,
-                F3        = 0x72,
-                F4        = 0x73,
-                F5        = 0x74,
-                F6        = 0x75,
-                F7        = 0x76,
-                F8        = 0x77,
-                F9        = 0x78,
-                F10       = 0x79,
-                F11       = 0x7A,
-                F12       = 0x7B,
-                F13       = 0x7C,
-                F14       = 0x7D,
-                F15       = 0x7E,
-                F16       = 0x7F,
-                F17       = 0x80,
-                F18       = 0x81,
-                F19       = 0x82,
-                F20       = 0x83,
-                F21       = 0x84,
-                F22       = 0x85,
-                F23       = 0x86,
-                F24       = 0x87,
-            };
+            vt,
+            w32,
         };
 
-        wchr winchar = {}; // MS Windows specific.
         text cluster = {};
+        bool extflag = {};
         bool pressed = {};
-        ui16 imitate = {};
         ui16 virtcod = {};
         ui16 scancod = {};
         hint cause = netxs::events::userland::hids::keybd::data::post.id;
         text keystrokes;
         bool handled = {};
+        si32 keycode = {};
 
+        auto generic()
+        {
+            return keycode & -2;
+        }
         void update(syskeybd& k)
         {
+            extflag = k.extflag;
             pressed = k.pressed;
-            imitate = k.imitate;
             virtcod = k.virtcod;
             scancod = k.scancod;
             cluster = k.cluster;
-            winchar = k.winchar;
             handled = k.handled;
+            keycode = k.keycode;
             fire_keybd();
         }
 
         virtual void fire_keybd() = 0;
     };
 
+    // console: Focus tracker.
+    struct focus
+    {
+        enum prot
+        {
+            w32,
+            dec,
+        };
+
+        bool state = {};
+
+        void update(sysfocus& f)
+        {
+            state = f.state;
+            fire_focus();
+        }
+
+        virtual void fire_focus() = 0;
+    };
+
+    // console: Clipboard tracker.
+    struct board
+    {
+        enum prot
+        {
+            w32,
+            dec,
+        };
+
+        using clip = clipdata;
+
+        clip cargo{}; // board: Clipboard data.
+        face image{}; // board: Clipboard preview render.
+        bool shown{}; // board: Preview output tracker.
+        si32 ghost{}; // board: Preview shadow size.
+        cell brush{}; // board: Preview default color.
+        byte alpha{}; // board: Preview transparency.
+
+        virtual void fire_board() = 0;
+
+        static void set(clipdata& c, id_t gear_id, twod winsz, qiew utf8, si32 form)
+        {
+            auto size = dot_00;
+            if (form == mime::disabled) // Try to parse utf8: mime/size_x/size_y;data
+            {
+                     if (utf8.starts_with(mime::tag::ansi)) { utf8.remove_prefix(mime::tag::ansi.length()); form = mime::ansitext; }
+                else if (utf8.starts_with(mime::tag::text)) { utf8.remove_prefix(mime::tag::text.length()); form = mime::textonly; }
+                else if (utf8.starts_with(mime::tag::rich)) { utf8.remove_prefix(mime::tag::rich.length()); form = mime::richtext; }
+                else if (utf8.starts_with(mime::tag::html)) { utf8.remove_prefix(mime::tag::html.length()); form = mime::htmltext; }
+                else if (utf8.starts_with(mime::tag::safe)) { utf8.remove_prefix(mime::tag::safe.length()); form = mime::safetext; }
+                else
+                {
+                    if (auto pos = utf8.find(';'); pos != text::npos) utf8 = utf8.substr(pos + 1);
+                    else                                              utf8 = {};
+                }
+                if (form == mime::disabled) form = mime::textonly;
+                else
+                {
+                    if (utf8 && utf8.front() == '/') // Proceed preview size if present.
+                    {
+                        utf8.remove_prefix(1);
+                        if (auto v = utf::to_int(utf8))
+                        {
+                            static constexpr auto max_value = twod{ 2000, 1000 }; //todo unify
+                            size.x = v.value();
+                            if (utf8)
+                            {
+                                utf8.remove_prefix(1);
+                                if (auto v = utf::to_int(utf8)) size.y = v.value();
+                            }
+                            if (!size.x || !size.y) size = dot_00;
+                            else                    size = std::clamp(size, dot_00, max_value);
+                        }
+                    }
+                    if (utf8 && utf8.front() == ';') utf8.remove_prefix(1);
+                    else                             utf8 = {}; // Unknown format.
+                }
+            }
+            size = utf8.empty() ? dot_00
+                 : size         ? size
+                 : winsz        ? winsz
+                                : twod{ 80,25 }; //todo make it configurable
+            c.set(gear_id, datetime::now(), size, utf8.str(), form);
+        }
+        auto clear_clipboard()
+        {
+            auto not_empty = !!board::cargo.utf8.size();
+            board::cargo.set(id_t{}, datetime::now(), dot_00, text{}, mime::ansitext);
+            fire_board();
+            return not_empty;
+        }
+        void set_clipboard(clipdata const& data)
+        {
+            board::cargo.set(data);
+            fire_board();
+        }
+        void set_clipboard(twod size, qiew utf8, si32 form)
+        {
+            auto c = clip{};
+            c.set(id_t{}, datetime::now(), size, utf8.str(), form);
+            set_clipboard(c);
+        }
+        void update(sysboard& b) // Update clipboard preview.
+        {
+            auto draw_shadow = [&](auto& block, auto size)
+            {
+                board::image.mark(cell{});
+                board::image.wipe();
+                board::image.size(dot_21 * size * 2 + b.size);
+                auto full = rect{ dot_21 * size + dot_21, b.size };
+                while (size--)
+                {
+                    board::image.reset();
+                    board::image.full(full);
+                    board::image.output(block, cell::shaders::color(cell{}.bgc(0).fgc(0).alpha(0x60)));
+                    board::image.blur(1, [&](cell& c) { c.fgc(c.bgc()).txt(""); });
+                }
+                full.coor -= dot_21;
+                board::image.reset();
+                board::image.full(full);
+            };
+            if (b.form == mime::safetext)
+            {
+                auto blank = ansi::bgc(0x7Fffffff).fgc(0xFF000000).add(" Protected Data "); //todo unify (i18n)
+                auto block = page{ blank };
+                if (ghost) draw_shadow(block, ghost);
+                else
+                {
+                    board::image.size(block.current().size());
+                    board::image.wipe();
+                }
+                board::image.output(block);
+            }
+            else
+            {
+                auto block = page{ b.utf8 };
+                if (ghost) draw_shadow(block, ghost);
+                else
+                {
+                    board::image.size(b.size);
+                    board::image.wipe();
+                }
+                board::image.mark(cell{});
+                if (b.form == mime::textonly) board::image.output(block, cell::shaders::color(  brush));
+                else                          board::image.output(block, cell::shaders::xlucent(alpha));
+            }
+        }
+    };
+
     // console: Human interface device controller.
     struct hids
         : public mouse,
           public keybd,
+          public focus,
+          public board,
           public bell
     {
         using events = netxs::events::userland::hids;
@@ -716,22 +1069,20 @@ namespace netxs::input
         id_t        relay; // hids: Mouse routing call stack initiator.
         core const& idmap; // hids: Area of the main form. Primary or relative region of the mouse coverage.
         bool        alive; // hids: Whether event processing is complete.
-        span&       tooltip_timeout; // hids: .
-        bool&       simple_instance; // hids: .
 
         //todo unify
+        span&       tooltip_timeout; // hids: .
         text        tooltip_data; // hids: Tooltip data.
         ui32        digest = 0; // hids: Tooltip digest.
         testy<ui32> digest_tracker = 0; // hids: Tooltip changes tracker.
         ui32        tooltip_digest = 0; // hids: Tooltip digest.
         time        tooltip_time = {}; // hids: The moment to show tooltip.
         bool        tooltip_show = faux; // hids: Show tooltip or not.
-        bool        tooltip_stop = faux; // hids: Disable tooltip.
+        bool        tooltip_stop = true; // hids: Disable tooltip.
         testy<twod> tooltip_coor = {}; // hids: .
 
         base& owner;
-        ui32 ctlstate = 0;
-        ui32 winctrl = {}; // MS Windows specific.
+        ui32 ctlstate = {};
 
         //todo unify
         rect slot; // slot for pro::maker and e2::createby.
@@ -741,37 +1092,26 @@ namespace netxs::input
         bool disabled = faux;
         si32 countdown = 0;
 
-        clip clip_rawdata{}; // hids: Clipboard data.
-        face clip_preview{}; // hids: Clipboard preview render.
-        bool not_directvt{}; // hids: Is it the top level gear (not directvt).
-        bool clip_printed{}; // hids: Preview output tracker.
-        si32& clip_shadow_size;
-        cell& clip_preview_clrs;
-        byte& clip_preview_alfa;
-
         id_t user_index; // hids: User/Device image/icon index.
 
         template<class T>
-        hids(T& props, bool not_directvt, base& owner, core const& idmap)
+        hids(T& props, base& owner, core const& idmap)
             : relay{ 0 },
             owner{ owner },
             idmap{ idmap },
             alive{ faux },
-            tooltip_timeout{   props.tooltip_timeout },
-            simple_instance{   props.simple },
-            clip_shadow_size{  props.clip_preview_glow },
-            clip_preview_clrs{ props.clip_preview_clrs },
-            clip_preview_alfa{ props.clip_preview_alfa },
-            not_directvt{ not_directvt }
+            tooltip_timeout{   props.tooltip_timeout }
         {
+            board::ghost = props.clip_preview_glow;
+            board::brush = props.clip_preview_clrs;
+            board::alpha = props.clip_preview_alfa;
+            mouse::delay = props.dblclick_timeout;
             mouse::prime = dot_mx;
             mouse::coord = dot_mx;
-            mouse::delay = props.dblclick_timeout;
             SIGNAL(tier::general, events::device::user::login, user_index);
         }
-        ~hids()
+       ~hids()
         {
-            auto lock = netxs::events::sync{};
             mouse_leave(mouse::hover, mouse::start);
             SIGNAL(tier::general, events::halt, *this);
             SIGNAL(tier::general, events::die, *this);
@@ -779,105 +1119,42 @@ namespace netxs::input
         }
 
         // hids: Whether event processing is complete.
-        operator bool() const
+        operator bool () const
         {
             return alive;
         }
 
-        auto clear_clip_data()
-        {
-            auto not_empty = !!clip_rawdata.utf8.size();
-            clip_rawdata.clear();
-            owner.SIGNAL(tier::release, hids::events::clipbrd::set, *this);
-            if (not_directvt)
-            {
-                clip_preview.size(clip_rawdata.size);
-            }
-            return not_empty;
-        }
-        void set_clip_data(clip const& data, bool forward = true)
-        {
-            clip_rawdata.set(data);
-            if (not_directvt)
-            {
-                auto draw_shadow = [&](auto& block, auto size)
-                {
-                    clip_preview.mark(cell{});
-                    clip_preview.wipe();
-                    clip_preview.size(dot_21 * size * 2 + clip_rawdata.size);
-                    auto full = rect{ dot_21 * size + dot_21, clip_rawdata.size };
-                    while (size--)
-                    {
-                        clip_preview.reset();
-                        clip_preview.full(full);
-                        clip_preview.output(block, cell::shaders::color(cell{}.bgc(0).fgc(0).alpha(0x60)));
-                        clip_preview.blur(1, [&](cell& c) { c.fgc(c.bgc()).txt(""); });
-                    }
-                    full.coor -= dot_21;
-                    clip_preview.reset();
-                    clip_preview.full(full);
-                };
-                if (clip_rawdata.kind == clip::safetext)
-                {
-                    auto blank = ansi::bgc(0x7Fffffff).fgc(0xFF000000).add(" Protected Data "); //todo unify (i18n)
-                    auto block = page{ blank };
-                    clip_rawdata.size = block.current().size();
-                    if (clip_shadow_size) draw_shadow(block, clip_shadow_size);
-                    else
-                    {
-                        clip_preview.size(clip_rawdata.size);
-                        clip_preview.wipe();
-                    }
-                    clip_preview.output(block);
-                }
-                else
-                {
-                    auto block = page{ clip_rawdata.utf8 };
-                    if (clip_shadow_size) draw_shadow(block, clip_shadow_size);
-                    else
-                    {
-                        clip_preview.size(clip_rawdata.size);
-                        clip_preview.wipe();
-                    }
-                    clip_preview.mark(cell{});
-                    if (clip_rawdata.kind == clip::textonly) clip_preview.output(block, cell::shaders::color(  clip_preview_clrs));
-                    else                                     clip_preview.output(block, cell::shaders::xlucent(clip_preview_alfa));
-                }
-            }
-            if (forward) owner.SIGNAL(tier::release, hids::events::clipbrd::set, *this);
-            mouse::delta.set(); // Update time stamp.
-        }
-        auto get_clip_data()
-        {
-            auto data = clip{};
-            owner.SIGNAL(tier::release, hids::events::clipbrd::get, *this);
-            if (not_directvt) data.utf8 = clip_rawdata.utf8;
-            else              data.utf8 = std::move(clip_rawdata.utf8);
-            data.kind = clip_rawdata.kind;
-            return data;
-        }
-
-        auto tooltip_enabled()
+        auto tooltip_enabled(time const& now)
         {
             return !mouse::m.buttons
                 && !disabled
                 && !tooltip_stop
                 && tooltip_show
                 && tooltip_data.size()
+                && tooltip_time < now
                 && !captured();
         }
-        void set_tooltip(id_t src_id, view data)
+        void set_tooltip(view data, bool update = faux)
         {
-            if (src_id == 0 || tooltip_data.empty())
+            if (!update || data != tooltip_data)
             {
                 tooltip_data = data;
+                if (update)
+                {
+                    if (tooltip_digest == digest) // To show tooltip even after clicks.
+                    {
+                        ++tooltip_digest;
+                    }
+                    if (!tooltip_stop) tooltip_stop = data.empty();
+                }
+                else
+                {
+                    tooltip_show = faux;
+                    tooltip_stop = data.empty();
+                    tooltip_time = datetime::now() + tooltip_timeout;
+                }
                 digest++;
             }
-        }
-        void set_tooltip(view data, ui32 set_digest)
-        {
-            tooltip_data = data;
-            digest = set_digest;
         }
         auto is_tooltip_changed()
         {
@@ -885,43 +1162,41 @@ namespace netxs::input
         }
         auto get_tooltip()
         {
-            return qiew{ tooltip_data };
+            return std::pair{ qiew{ tooltip_data }, tooltip_digest == digest };
         }
         void tooltip_recalc(hint deed)
         {
-            if (tooltip_digest != digest) // Welcome new object.
+            if (deed == hids::events::mouse::move.id)
             {
-                tooltip_stop = faux;
-            }
-
-            if (!tooltip_stop)
-            {
-                if (deed == hids::events::mouse::move.id)
+                if (tooltip_coor(mouse::coord) || (tooltip_show && tooltip_digest != digest)) // Do nothing on shuffle.
                 {
-                    if (tooltip_coor(mouse::coord) || (tooltip_show && tooltip_digest != digest)) // Do nothing on shuffle.
+                    if (tooltip_show && tooltip_digest == digest) // Drop tooltip if moved.
                     {
-                        if (tooltip_show && tooltip_digest == digest) // Drop tooltip if moved.
-                        {
-                            tooltip_stop = true;
-                        }
-                        else
-                        {
-                            tooltip_time = datetime::now() + tooltip_timeout;
-                            tooltip_show = faux;
-                        }
+                        tooltip_stop = true;
+                    }
+                    else
+                    {
+                        tooltip_time = datetime::now() + tooltip_timeout;
                     }
                 }
-                else // Drop tooltip on any other event.
+            }
+            else if (deed == hids::events::mouse::scroll::up.id
+                  || deed == hids::events::mouse::scroll::down.id) // Drop tooltip away.
+            {
+                tooltip_stop = true;
+            }
+            else
+            {
+                if (tooltip_show == faux) // Reset timer to begin,
                 {
-                    tooltip_stop = true;
-                    tooltip_digest = digest;
+                    tooltip_time = datetime::now() + tooltip_timeout;
                 }
             }
         }
-        auto tooltip_check(time now)
+        auto tooltip_check(time now) // Called every timer tick.
         {
-            if (!tooltip_stop
-             && !tooltip_show
+            if (tooltip_stop) return faux;
+            if (!tooltip_show
              &&  tooltip_time < now
              && !captured())
             {
@@ -932,19 +1207,26 @@ namespace netxs::input
                     return true;
                 }
             }
-            else if (tooltip_show == true && captured())
+            else if (captured())
             {
-                tooltip_show = faux;
-                tooltip_stop = faux;
+                if (!tooltip_show) // If not shown then drop tooltip.
+                {
+                    tooltip_stop = true;
+                }
+                //else if (tooltip_time < now) // Give time to update tooltip text after mouse button release.
+                //{
+                //    tooltip_time = now + 100ms;
+                //}
             }
             return faux;
         }
 
-        void replay(hint cause, twod const& coord, twod const& delta, ui32 button_state)
+        void replay(hint cause, twod const& coord, twod const& delta, ui32 button_state, ui32 ctlstat)
         {
             static constexpr auto mask = netxs::events::level_mask(hids::events::mouse::button::any.id);
             static constexpr auto base = mask & hids::events::mouse::button::any.id;
             alive = true;
+            ctlstate = ctlstat;
             mouse::coord = coord;
             mouse::cause = (cause & ~mask) | base; // Remove the dependency on the event tree root.
             mouse::delta.set(delta);
@@ -953,26 +1235,27 @@ namespace netxs::input
 
         enum modifiers : ui32
         {
-            LShift   = 1 <<  0, // ⇧ Shift, Left  Shift
-            RShift   = 1 <<  1, //          Right Shift
-            LAlt     = 1 <<  2, // ⎇ Alt, ⌥ Option,   Left  Alt
-            RAlt     = 1 <<  3, // ⇮ AltGr, Alt Graph, Right Alt
-            LCtrl    = 1 <<  4, // ⌃ Ctrl, Left  Ctrl
-            RCtrl    = 1 <<  5, //         Right Ctrl
-            Meta     = 1 <<  6, // ◆ Meta, ⊞ Win, ⌘ Cmd (Apple key), ❖ Super
-            Fn       = 1 <<  7, //
-            CapsLock = 1 <<  8, // ⇪ Caps Lock
-            NumLock  = 1 <<  9, // ⇭ Num Lock
-            ScrlLock = 1 << 10, // ⇳ Scroll Lock (⤓)
+            LCtrl    = 1 <<  0, // Left  ⌃ Ctrl
+            RCtrl    = 1 <<  1, // Right ⌃ Ctrl
+            LAlt     = 1 <<  2, // Left  ⎇ Alt, Left  ⌥ Option
+            RAlt     = 1 <<  3, // Right ⎇ Alt, Right ⌥ Option, ⇮ AltGr
+            LShift   = 1 <<  4, // Left  ⇧ Shift
+            RShift   = 1 <<  5, // Right ⇧ Shift
+            LWin     = 1 <<  6, // Left  ⊞ Win, ◆ Meta, ⌘ Cmd (Apple key), ❖ Super
+            RWin     = 1 <<  7, // Right ⊞ Win, ◆ Meta, ⌘ Cmd (Apple key), ❖ Super
+            NumLock  = 1 << 12, // ⇭ Num Lock
+            CapsLock = 1 << 13, // ⇪ Caps Lock
+            ScrlLock = 1 << 14, // ⇳ Scroll Lock (⤓)
             anyCtrl  = LCtrl  | RCtrl,
             anyAlt   = LAlt   | RAlt,
             anyShift = LShift | RShift,
+            anyWin   = LWin   | RWin,
         };
 
-        auto meta(ui32 ctl_key = -1) { return hids::ctlstate & ctl_key; }
+        auto meta(ui32 ctl_key = -1) { return ctlstate & ctl_key; }
         auto kbmod()
         {
-            return meta(hids::anyCtrl | hids::anyAlt | hids::anyShift);
+            return meta(hids::anyCtrl | hids::anyAlt | hids::anyShift | hids::anyWin);
         }
 
         // hids: Stop handeling this event.
@@ -988,23 +1271,24 @@ namespace netxs::input
 
         void take(sysmouse& m)
         {
-            ctlstate = m.ctlstat;
-            winctrl  = m.winctrl;
             disabled = faux;
+            ctlstate = m.ctlstat;
             mouse::update(m);
         }
         void take(syskeybd& k)
         {
+            tooltip_stop = true;
             ctlstate = k.ctlstat;
-            winctrl  = k.winctrl;
             keybd::update(k);
         }
         void take(sysfocus& f)
         {
-            //if constexpr (debugmode) log("foci: take focus hid:", id, " state:", f.state ? "on":"off");
-            //todo focus<->seed
-            if (f.state) owner.SIGNAL(tier::release, hids::events::focus::set, *this);
-            else         owner.SIGNAL(tier::release, hids::events::focus::off, *this);
+            tooltip_stop = true;
+            focus::update(f);
+        }
+        auto take(sysboard& b)
+        {
+            board::update(b);
         }
 
         auto& area() const { return idmap.area(); }
@@ -1035,7 +1319,11 @@ namespace netxs::input
                     last->SIGNAL(tier::release, events::notify::mouse::leave, *this);
                     mouse::start = start;
                 }
-                else log("hids: error condition: Clients count is broken, dangling ", last_id);
+                else
+                {
+                    //todo revise
+                    log("%%Error condition: Clients count is broken, dangling %last_id%", prompt::hids, last_id);
+                }
             }
         }
         void redirect_mouse_focus(base& boss)
@@ -1046,6 +1334,7 @@ namespace netxs::input
                 {
                     digest++;
                     tooltip_data.clear();
+                    tooltip_stop = true;
                 }
 
                 // Firing the leave event right after the enter allows us
@@ -1102,7 +1391,7 @@ namespace netxs::input
             }
             else
             {
-                tooltip_recalc(cause);
+                if (!tooltip_stop) tooltip_recalc(cause);
                 owner.bell::template signal<tier::preview>(cause, *this);
 
                 if (!alive) return;
@@ -1155,6 +1444,19 @@ namespace netxs::input
             keystrokes = interpret();
             owner.bell::template signal<tier::preview>(keybd::cause, *this);
         }
+        void fire_focus()
+        {
+            alive = true;
+            //if constexpr (debugmode) log(prompt::foci, "Take focus hid:", id, " state:", f.state ? "on":"off");
+            //todo focus<->seed
+            if (focus::state) owner.SIGNAL(tier::release, hids::events::focus::set, *this);
+            else              owner.SIGNAL(tier::release, hids::events::focus::off, *this);
+        }
+        void fire_board()
+        {
+            owner.SIGNAL(tier::release, hids::events::clipbrd, *this);
+            mouse::delta.set(); // Update time stamp.
+        }
         text interpret()
         {
             auto textline = text{};
@@ -1181,7 +1483,7 @@ namespace netxs::input
             };
             if (pressed)
             {
-                switch (virtcod)
+                switch (keycode & -2 /*Generic keys only*/)
                 {
                     //todo Ctrl+Space
                     //     Ctrl+Backspace
@@ -1192,40 +1494,40 @@ namespace netxs::input
                         textline = ctlstate & hids::anyShift ? "\033[Z"
                                                              : "\t";
                         break;
-                    case key::PageUp:    ctrl("[5",  "[5",  "~"); break;
-                    case key::PageDown:  ctrl("[6",  "[6",  "~"); break;
-                    case key::Insert:    ctrl("[2",  "[2",  "~"); break;
-                    case key::Delete:    ctrl("[3",  "[3",  "~"); break;
-                    case key::End:       ctrl("[",   "[1",  "F"); break;
-                    case key::Home:      ctrl("[",   "[1",  "H"); break;
-                    case key::Up:        ctrl("[",   "[1",  "A"); break;
-                    case key::Down:      ctrl("[",   "[1",  "B"); break;
-                    case key::Right:     ctrl("[",   "[1",  "C"); break;
-                    case key::Left:      ctrl("[",   "[1",  "D"); break;
-                    case key::F1:        ctrl("O",   "[1",  "P"); break;
-                    case key::F2:        ctrl("O",   "[1",  "Q"); break;
-                    case key::F3:        ctrl("O",   "[1",  "R"); break;
-                    case key::F4:        ctrl("O",   "[1",  "S"); break;
-                    case key::F5:        ctrl("[15", "[15", "~"); break;
-                    case key::F6:        ctrl("[17", "[17", "~"); break;
-                    case key::F7:        ctrl("[18", "[18", "~"); break;
-                    case key::F8:        ctrl("[19", "[19", "~"); break;
-                    case key::F9:        ctrl("[20", "[20", "~"); break;
-                    case key::F10:       ctrl("[21", "[21", "~"); break;
-                    case key::F11:       ctrl("[23", "[23", "~"); break;
-                    case key::F12:       ctrl("[24", "[24", "~"); break;
-                    case key::F13:       ctrl("[25", "[25", "~"); break;
-                    case key::F14:       ctrl("[26", "[26", "~"); break;
-                    case key::F15:       ctrl("[28", "[28", "~"); break;
-                    case key::F16:       ctrl("[29", "[29", "~"); break;
-                    case key::F17:       ctrl("[31", "[31", "~"); break;
-                    case key::F18:       ctrl("[32", "[32", "~"); break;
-                    case key::F19:       ctrl("[33", "[33", "~"); break;
-                    case key::F20:       ctrl("[34", "[34", "~"); break;
-                    case key::F21:       ctrl("[35", "[35", "~"); break;
-                    case key::F22:       ctrl("[36", "[36", "~"); break;
-                    case key::F23:       ctrl("[37", "[37", "~"); break;
-                    case key::F24:       ctrl("[38", "[38", "~"); break;
+                    case key::PageUp:     ctrl("[5",  "[5",  "~"); break;
+                    case key::PageDown:   ctrl("[6",  "[6",  "~"); break;
+                    case key::Insert:     ctrl("[2",  "[2",  "~"); break;
+                    case key::Delete:     ctrl("[3",  "[3",  "~"); break;
+                    case key::End:        ctrl("[",   "[1",  "F"); break;
+                    case key::Home:       ctrl("[",   "[1",  "H"); break;
+                    case key::UpArrow:    ctrl("[",   "[1",  "A"); break;
+                    case key::DownArrow:  ctrl("[",   "[1",  "B"); break;
+                    case key::RightArrow: ctrl("[",   "[1",  "C"); break;
+                    case key::LeftArrow:  ctrl("[",   "[1",  "D"); break;
+                    case key::F1:         ctrl("O",   "[1",  "P"); break;
+                    case key::F2:         ctrl("O",   "[1",  "Q"); break;
+                    case key::F3:         ctrl("O",   "[1",  "R"); break;
+                    case key::F4:         ctrl("O",   "[1",  "S"); break;
+                    case key::F5:         ctrl("[15", "[15", "~"); break;
+                    case key::F6:         ctrl("[17", "[17", "~"); break;
+                    case key::F7:         ctrl("[18", "[18", "~"); break;
+                    case key::F8:         ctrl("[19", "[19", "~"); break;
+                    case key::F9:         ctrl("[20", "[20", "~"); break;
+                    case key::F10:        ctrl("[21", "[21", "~"); break;
+                    case key::F11:        ctrl("[23", "[23", "~"); break;
+                    case key::F12:        ctrl("[24", "[24", "~"); break;
+                    case key::F13:        ctrl("[25", "[25", "~"); break;
+                    case key::F14:        ctrl("[26", "[26", "~"); break;
+                    case key::F15:        ctrl("[28", "[28", "~"); break;
+                    case key::F16:        ctrl("[29", "[29", "~"); break;
+                    case key::F17:        ctrl("[31", "[31", "~"); break;
+                    case key::F18:        ctrl("[32", "[32", "~"); break;
+                    case key::F19:        ctrl("[33", "[33", "~"); break;
+                    case key::F20:        ctrl("[34", "[34", "~"); break;
+                    case key::F21:        ctrl("[35", "[35", "~"); break;
+                    case key::F22:        ctrl("[36", "[36", "~"); break;
+                    case key::F23:        ctrl("[37", "[37", "~"); break;
+                    case key::F24:        ctrl("[38", "[38", "~"); break;
                     default:
                         textline = cluster;
                         break;

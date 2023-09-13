@@ -16,6 +16,11 @@ namespace netxs::input
     using sysmouse = directvt::binary::sysmouse_t;
     using syskeybd = directvt::binary::syskeybd_t;
     using sysfocus = directvt::binary::sysfocus_t;
+    using syswinsz = directvt::binary::syswinsz_t;
+    using sysclose = directvt::binary::sysclose_t;
+    using syspaste = directvt::binary::syspaste_t;
+    using sysboard = directvt::binary::sysboard_t;
+    using clipdata = directvt::binary::clipdata_t;
 }
 namespace netxs::ui
 {
@@ -28,6 +33,7 @@ namespace netxs::ui
     using functor = std::function<void(sptr<base>)>;
     using proc = std::function<void(hids&)>;
     using s11n = directvt::binary::s11n;
+    using escx = ansi::escx;
 }
 
 namespace netxs::events::userland
@@ -43,7 +49,7 @@ namespace netxs::events::userland
             EVENT_XS( postrender, ui::face       ), // release: UI-tree post-rendering. Draw debug overlay, maker, titles, etc.
             EVENT_XS( nextframe , bool           ), // general: Signal for rendering the world, the parameter indicates whether the world has been modified since the last rendering.
             EVENT_XS( depth     , si32           ), // request: Determine the depth of the hierarchy.
-            EVENT_XS( shutdown  , const view     ), // general: Server shutdown.
+            EVENT_XS( shutdown  , const text     ), // general: Server shutdown.
             GROUP_XS( extra     , si32           ), // Event extension slot.
             GROUP_XS( timer     , time           ), // timer tick, arg: current moment (now).
             GROUP_XS( render    , ui::face       ), // release: UI-tree rendering.
@@ -120,13 +126,15 @@ namespace netxs::events::userland
                 EVENT_XS( mouse   , input::sysmouse ), // release: mouse activity.
                 EVENT_XS( keybd   , input::syskeybd ), // release: keybd activity.
                 EVENT_XS( focus   , input::sysfocus ), // release: focus activity.
+                EVENT_XS( board   , input::sysboard ), // release: Clipboard preview.
+                //EVENT_XS( paste   , input::syspaste ), // release: clipboard activity.
                 EVENT_XS( error   , const si32      ), // release: return error code.
                 EVENT_XS( winsz   , const twod      ), // release: order to update terminal primary overlay.
                 EVENT_XS( preclose, const bool      ), // release: signal to quit after idle timeout, arg: bool - ready to shutdown.
-                EVENT_XS( quit    , const text      ), // release: quit, arg: text - bye msg.
+                EVENT_XS( quit    , const si32      ), // release: quit, arg: si32 - quit reason.
                 EVENT_XS( pointer , const bool      ), // release: mouse pointer visibility.
-                EVENT_XS( clipdata, ansi::clip      ), // release: OS clipboard update.
-                EVENT_XS( logs    , const view      ), // logs output.
+                EVENT_XS( logs    , const text      ), // logs output.
+                EVENT_XS( readline, text            ), // Standard input (scripting).
                 //EVENT_XS( menu  , si32 ),
             };
             SUBSET_XS( data )
@@ -140,7 +148,6 @@ namespace netxs::events::userland
             };
             SUBSET_XS( command )
             {
-                EVENT_XS( quit       , const view  ), // return bye msg, arg: errcode.
                 EVENT_XS( cout       , const text  ), // Append extra data to output.
                 EVENT_XS( custom     , si32        ), // Custom command, arg: cmd_id.
                 EVENT_XS( printscreen, input::hids ), // Copy screen area to clipboard.
@@ -201,16 +208,17 @@ namespace netxs::events::userland
                 };
                 SUBSET_XS( upon )
                 {
-                    EVENT_XS( redrawn, ui::face       ), // inform about camvas is completely redrawn.
-                    EVENT_XS( cached , ui::face       ), // inform about camvas is cached.
-                    EVENT_XS( wiped  , ui::face       ), // event after wipe the canvas.
-                    EVENT_XS( changed, twod           ), // event after resize, arg: diff bw old and new size.
-                    EVENT_XS( dragged, input::hids    ), // event after drag.
                     EVENT_XS( created, input::hids    ), // release: notify the instance of who created it.
                     EVENT_XS( started, sptr<ui::base> ), // release: notify the instance is commissioned. arg: visual root.
-                    EVENT_XS( resize , const twod     ), // anycast: notify about the actual window size.
+                    EVENT_XS( resized, const twod     ), // anycast: notify about the actual window size.
+                    EVENT_XS( changed, twod           ), // event after resize, arg: diff bw old and new size.
+                    EVENT_XS( dragged, input::hids    ), // event after drag.
+                    EVENT_XS( stopped, bool           ), // release: notify that the main reading loop has exited. arg bool: fast or not.
                     GROUP_XS( vtree  , sptr<ui::base> ), // visual tree events, arg: parent base_sptr.
                     GROUP_XS( scroll , rack           ), // event after scroll.
+                    //EVENT_XS( redrawn, ui::face       ), // inform about camvas is completely redrawn.
+                    //EVENT_XS( cached , ui::face       ), // inform about camvas is cached.
+                    //EVENT_XS( wiped  , ui::face       ), // event after wipe the canvas.
                     //EVENT_XS( created    , sptr<ui::base> ), // event after itself creation, arg: itself bell_sptr.
                     //EVENT_XS( detached   , bell_sptr      ), // inform that subject is detached, arg: parent bell_sptr.
                     //EVENT_XS( invalidated, bool           ),
@@ -278,14 +286,13 @@ namespace netxs::events::userland
                 {
                     EVENT_XS( create    , rect           ), // return coordinates of the new object placeholder.
                     EVENT_XS( createby  , input::hids    ), // return gear with coordinates of the new object placeholder gear::slot.
-                    EVENT_XS( destroy   , ui::base       ), // ??? bool return reference to the parent.
                     EVENT_XS( render    , bool           ), // ask children to render itself to the parent canvas, arg is the world is damaged or not.
                     EVENT_XS( attach    , sptr<ui::base> ), // order to attach a child, arg is a parent base_sptr.
                     EVENT_XS( detach    , sptr<ui::base> ), // order to detach a child, tier::release - kill itself, tier::preview - detach the child specified in args, arg is a child sptr.
                     EVENT_XS( swap      , sptr<ui::base> ), // order to replace existing client. See tiling manager empty slot.
                     EVENT_XS( functor   , ui::functor    ), // exec functor (see pro::focus).
                     EVENT_XS( onbehalf  , ui::proc       ), // exec functor on behalf (see gate).
-                    GROUP_XS( quit      , sptr<ui::base> ), // request parent for destroy.
+                    GROUP_XS( quit      , bool           ), // request to quit/detach (arg: fast or not).
                     //EVENT_XS( focus      , sptr<ui::base>     ), // order to set focus to the specified object, arg is a object sptr.
                     //EVENT_XS( commit     , si32               ), // order to output the targets, arg is a frame number.
                     //EVENT_XS( multirender, vector<sptr<face>> ), // ask children to render itself to the set of canvases, arg is an array of the face sptrs.
@@ -294,7 +301,7 @@ namespace netxs::events::userland
 
                     SUBSET_XS( quit )
                     {
-                        EVENT_XS( one, sptr<ui::base> ), // Signal to close.
+                        EVENT_XS( one, bool ), // Signal to close (fast or not).
                     };
                 };
                 SUBSET_XS( cursor )
@@ -550,7 +557,7 @@ namespace netxs::ui
         bool caret = faux; // face: Cursor visibility.
         bool moved = faux; // face: Is reflow required.
         bool decoy = true; // face: Is the cursor inside the viewport.
-        svga cmode = svga::truecolor; // face: Color mode.
+        svga cmode = svga::vtrgb; // face: Color mode.
 
         // face: Print proxy something else at the specified coor.
         template<class T, class P>
@@ -631,7 +638,7 @@ namespace netxs::ui
 
             if (reset)
             {
-                anker.y = std::numeric_limits<si32>::max();
+                anker.y = si32max;
                 textpage.stream(gain);
 
                 decoy = caret && inside(flow::cp());
@@ -766,10 +773,14 @@ namespace netxs::ui
             auto view = core::view();
             auto size = core::size();
 
-            auto w = view.size.x;
-            auto h = view.size.y;
+            auto w = std::max(0, view.size.x);
+            auto h = std::max(0, view.size.y);
+            auto s = w * h;
 
-            if (auto size = w * h; cache.size() < size) cache.resize(size);
+            if (cache.size() < (size_t)s)
+            {
+                cache.resize(s);
+            }
 
             auto s_ptr = core::data(view.coor);
             auto d_ptr = cache.data();
@@ -924,7 +935,7 @@ namespace netxs::ui
             return delta;
         }
         // base: Resize the form, and return the size delta.
-        auto resize(twod new_size)
+        auto resize(twod new_size) -> twod //todo MSVC 17.7.0 requires return type
         {
             auto old_size = square.size;
             SIGNAL(tier::preview, e2::size::set, new_size);
@@ -1111,7 +1122,7 @@ namespace netxs::ui
         // base: Initiate redrawing.
         virtual void redraw(face& canvas)
         {
-            SIGNAL(tier::general, e2::shutdown, "base: rendering is not provided");
+            SIGNAL(tier::general, e2::shutdown, msg, (utf::concat(prompt::base, "Rendering not supported")));
         }
         // base: Syntax sugar helper.
         void _saveme()
@@ -1185,8 +1196,14 @@ namespace netxs::ui
         { }
         virtual ~pipe()
         { }
-        operator bool () { return active; }
 
+        operator bool () const { return active; }
+
+        void start()
+        {
+            active.exchange(true);
+            isbusy.exchange(faux);
+        }
         virtual bool send(view buff) = 0;
         virtual qiew recv(char* buff, size_t size) = 0;
         virtual qiew recv() = 0;
@@ -1198,6 +1215,10 @@ namespace netxs::ui
         {
             return pipe::shut();
         }
+        virtual void wake()
+        {
+            shut();
+        }
         virtual flux& show(flux& s) const = 0;
         void output(view data)
         {
@@ -1205,11 +1226,16 @@ namespace netxs::ui
         }
         friend auto& operator << (flux& s, pipe const& sock)
         {
-            return sock.show(s << "{ xipc: ") << " }";
+            return sock.show(s << "{ " << prompt::xipc) << " }";
         }
         friend auto& operator << (flux& s, xipc const& sock)
         {
             return s << *sock;
+        }
+        void cleanup()
+        {
+            active.exchange(faux);
+            isbusy.exchange(faux);
         }
     };
 }

@@ -362,7 +362,7 @@ namespace netxs::ui
         }
         void zz (twod const& offset = dot_00)
         {
-            runstyle.glb();
+            runstyle.reset();
             caretpos = dot_00;
             pagerect.coor = offset;
         }
@@ -440,7 +440,7 @@ namespace netxs::ui
         { }
 
         constexpr
-        auto substr(si32 begin, si32 piece = netxs::maxsi32) const
+        auto substr(si32 begin, si32 piece = si32max) const
         {
             auto w = basis.size().x;
             auto a = start + std::max(begin, 0);
@@ -514,7 +514,7 @@ namespace netxs::ui
 
         auto length() const                                     { return size().x;                         }
         auto shadow() const                                     { return shot{ *this };                    }
-        auto substr(si32 at, si32 width = netxs::maxsi32) const { return shadow().substr(at, width);       }
+        auto substr(si32 at, si32 width = netxs::si32max) const { return shadow().substr(at, width);       }
         void trimto(si32 max_size)                              { if (length() > max_size) crop(max_size); }
         void resize(si32 oversize)                              { if (oversize > length()) crop(oversize); }
         auto empty()
@@ -1331,8 +1331,8 @@ namespace netxs::ui
                         insert(*iter2);
                         return true;
                     }
-                    if ((iter1++)->wdt() == 2 && iter1 != end_1 && (iter1++)->wdt() != 3) log("para: corrupted glyph");
-                    if ((iter2++)->wdt() == 2 && iter2 != end_2 && (iter2++)->wdt() != 3) log("para: corrupted glyph");
+                    if ((iter1++)->wdt() == 2 && iter1 != end_1 && (iter1++)->wdt() != 3) log(prompt::para, "Corrupted glyph");
+                    if ((iter2++)->wdt() == 2 && iter2 != end_2 && (iter2++)->wdt() != 3) log(prompt::para, "Corrupted glyph");
                 }
             }
             return faux;
@@ -1496,16 +1496,16 @@ namespace netxs::ui
         list batch = { ptr::shared<para>(index) }; // page: Paragraph list.
         iter layer = batch.begin();   // page: Current paragraph.
         pmap parts = {};              // page: Paragraph index.
-        redo stack = {};              // paпу: Style state stack.
+        redo stack = {};              // page: Style state stack.
 
         //todo use ring
-        si32 limit = std::numeric_limits<si32>::max(); // page: Paragraphs number limit.
+        ui32 limit = si32max; // page: Paragraphs number limit.
         void shrink() // page: Remove over limit paragraphs.
         {
             auto size = batch.size();
             if (size > limit)
             {
-                auto item = static_cast<si32>(std::distance(batch.begin(), layer));
+                auto item = static_cast<size_t>(std::distance(batch.begin(), layer));
                 while (batch.size() > limit)
                 {
                     batch.pop_front();
@@ -1515,7 +1515,12 @@ namespace netxs::ui
                 if (item < size - limit) layer = batch.begin();
             }
         }
-        void maxlen(si32 m) { limit = std::max(1, m); shrink(); } // page: Set the limit of paragraphs.
+        // page: Set the limit of paragraphs.
+        void maxlen(ui32 m)
+        {
+            limit = std::clamp<ui32>(m, 1, si32max);
+            shrink();
+        }
         auto maxlen() { return limit; } // page: Get the limit of paragraphs.
 
         using ring = generics::ring<std::vector<para>>;
@@ -1769,13 +1774,13 @@ namespace netxs::ui
                 data += tag2;
                 data += istr;
             }
-            template<svga Mode = svga::truecolor>
+            template<svga Mode = svga::vtrgb>
             auto fgc(rgba const& c)
             {
                 base.inv() ? clr(c, bg_1, bg_2)
                            : clr(c, fg_1, fg_2);
             }
-            template<svga Mode = svga::truecolor>
+            template<svga Mode = svga::vtrgb>
             auto bgc(rgba const& c)
             {
                 base.inv() ? clr(c, fg_1, fg_2)
@@ -2062,13 +2067,11 @@ namespace netxs::ui
         auto& operator  = (view utf8) { clear(); ansi::parse(utf8, this); return *this; }
         auto& operator += (view utf8) {          ansi::parse(utf8, this); return *this; }
 
-        void tabs(si32) { log("Tabs are not supported"); }
+        void tabs(si32) { if constexpr (debugmode) log(prompt::page, "Tabs not supported"); }
     };
 
-    class tone
+    struct tone
     {
-    public:
-
         #define prop_list                              \
         X(kb_focus  , "Keyboard focus indicator")      \
         X(brighter  , "Highlighter modificator")       \

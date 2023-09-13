@@ -10,15 +10,13 @@ int main(int argc, char* argv[])
     auto defaults = 
     #include "calc.xml"
 
-    auto vtmode = os::tty::vtmode();
-    auto syslog = os::tty::logger(vtmode);
+    auto vtmode = os::tty::vtmode;
+    auto syslog = os::tty::logger();
     auto banner = [&]{ log(app::calc::desc, ' ', app::shared::version); };
     auto cfonly = faux;
     auto cfpath = text{};
     auto errmsg = text{};
     auto getopt = os::process::args{ argc, argv };
-    auto params = app::calc::id + " "s + getopt.rest();
-    getopt.reset();
     while (getopt)
     {
         if (getopt.match("-l", "--listconfig"))
@@ -30,13 +28,13 @@ int main(int argc, char* argv[])
             cfpath = getopt.next();
             if (cfpath.empty())
             {
-                errmsg = "config file path not specified";
+                errmsg = "Config file path not specified";
                 break;
             }
         }
         else if (getopt.match("-?", "-h", "--help"))
         {
-            errmsg = ansi::nil().add("show help message");
+            errmsg = ansi::nil().add("Show help message");
             break;
         }
         else if (getopt.match("-v", "--version"))
@@ -50,10 +48,11 @@ int main(int argc, char* argv[])
         }
         else
         {
-            errmsg = utf::concat("unknown option '", getopt.next(), "'");
+            errmsg = utf::concat("Unknown option '", getopt.next(), "'");
             break;
         }
     }
+    auto params = getopt.rest();
 
     banner();
     if (errmsg.size())
@@ -64,9 +63,9 @@ int main(int argc, char* argv[])
             + "  Syntax:\n\n    " + myname + " [ -c <file> ] [ -l ]\n"s
             + "\n"s
             + "  Options:\n\n"s
-            + "    No arguments        Run application.\n"s
-            + "    -c | --config <..>  Use specified configuration file.\n"s
-            + "    -l | --listconfig   Show configuration and exit.\n"s
+            + "    No arguments       Run application.\n"s
+            + "    -c, --config <..>  Use specified configuration file.\n"s
+            + "    -l, --listconfig   Show configuration and exit.\n"s
             + "\n"s
             + "  Configuration precedence (descending priority):\n\n"s
             + "    1. Command line options: " + myname + " -c path/to/settings.xml\n"s
@@ -76,18 +75,13 @@ int main(int argc, char* argv[])
     }
     else if (cfonly)
     {
-        log("Running configuration:\n", app::shared::load::settings<true>(defaults, cfpath, os::dtvt::config()));
+        log("Running configuration:\n", app::shared::load::settings<true>(defaults, cfpath, os::dtvt::config));
     }
     else
     {
-        auto config = app::shared::load::settings(defaults, cfpath, os::dtvt::config());
-        auto result = app::shared::start(params, app::calc::id, vtmode, config);
-
-        if (result) return 0;
-        else
-        {
-            log("main: app initialization error");
-            return 1;
-        }
+        auto config = app::shared::load::settings(defaults, cfpath, os::dtvt::config);
+        app::shared::start(params, app::calc::id, vtmode, os::dtvt::win_sz, config);
     }
+
+    os::release();
 }

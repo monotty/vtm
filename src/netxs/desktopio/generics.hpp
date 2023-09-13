@@ -41,7 +41,7 @@ namespace netxs::generics
         static inline bool issub(Item const& value) { return (value & subbit) != (value & sigbit) >> 1; }
         static inline auto desub(Item const& value) { return static_cast<Item>((value & ~subbit) | (value & sigbit) >> 1); }
         static inline auto insub(Item const& value) { return static_cast<Item>((value & ~subbit) | ((value & sigbit) ^ sigbit) >> 1); }
-        static inline auto isdef(Item const& value) { return (value & fifo::skip) == fifo::skip; }
+        static inline auto isdef(Item const& value) { return (value & ~subbit) == fifo::skip; }
 
         static auto& fake() { static fifo empty; return empty; }
 
@@ -250,7 +250,7 @@ namespace netxs::generics
         std::mutex              mutex;
         std::condition_variable synch;
         std::list<item>         queue;
-        bool                    alive;
+        flag                    alive;
         std::thread             agent;
 
         template<class P>
@@ -313,14 +313,101 @@ namespace netxs::generics
         void stop()
         {
             auto guard = std::unique_lock{ mutex };
-            if (alive)
+            if (alive.exchange(faux))
             {
-                alive = faux;
                 synch.notify_one();
                 guard.unlock();
                 agent.join();
             }
         }
+    };
+
+    // generics: Separate thread for executing parallel tasks.
+    struct pool
+    {
+    private:
+        struct item
+        {
+            bool        state;
+            std::thread guest;
+        };
+
+        std::recursive_mutex            mutex;
+        std::condition_variable_any     synch;
+        std::map<std::thread::id, item> index;
+        si32                            count;
+        flag                            alive;
+        std::thread                     agent;
+
+        void worker()
+        {
+            auto guard = std::unique_lock{ mutex };
+            while (alive || index.size())
+            {
+                if (alive) synch.wait(guard);
+                for (auto it = index.begin(); it != index.end();)
+                {
+                    auto& [sid, session] = *it;
+                    auto& [state, guest] = session;
+                    if (state == faux || !alive)
+                    {
+                        if (guest.joinable())
+                        {
+                            guard.unlock();
+                            guest.join();
+                            guard.lock();
+                        }
+                        it = index.erase(it);
+                    }
+                    else ++it;
+                }
+            }
+        }
+        void checkout()
+        {
+            auto guard = std::lock_guard{ mutex };
+            auto session_id = std::this_thread::get_id();
+            index[session_id].state = faux;
+            synch.notify_one();
+        }
+
+    public:
+        template<class Proc>
+        void run(Proc process)
+        {
+            auto guard = std::lock_guard{ mutex };
+            if (!alive) return;
+            auto next_id = count++;
+            auto session = std::thread([&, process, next_id]
+            {
+                process(next_id);
+                checkout();
+            });
+            auto session_id = session.get_id();
+            index[session_id] = { true, std::move(session) };
+        }
+        auto size()
+        {
+            return index.size();
+        }
+        auto stop()
+        {
+            mutex.lock();
+            alive = faux;
+            synch.notify_one();
+            mutex.unlock();
+
+            if (agent.joinable())
+            {
+                agent.join();
+            }
+        }
+
+        pool()
+            : count{ 0    },
+              alive{ true },
+              agent{ &pool::worker, this }
+        { }
     };
 
     // generics: .
@@ -366,15 +453,15 @@ namespace netxs::generics
             auto  operator == (iter const& m) const { return addr == m.addr;                                              }
         };
 
-        ring(si32 ring_size, si32 grow_by = 0)
-            : step{ grow_by                      },
-              head{ 0                            },
-              tail{ ring_size ? ring_size : step },
-              peak{ tail + 1                     },
-              buff( peak                         ), // Rounded brackets! Not curly! In oreder to call T::ctor().
-              size{ 0                            },
-              cart{ 0                            },
-              mxsz{ maxsi32 - step               }
+        ring(si32 ring_size, si32 grow_by = 0, si32 grow_mx = 0)
+            : step{ std::clamp(grow_by, 0, netxs::si32max / 4) },
+              head{ 0 },
+              tail{ ring_size ? std::clamp(ring_size, 0, netxs::si32max / 2) : step },
+              peak{ tail + 1 },
+              buff(peak), // Rounded brackets! Not curly! In oreder to call T::ctor().
+              size{ 0 },
+              cart{ 0 },
+              mxsz{ std::clamp(grow_mx, 0, netxs::si32max - 2) }
         { }
 
         virtual void undock_base_front(type&) { };
@@ -412,8 +499,12 @@ namespace netxs::generics
         {
             if (size == peak - 1)
             {
-                if (step && peak < mxsz) resize(size + step, step);
-                else                     return true;
+                if (step && peak <= mxsz)
+                {
+                    auto new_size = (si32)std::min((ui32)size + (ui32)step, (ui32)mxsz);
+                    resize(new_size);
+                }
+                else return true;
             }
             return faux;
         }
@@ -583,8 +674,9 @@ namespace netxs::generics
             tail = peak - 1;
         }
         template<bool BottomAnchored = true>
-        void resize(si32 new_size, si32 grow_by = 0)
+        void resize(si32 new_size)
         {
+            if (new_size <= 0) new_size = step;
             if (new_size > 0)
             {
                 if constexpr (BottomAnchored)
@@ -628,9 +720,14 @@ namespace netxs::generics
                 peak = new_size;
                 head = 0;
                 tail = size ? size - 1 : peak - 1;
-                step = grow_by;
             }
-            else step = grow_by;
+        }
+        template<bool BottomAnchored = true>
+        void resize(si32 new_size, si32 grow_by, si32 grow_mx)
+        {
+            step = std::clamp(grow_by, 0, netxs::si32max / 4);
+            mxsz = std::clamp(grow_mx, 0, netxs::si32max - 2);
+            resize<BottomAnchored>(new_size);
         }
         template<class P>
         void for_each(si32 from, si32 upto, P proc)
@@ -692,7 +789,7 @@ namespace netxs::generics
             while (queue)
             {
                 auto task = queue.front();
-                if (task >= 0 && task < last->size())
+                if (task >= 0 && (size_t)task < last->size())
                 {
                     if (auto const& next = last->at(task))
                     {
@@ -733,7 +830,7 @@ namespace netxs::generics
                     while (queue)
                     {
                         auto task = queue.front();
-                        if (task >= 0 && task < last->size())
+                        if (task >= 0 && (size_t)task < last->size())
                         {
                             if (auto const& next = last->at(task))
                             {
@@ -882,6 +979,40 @@ namespace netxs::generics
             for (auto& [key, val] : list) at(key) = val;
         }
     };
+
+    // generics: Multithreaded buffer.
+    template<class Type>
+    class buff
+    {
+        friend struct guard;
+        using lock = std::mutex;
+        using sync = std::lock_guard<lock>;
+
+        flag await{};
+        Type block{};
+        lock mutex{};
+
+    public:
+        buff() {};
+        buff(buff&&) {};
+        buff(buff const&) {};
+        void operator = (buff const&) {};
+
+        auto freeze()
+        {
+            struct guard : sync
+            {
+                flag& await;
+                Type& block;
+                guard(buff& inst)
+                    : sync{ inst.mutex },
+                     await{ inst.await },
+                     block{ inst.block }
+                { }
+            };
+            return guard{ *this };
+        }
+    };
 }
 
 // generics: Map helpers.
@@ -896,7 +1027,7 @@ namespace netxs
 
     // do it in place
     //template<class M, class K>
-    //auto on_key_get(const M& map, const K& key)
+    //auto on_key_get(M const& map, K const& key)
     //{
     //	const auto it = map.find(key);
     //	return it == map.end() ? std::nullopt

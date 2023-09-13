@@ -302,7 +302,6 @@ namespace netxs::ui
 
        ~fork()
         {
-            auto lock = events::sync{};
             auto empty = e2::form::upon::vtree::detached.param();
             if (client_1)
             {
@@ -572,7 +571,6 @@ namespace netxs::ui
         }
        ~list()
         {
-            auto lock = events::sync{};
             auto empty = e2::form::upon::vtree::detached.param();
             while (subset.size())
             {
@@ -716,7 +714,6 @@ namespace netxs::ui
     public:
        ~cake()
         {
-            auto lock = events::sync{};
             auto empty = e2::form::upon::vtree::detached.param();
             while (subset.size())
             {
@@ -831,7 +828,6 @@ namespace netxs::ui
     public:
        ~park()
         {
-            auto lock = events::sync{};
             auto empty = e2::form::upon::vtree::detached.param();
             while (subset.size())
             {
@@ -933,7 +929,6 @@ namespace netxs::ui
     public:
        ~veer()
         {
-            auto lock = events::sync{};
             auto empty = e2::form::upon::vtree::detached.param();
             while (subset.size())
             {
@@ -1066,9 +1061,9 @@ namespace netxs::ui
         auto get_entry(twod const& anchor)
         {
             auto& anker = anchor.y;
-            auto pred = item{ 0, twod{ 0, std::numeric_limits<si32>::max() } };
-            auto minp = item{ 0, twod{ 0, std::numeric_limits<si32>::max() } };
-            auto mindist = std::numeric_limits<si32>::max();
+            auto pred = item{ 0, twod{ 0, si32max } };
+            auto minp = item{ 0, twod{ 0, si32max } };
+            auto mindist = si32max;
 
             //todo optimize, use binary search
             //start from the end
@@ -1143,9 +1138,10 @@ namespace netxs::ui
         }
         void recalc()
         {
-            if (topic.size() > layout.capacity())
+            auto s = (size_t)topic.size();
+            if (s > layout.capacity())
             {
-                layout.reserve(topic.size() * 2);
+                layout.reserve(s * 2);
             }
 
             auto entry = layout.get_entry(base::anchor); // Take the object under central point
@@ -1613,7 +1609,10 @@ namespace netxs::ui
         // rail: Update nested object.
         void update(sptr old_item_ptr, sptr new_item_ptr)
         {
-            if (client != old_item_ptr) log(" rail: WARNING! Wrong DOM structure. rail.id=", id);
+            if constexpr (debugmode)
+            {
+                if (client != old_item_ptr) log(prompt::rail, "Wrong DOM structure. rail.id=", id);
+            }
             if (client)
             {
                 auto current_position = client->base::coor();

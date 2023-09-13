@@ -86,10 +86,10 @@ namespace netxs
         //duplet operator << (T i) const { return { x << i, y << i }; }
         //duplet operator >> (T i) const { return { x >> i, y >> i }; }
 
-        template<class D> duplet<D> operator / (D i) const { return { x / i, y / i }; }
-        template<class D> duplet<D> operator + (D i) const { return { x + i, y + i }; }
-        template<class D> duplet<D> operator - (D i) const { return { x - i, y - i }; }
-        template<class D> duplet<D> operator * (D i) const { return { x * i, y * i }; }
+        template<class D> duplet<D> constexpr operator / (D i) const { return { x / i, y / i }; }
+        template<class D> duplet<D> constexpr operator + (D i) const { return { x + i, y + i }; }
+        template<class D> duplet<D> constexpr operator - (D i) const { return { x - i, y - i }; }
+        template<class D> duplet<D> constexpr operator * (D i) const { return { x * i, y * i }; }
 
         bool operator () (duplet const& p)
         {
@@ -157,8 +157,8 @@ namespace netxs
     static constexpr const auto dot_22 = twod{ 2,2 };
     static constexpr const auto dot_21 = twod{ 2,1 };
     static constexpr const auto dot_33 = twod{ 3,3 };
-    static constexpr const auto dot_mx = twod{ std::numeric_limits<si32>::max() / 2,
-                                               std::numeric_limits<si32>::max() / 2 };
+    static constexpr const auto dot_mx = twod{ si32max / 2,
+                                               si32max / 2 };
 
     static twod divround(twod const& p, si32 n       ) { return { divround(p.x, n  ), divround(p.y, n  ) }; }
     static twod divround(si32 n       , twod const& p) { return { divround(n  , p.x), divround(n  , p.y) }; }
