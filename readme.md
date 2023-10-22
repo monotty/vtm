@@ -22,11 +22,13 @@ Text-baased desktop inside your console.
 
 # Building from Source
 
+You can use [Github Actions](../../actions) to build statically linked binaries for the big three OS platforms: Linux, Windows, and macOS.
+
 ### Unix
 
 Build-time dependencies
  - 64-bit system host
- - `git`, `cmake`,  `C++20 compiler` ([GCC 11](https://gcc.gnu.org/projects/cxx-status.html), [Clang 13](https://clang.llvm.org/cxx_status.html), [MSVC](https://visualstudio.microsoft.com/downloads/))
+ - `git`, `cmake`,  `C++20 compiler` ([GCC 11](https://gcc.gnu.org/projects/cxx-status.html), [Clang 14](https://clang.llvm.org/cxx_status.html))
  - RAM requirements for compilation:
    - Compiling with GCC — 4GB of RAM
    - Compiling with Clang — 9GB of RAM
@@ -34,25 +36,14 @@ Build-time dependencies
 Use any terminal as a build environment
 ```
 git clone https://github.com/netxs-group/vtm.git
+cd vtm
 cmake . -B bin
 cmake --build bin
 sudo cmake --install bin
 vtm
 ```
 
-Note: A 32-bit binary executable can only be built using cross-compilation on a 64-bit system. In order to do so make sure you have additional cross-compilation libraries installed, e.g. on Linux `sudo apt install gcc-i686-linux-gnu g++-i686-linux-gnu` (x86) or `sudo apt install gcc-arm-linux-gnueabihf g++-arm-linux-gnueabihf` (ARM32).
-
-Example of cross-compilation for x86 Linux
-```
-cmake . -B bin -DCMAKE_CXX_COMPILER="/bin/i686-linux-gnu-g++" -DCMAKE_CXX_FLAGS="-static -pthread -s"
-cmake --build bin
-```
-
-Example of cross-compilation for ARM32 Linux
-```
-cmake . -B bin -DCMAKE_CXX_COMPILER="/bin/arm-linux-gnueabihf-g++" -DCMAKE_CXX_FLAGS="-static -pthread -s -Wno-psabi"
-cmake --build bin
-```
+Note: A 32-bit binary executable can only be built using cross-compilation on a 64-bit system.
 
 ### Windows
 
@@ -63,6 +54,7 @@ Use Developer Command Prompt as a build environment
 
 ```
 git clone https://github.com/netxs-group/vtm.git
+cd vtm
 cmake . -B bin
 cmake --build bin --config Release
 bin\Release\vtm.exe
@@ -70,8 +62,8 @@ bin\Release\vtm.exe
 
 # Binary Downloads
 
-![macOS](.resources/status/macos.svg)     [![Universal](.resources/status/arch_any.svg)](https://github.com/netxs-group/vtm/releases/latest/download/vtm_macos_any.tar.gz)  
-![Linux](.resources/status/linux.svg)     [![Intel 64-bit](.resources/status/arch_x86_64.svg)](https://github.com/netxs-group/vtm/releases/latest/download/vtm_linux_x86_64.tar.gz) [![Intel 32-bit](.resources/status/arch_x86.svg)](https://github.com/netxs-group/vtm/releases/latest/download/vtm_linux_x86.tar.gz) [![ARM 64-bit](.resources/status/arch_arm64.svg)](https://github.com/netxs-group/vtm/releases/latest/download/vtm_linux_arm64.tar.gz) [![ARM 32-bit](.resources/status/arch_arm32.svg)](https://github.com/netxs-group/vtm/releases/latest/download/vtm_linux_arm32.tar.gz)  
+![macOS](.resources/status/macos.svg)     [![Universal](.resources/status/arch_any.svg)](https://github.com/netxs-group/vtm/releases/latest/download/vtm_macos_any.zip)  
+![Linux](.resources/status/linux.svg)     [![Intel 64-bit](.resources/status/arch_x86_64.svg)](https://github.com/netxs-group/vtm/releases/latest/download/vtm_linux_x86_64.zip) [![Intel 32-bit](.resources/status/arch_x86.svg)](https://github.com/netxs-group/vtm/releases/latest/download/vtm_linux_x86.zip) [![ARM 64-bit](.resources/status/arch_arm64.svg)](https://github.com/netxs-group/vtm/releases/latest/download/vtm_linux_arm64.zip) [![ARM 32-bit](.resources/status/arch_arm32.svg)](https://github.com/netxs-group/vtm/releases/latest/download/vtm_linux_arm32.zip)  
 ![Windows](.resources/status/windows.svg) [![Intel 64-bit](.resources/status/arch_x86_64.svg)](https://github.com/netxs-group/vtm/releases/latest/download/vtm_windows_x86_64.zip)  [![Intel 32-bit](.resources/status/arch_x86.svg)](https://github.com/netxs-group/vtm/releases/latest/download/vtm_windows_x86.zip)  [![ARM 64-bit](.resources/status/arch_arm64.svg)](https://github.com/netxs-group/vtm/releases/latest/download/vtm_windows_arm64.zip)  [![ARM 32-bit](.resources/status/arch_arm32.svg)](https://github.com/netxs-group/vtm/releases/latest/download/vtm_windows_arm32.zip)  
 
 ---
@@ -81,6 +73,7 @@ bin\Release\vtm.exe
 - [Command line Options](doc/command-line-options.md)
 - [User Interface](doc/user-interface.md)
 - [Settings](doc/settings.md)
+- [Desktop Live Panel](doc/panel.md)
 - [Built-in Applications](doc/apps.md)
 - Draft: [VT Input Mode](doc/vt-input-mode.md)
 
