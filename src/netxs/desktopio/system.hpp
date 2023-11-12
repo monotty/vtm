@@ -105,13 +105,12 @@ namespace netxs::os
         using pidt = DWORD;
         using fd_t = HANDLE;
         struct tios { DWORD omode, imode, opage, ipage; wide title; CONSOLE_CURSOR_INFO caret{}; };
-        static const auto invalid_fd   = fd_t{ INVALID_HANDLE_VALUE              };
-        static       auto stdin_fd     = fd_t{ ::GetStdHandle(STD_INPUT_HANDLE)  };
-        static       auto stdout_fd    = fd_t{ ::GetStdHandle(STD_OUTPUT_HANDLE) };
-        static       auto stderr_fd    = fd_t{ ::GetStdHandle(STD_ERROR_HANDLE)  };
-        static const auto codepage     = ui32{ ::GetOEMCP()                      };
-        static const auto wr_pipe_path = "\\\\.\\pipe\\w_";
-        static const auto rd_pipe_path = "\\\\.\\pipe\\r_";
+        static const auto invalid_fd   = fd_t{ INVALID_HANDLE_VALUE };
+        static       auto stdin_fd     = fd_t{ ptr::test(::GetStdHandle(STD_INPUT_HANDLE ), os::invalid_fd) };
+        static       auto stdout_fd    = fd_t{ ptr::test(::GetStdHandle(STD_OUTPUT_HANDLE), os::invalid_fd) };
+        static       auto stderr_fd    = fd_t{ ptr::test(::GetStdHandle(STD_ERROR_HANDLE ), os::invalid_fd) };
+        static const auto codepage     = ui32{ ::GetOEMCP() };
+
 
     #else
 
@@ -186,6 +185,10 @@ namespace netxs::os
             os::close((fd_t const)h);
             h = os::invalid_fd;
         }
+    }
+    void sleep(auto t)
+    {
+        std::this_thread::sleep_for(t);
     }
 
     #if defined(_WIN32)
@@ -413,13 +416,10 @@ namespace netxs::os
                 };
                 namespace event
                 {
-                    static constexpr auto custom     = 0b1000'0000'0000'0000;
-                    static constexpr auto ctrl_c     = CTRL_C_EVENT;
-                    static constexpr auto ctrl_break = CTRL_BREAK_EVENT;
-                    static constexpr auto close      = CTRL_CLOSE_EVENT;
-                    static constexpr auto logoff     = CTRL_LOGOFF_EVENT;
-                    static constexpr auto shutdown   = CTRL_SHUTDOWN_EVENT;
-                    static constexpr auto style      = CTRL_SHUTDOWN_EVENT + 1;
+                    static constexpr auto custom      = 0b1000'0000'0000'0000;
+                    static constexpr auto style       = 0;
+                    static constexpr auto paste_begin = 1;
+                    static constexpr auto paste_end   = 2;
                 }
                 namespace op
                 {
@@ -1008,7 +1008,7 @@ namespace netxs::os
                     fdata.op = KD_FONT_OP_SET;
                     if (!ok(::ioctl(os::stdout_fd, KDFONTOP, &fdata), "::ioctl(KDFONTOP, KD_FONT_OP_SET)", os::unexpected)) return;
 
-                    auto max_sz = std::numeric_limits<unsigned short>::max();
+                    auto max_sz = ui16max;
                     auto spairs = std::vector<unipair>(max_sz);
                     auto dpairs = std::vector<unipair>(max_sz);
                     auto srcmap = unimapdesc{ max_sz, spairs.data() };
@@ -1027,17 +1027,20 @@ namespace netxs::os
                          && smap.unicode != 0x2584) *dstptr++ = smap;
                     }
                     dstmap.entry_ct = dstptr - dstmap.entries;
-                    unipair new_recs[] = {{ 0x2580,  10 },
-                                          { 0x2219, 211 },
-                                          { 0x2022, 211 },
-                                          { 0x25CF, 211 },
-                                          { 0x25A0, 254 },
-                                          { 0x25AE, 254 },
-                                          { 0x2584, 254 }};
-                    if (dstmap.entry_ct < max_sz - std::size(new_recs)) // Add new records.
+                    auto new_recs = std::to_array<unipair>(
+                    {
+                        { 0x2580,  10 },
+                        { 0x2219, 211 },
+                        { 0x2022, 211 },
+                        { 0x25CF, 211 },
+                        { 0x25A0, 254 },
+                        { 0x25AE, 254 },
+                        { 0x2584, 254 },
+                    });
+                    if (dstmap.entry_ct < max_sz - new_recs.size()) // Add new records.
                     {
                         for (auto& p : new_recs) *dstptr++ = p;
-                        dstmap.entry_ct += std::size(new_recs);
+                        dstmap.entry_ct += new_recs.size();
                         if (!ok(::ioctl(os::stdout_fd, PIO_UNIMAP, &dstmap), "::ioctl(os::stdout_fd, PIO_UNIMAP)", os::unexpected)) return;
                     }
                     else log(prompt::os, "VGA font loading failed - 'UNIMAP' is full");
@@ -1172,24 +1175,48 @@ namespace netxs::os
     {
         #if defined(_WIN32)
 
-            static auto state = []
+            static constexpr auto ctrl_c     = CTRL_C_EVENT;
+            static constexpr auto ctrl_break = CTRL_BREAK_EVENT;
+            static constexpr auto close      = CTRL_CLOSE_EVENT;
+            static constexpr auto logoff     = CTRL_LOGOFF_EVENT;
+            static constexpr auto shutdown   = CTRL_SHUTDOWN_EVENT;
+
+            static auto mutex = std::mutex{};
+            static auto queue = std::vector<sigt>{}; // Control event queue.
+            static auto cache = std::vector<sigt>{};
+            static auto alarm = fire{};
+            static auto fetch = []() -> auto&
             {
-                static auto handler = [](sigt what) // Put the console control events at the head of the input event queue.
+                auto sync = std::lock_guard{ mutex };
+                std::swap(queue, cache);
+                alarm.flush();
+                return cache;
+            };
+            static auto place = [](sigt what)
+            {
+                auto sync = std::lock_guard{ mutex };
+                queue.push_back(what);
+                alarm.reset();
+            };
+            // It is not possible to implement a listener as a local object because
+            // the shutdown handler must block the calling thread until the process is cleaned up.
+            static auto listener = []
+            {
+                static auto handler = [](sigt what) // Queue console control events.
                 {
-                    auto count = DWORD{};
-                    ::GetNumberOfConsoleInputEvents(stdin_fd, &count);
-                    auto events = std::vector<INPUT_RECORD>(count + 1);
-                    if (count) ::ReadConsoleInputW(stdin_fd, events.data() + 1, count, &count);
-                    events[0] = { .EventType = MENU_EVENT, .Event = { .MenuEvent = what | nt::console::event::custom, }}; // Too hacky (MENU_EVENT).
-                    ::WriteConsoleInputW(stdin_fd, events.data(), count + 1, &count);
-                    if (what > nt::console::event::ctrl_break) // Waiting for the process to complete.
+                    place(what);
+                    if (what > os::signals::ctrl_break) // Waiting for process cleanup.
                     {
                         os::finalized.wait(faux);
                     }
                     return TRUE;
                 };
                 ::SetConsoleCtrlHandler(handler, TRUE);
-                auto deleter = [](auto*){ ::SetConsoleCtrlHandler(handler, FALSE); };
+                auto deleter = [](auto*)
+                {
+                    os::release();
+                    ::SetConsoleCtrlHandler(handler, FALSE);
+                };
                 return std::unique_ptr<decltype(handler), decltype(deleter)>(&handler);
             }();
 
@@ -1197,7 +1224,7 @@ namespace netxs::os
 
             static auto sigset = ::sigset_t{};
             static auto backup = ::sigset_t{};
-            static auto state = []
+            static auto listener = []
             {
                 auto action = [](auto){ };
                 auto forced_EINTR = (struct sigaction){};
@@ -1223,7 +1250,14 @@ namespace netxs::os
                 };
                 return std::unique_ptr<decltype(backup), decltype(deleter)>(&backup);
             }();
+            static auto atexit = []
+            {
+                auto deleter = [](auto*) { os::release(); };
+                return std::unique_ptr<decltype(backup), decltype(deleter)>(&backup);
+            }();
 
+            // It is not possible to make fd global because process forking
+            //    is not compatible with std::thread.
             struct fd // Signal s11n.
             {
                 flag        active = { true };
@@ -1255,6 +1289,65 @@ namespace netxs::os
                 }
                 operator fd_t () const { return handle[0]; }
             };
+
+        #endif
+    }
+
+    namespace service
+    {
+        static auto name = "vtm"sv;
+
+        #if defined(_WIN32)
+
+            static auto state = []
+            {
+                static auto status = SERVICE_STATUS{};
+                status.dwServiceType      = SERVICE_WIN32_OWN_PROCESS;
+                status.dwCurrentState     = SERVICE_START_PENDING;
+                status.dwControlsAccepted = SERVICE_ACCEPT_STOP
+                                          | SERVICE_ACCEPT_POWEREVENT
+                                          | SERVICE_ACCEPT_PRESHUTDOWN;
+                auto handler = [](auto dwControl, auto what, auto lpEventData, auto lpContext) // Queue NT service events.
+                {
+                    //os::signals::place(what);
+                    //if (what > os::signals::ctrl_break) // Waiting for process cleanup.
+                    //{
+                    //    os::finalized.wait(faux);
+                    //}
+                    return DWORD{ 1 };
+                };
+                static auto handle = ::RegisterServiceCtrlHandlerExW(utf::to_utf(name).c_str(), handler, nullptr);
+                static auto set_status = [](auto newstatus)
+                {
+                    if (!handle) return;
+                    status.dwWin32ExitCode = 0;
+                    status.dwCurrentState = newstatus;
+                    if (!::SetServiceStatus(handle, &status))
+                    {
+                        auto msg = ansi::add("Error setting service status ");
+                        switch (newstatus)
+                        {
+                            case SERVICE_RUNNING:      msg.add("SERVICE_RUNNING");      break;
+                            case SERVICE_STOPPED:      msg.add("SERVICE_STOPPED");      break;
+                            case SERVICE_STOP_PENDING: msg.add("SERVICE_STOP_PENDING"); break;
+                            default:                   msg.add(newstatus);
+                        }
+                        msg.add(": ", os::error());
+                        //event_report(msg);
+                    }
+                };
+
+        		set_status(SERVICE_RUNNING);
+                auto deleter = [](auto*)
+                {
+                    set_status(SERVICE_STOPPED);
+                };
+                return std::unique_ptr<decltype(handler), decltype(deleter)>(&handler);
+            };
+
+        #else
+
+            //todo implement
 
         #endif
     }
@@ -1495,26 +1588,6 @@ namespace netxs::os
             std::sort(crop.begin(), crop.end());
             return crop;
         }
-        // os::env: Get user home path.
-        auto homepath()
-        {
-            #if defined(_WIN32)
-                auto handle = ::GetCurrentProcessToken();
-                auto length = DWORD{};
-                auto buffer = wide{};
-                ::GetUserProfileDirectoryW(handle, nullptr, &length);
-                if (length)
-                {
-                    buffer.resize(length);
-                    ::GetUserProfileDirectoryW(handle, buffer.data(), &length);
-                    if (buffer.back() == '\0') buffer.pop_back(); // Pop terminating null.
-                }
-                else os::fail("Can't detect user profile path");
-                return fs::path{ utf::to_utf(buffer) };
-            #else
-                return fs::path{ os::env::get("HOME") };
-            #endif
-        }
         // os::env: Get user shell.
         auto shell(qiew param = {})
         {
@@ -1566,10 +1639,64 @@ namespace netxs::os
         }
     }
 
+    namespace path
+    {
+        #if defined(_WIN32)
+            static const auto pipe_ns = "\\\\.\\pipe\\";
+            static const auto wr_pipe = "\\\\.\\pipe\\w_";
+            static const auto rd_pipe = "\\\\.\\pipe\\r_";
+        #endif
+        // os::path: OS settings path.
+        static const auto etc = []
+        {
+            #if defined(_WIN32)
+                return fs::path{ os::env::get("PROGRAMDATA") };
+            #else
+                return fs::path{ "/etc/" };
+            #endif
+        }();
+        // os::path: User home path.
+        static const auto home = []
+        {
+            #if defined(_WIN32)
+                auto handle = ::GetCurrentProcessToken();
+                auto length = DWORD{};
+                auto buffer = wide{};
+                ::GetUserProfileDirectoryW(handle, nullptr, &length);
+                if (length)
+                {
+                    buffer.resize(length);
+                    ::GetUserProfileDirectoryW(handle, buffer.data(), &length);
+                    if (buffer.back() == '\0') buffer.pop_back(); // Pop terminating null.
+                }
+                else os::fail("Can't detect user profile path");
+                return fs::path{ utf::to_utf(buffer) };
+            #else
+                return fs::path{ os::env::get("HOME") };
+            #endif
+        }();
+        auto expand(text path)
+        {
+            if (path.starts_with("$"))
+            {
+                auto temp = path.substr(1);
+                path = os::env::get(temp);
+                log(prompt::pads, temp, " = ", path);
+            }
+            auto crop = path.starts_with("~/")    ? os::path::home / path.substr(2 /* trim `~` */)
+                      : path.starts_with("/etc/") ? os::path::etc  / path.substr(5 /* trim "/etc" */)
+                                                  : fs::path{ path };
+            auto crop_str = "'" + utf::to_utf(crop.wstring()) + "'";
+            utf::change(crop_str, "\\", "/");
+            return std::pair{ crop, crop_str };
+        }
+    }
+
     namespace clipboard
     {
         static constexpr auto ocs52head = "\033]52;"sv;
         #if defined(_WIN32)
+            static auto winhndl = HWND{};
             static auto sequence = std::numeric_limits<DWORD>::max();
             static auto mutex   = std::mutex();
             static auto cf_text = CF_UNICODETEXT;
@@ -1582,7 +1709,7 @@ namespace netxs::os
             static auto cf_sec3 = ::RegisterClipboardFormatA("CanUploadToCloudClipboard");
         #endif
 
-        auto set(view type, view utf8)
+        auto set(input::clipdata& clipdata)
         {
             // Generate the following formats:
             //   mime::textonly | mime::disabled
@@ -1610,15 +1737,11 @@ namespace netxs::os
             //  cf_ansi format: payload=mime_type/size_x/size_y;utf8_data
 
             auto success = faux;
-            auto size = twod{ 80,25 };
-            {
-                auto i = 1;
-                utf::divide<feed::rev>(type, '/', [&](auto frag)
-                {
-                    if (auto v = utf::to_int(frag)) size[i] = v.value();
-                    return i--;
-                });
-            }
+
+            auto& utf8 = clipdata.utf8;
+            auto& meta = clipdata.meta;
+            auto& form = clipdata.form;
+            auto& size = clipdata.size;
 
             #if defined(_WIN32)
 
@@ -1649,7 +1772,7 @@ namespace netxs::os
                 ok(::EmptyClipboard(), "::EmptyClipboard()", os::unexpected);
                 if (utf8.size())
                 {
-                    if (type.size() < 5 || type.starts_with(mime::tag::text))
+                    if (form == mime::textonly || form == mime::disabled)
                     {
                         send(cf_text, utf8);
                     }
@@ -1659,38 +1782,37 @@ namespace netxs::os
                         auto info = CONSOLE_FONT_INFOEX{ sizeof(CONSOLE_FONT_INFOEX) };
                         ::GetCurrentConsoleFontEx(os::stdout_fd, faux, &info);
                         auto font = utf::to_utf(info.FaceName);
-                        if (type.starts_with(mime::tag::rich))
+                        if (form == mime::richtext)
                         {
                             auto rich = post.to_rich(font);
                             auto utf8 = post.to_utf8();
                             send(cf_rich, rich);
                             send(cf_text, utf8);
                         }
-                        else if (type.starts_with(mime::tag::html))
+                        else if (form == mime::htmltext)
                         {
                             auto [html, code] = post.to_html(font);
                             send(cf_html, html);
                             send(cf_text, code);
                         }
-                        else if (type.starts_with(mime::tag::ansi))
+                        else if (form == mime::ansitext)
                         {
                             auto rich = post.to_rich(font);
                             send(cf_rich, rich);
                             send(cf_text, utf8);
                         }
-                        else if (type.starts_with(mime::tag::safe))
+                        else if (form == mime::safetext)
                         {
                             send(cf_sec1, "1");
                             send(cf_sec2, "0");
                             send(cf_sec3, "0");
                             send(cf_text, utf8);
                         }
-                        else
-                        {
-                            send(cf_utf8, utf8);
-                        }
                     }
-                    auto crop = ansi::add(type, ";", utf8);
+                    auto crop = escx{};
+                    if (form == mime::disabled && meta.size()) crop.add(meta);
+                    else                                       crop.add(mime::meta(size, form));
+                    crop.add(";", utf8);
                     send(cf_ansi, crop);
                 }
                 else
@@ -1711,13 +1833,13 @@ namespace netxs::os
                         success = true;
                     }
                 };
-                if (type.starts_with(mime::tag::rich))
+                if (form == mime::richtext)
                 {
                     auto post = page{ utf8 };
                     auto rich = post.to_rich();
                     send(rich);
                 }
-                else if (type.starts_with(mime::tag::html))
+                else if (form == mime::htmltext)
                 {
                     auto post = page{ utf8 };
                     auto [html, code] = post.to_html();
@@ -1731,25 +1853,25 @@ namespace netxs::os
             #else
 
                 auto yield = escx{};
-                if (type.starts_with(mime::tag::rich))
+                if (form == mime::richtext)
                 {
                     auto post = page{ utf8 };
                     auto rich = post.to_rich();
                     yield.clipbuf(size, rich, mime::richtext);
                 }
-                else if (type.starts_with(mime::tag::html))
+                else if (form == mime::htmltext)
                 {
                     auto post = page{ utf8 };
                     auto [html, code] = post.to_html();
                     yield.clipbuf(size, code, mime::htmltext);
                 }
-                else if (type.starts_with(mime::tag::ansi)) //todo GH#216
+                else if (form == mime::disabled && meta.size())
                 {
-                    yield.clipbuf(size, utf8, mime::ansitext);
+                    yield.clipbuf(meta, utf8);
                 }
-                else
+                else // mime::textonly
                 {
-                    yield.clipbuf(size, utf8, mime::textonly);
+                    yield.clipbuf(size, utf8, form);
                 }
                 io::send(os::stdout_fd, yield);
                 success = true;
@@ -1863,7 +1985,7 @@ namespace netxs::os
                 inread.exchange(faux);
                 return result;
             }
-            virtual qiew recv()  override // It's not thread safe!
+            virtual qiew recv() override // It's not thread safe!
             {
                 return recv(buffer.data(), buffer.size());
             }
@@ -2089,8 +2211,8 @@ namespace netxs::os
                 auto client = sptr<ipc::socket>{};
                 #if defined(_WIN32)
 
-                    auto to_server = os::rd_pipe_path + scpath;
-                    auto to_client = os::wr_pipe_path + scpath;
+                    auto to_server = os::path::rd_pipe + scpath;
+                    auto to_client = os::path::wr_pipe + scpath;
                     auto next_link = [&](auto h, auto const& path, auto type)
                     {
                         auto next_waiting_point = os::invalid_fd;
@@ -2167,8 +2289,8 @@ namespace netxs::os
                 {
                     if constexpr (debugmode) log(prompt::xipc, "Closing server side link ", handle);
                     #if defined(_WIN32)
-                        auto to_client = os::wr_pipe_path + scpath;
-                        auto to_server = os::rd_pipe_path + scpath;
+                        auto to_client = os::path::wr_pipe + scpath;
+                        auto to_server = os::path::rd_pipe + scpath;
                         if (handle.w != os::invalid_fd) ::DeleteFileW(utf::to_utf(to_client).c_str()); // Interrupt ::ConnectNamedPipe(). Disconnection order does matter.
                         if (handle.r != os::invalid_fd) ::DeleteFileW(utf::to_utf(to_server).c_str()); // This may fail, but this is ok - it means the client is already disconnected.
                     #else
@@ -2219,7 +2341,7 @@ namespace netxs::os
                             auto stop = datetime::now() + retry_timeout;
                             do
                             {
-                                std::this_thread::sleep_for(100ms);
+                                os::sleep(100ms);
                                 done = play();
                             }
                             while (!done && stop > datetime::now());
@@ -2230,12 +2352,12 @@ namespace netxs::os
 
                 #if defined(_WIN32)
 
-                    auto to_server = os::rd_pipe_path + path;
-                    auto to_client = os::wr_pipe_path + path;
+                    auto to_server = os::path::rd_pipe + path;
+                    auto to_client = os::path::wr_pipe + path;
 
                     if constexpr (Role == role::server)
                     {
-                        auto test = [](text const& path, text prefix = "\\\\.\\pipe\\")
+                        auto test = [](text const& path, text prefix = os::path::pipe_ns)
                         {
                             auto hits = faux;
                             auto next = WIN32_FIND_DATAW{};
@@ -2328,7 +2450,7 @@ namespace netxs::os
 
                     #if defined(__BSD__)
                         //todo unify "/.config/vtm"
-                        auto home = os::env::homepath() / ".config/vtm";
+                        auto home = os::path::home / ".config/vtm";
                         if (!fs::exists(home))
                         {
                             if constexpr (Log) log("%%Create home directory '%path%'", prompt::path, home.string());
@@ -2424,6 +2546,21 @@ namespace netxs::os
 
     namespace process
     {
+        static const auto elevated = []
+        {
+            #if defined(_WIN32)
+                auto issuer = SID_IDENTIFIER_AUTHORITY{ SECURITY_NT_AUTHORITY };
+                auto admins = PSID{};
+                auto member = BOOL{};
+                auto result = ::AllocateAndInitializeSid(&issuer, 2, SECURITY_BUILTIN_DOMAIN_RID, DOMAIN_ALIAS_RID_ADMINS, 0, 0, 0, 0, 0, 0, &admins)
+                           && ::CheckTokenMembership(nullptr, admins, &member)
+                           && member;
+                ::FreeSid(admins);
+            #else
+                auto result = !::getuid(); // If getuid() == 0 - we are running under sudo/root.
+            #endif
+            return result;
+        }();
         auto getid()
         {
             #if defined(_WIN32)
@@ -2436,7 +2573,6 @@ namespace netxs::os
         }
         static auto id = process::getid();
         static auto arg0 = text{};
-
         struct args
         {
         private:
@@ -2581,11 +2717,11 @@ namespace netxs::os
             #elif defined(__FreeBSD__)
 
                 auto size = 0_sz;
-                int  name[] = { CTL_KERN, KERN_PROC, KERN_PROC_PATHNAME, -1 };
-                if (::sysctl(name, std::size(name), nullptr, &size, nullptr, 0) == 0)
+                auto name = std::to_array({ CTL_KERN, KERN_PROC, KERN_PROC_PATHNAME, -1 });
+                if (::sysctl(name.data(), name.size(), nullptr, &size, nullptr, 0) == 0)
                 {
                     auto buff = std::vector<char>(size);
-                    if (::sysctl(name, std::size(name), buff.data(), &size, nullptr, 0) == 0)
+                    if (::sysctl(name.data(), name.size(), buff.data(), &size, nullptr, 0) == 0)
                     {
                         result = text(buff.data(), size);
                     }
@@ -2750,15 +2886,15 @@ namespace netxs::os
                 auto handle = os::ipc::memory::set(config);
                 auto cmdarg = utf::to_utf(utf::concat(os::process::binary(), " --onlylog", " -p ", prefix, " -c :", handle, " -s"));
                 auto proinf = PROCESS_INFORMATION{};
-                auto srtinf = STARTUPINFOEXW{ sizeof(STARTUPINFOEXW) };
+                auto upinfo = STARTUPINFOEXW{ sizeof(STARTUPINFOEXW) };
                 auto buffer = std::vector<byte>{};
                 auto buflen = SIZE_T{ 0 };
                 ::InitializeProcThreadAttributeList(nullptr, 1, 0, &buflen);
                 result = buflen;
                 buffer.resize(buflen);
-                srtinf.lpAttributeList = reinterpret_cast<LPPROC_THREAD_ATTRIBUTE_LIST>(buffer.data());
-                result = result && ::InitializeProcThreadAttributeList(srtinf.lpAttributeList, 1, 0, &buflen);
-                result = result && ::UpdateProcThreadAttribute(srtinf.lpAttributeList, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST, &handle, sizeof(handle), nullptr, nullptr);
+                upinfo.lpAttributeList = reinterpret_cast<LPPROC_THREAD_ATTRIBUTE_LIST>(buffer.data());
+                result = result && ::InitializeProcThreadAttributeList(upinfo.lpAttributeList, 1, 0, &buflen);
+                result = result && ::UpdateProcThreadAttribute(upinfo.lpAttributeList, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST, &handle, sizeof(handle), nullptr, nullptr);
                 result = result && ::CreateProcessW(nullptr,                      // lpApplicationName
                                                     cmdarg.data(),                // lpCommandLine
                                                     nullptr,                      // lpProcessAttributes
@@ -2768,7 +2904,7 @@ namespace netxs::os
                                                     EXTENDED_STARTUPINFO_PRESENT, // override startupInfo type
                                                     nullptr,                      // lpEnvironment
                                                     nullptr,                      // lpCurrentDirectory
-                                                    &srtinf.StartupInfo,          // lpStartupInfo
+                                                    &upinfo.StartupInfo,          // lpStartupInfo
                                                     &proinf);                     // lpProcessInformation
                 os::close(handle);
                 if (result) // Success. The fork concept is not supported on Windows.
@@ -2833,6 +2969,7 @@ namespace netxs::os
 
     namespace dtvt
     {
+        static auto isolated = faux; // Standalone app in legacy console.
         static auto mode = ui::console::vtrgb;
         static auto scroll = faux; // Viewport/scrollback selector for windows console.
         auto consize()
@@ -3012,6 +3149,10 @@ namespace netxs::os
         }();
         static auto vtmode = []       // tty: VT mode bit set.
         {
+            if (os::process::elevated)
+            {
+                log(prompt::os, ansi::clr(yellowlt, "Running with elevated privileges"));
+            }
             if (os::dtvt::active)
             {
                 log(prompt::os, "DirectVT mode");
@@ -3231,7 +3372,7 @@ namespace netxs::os
                                 else     log("%%Change current working directory to '%cwd%'", prompt::dtvt, cwd);
                             }
                             os::fdscleanup();
-                            os::signals::state.reset();
+                            os::signals::listener.reset();
                             os::process::execvp(cmdline);
                             onerror();
                             os::process::exit<true>(0);
@@ -3755,7 +3896,7 @@ namespace netxs::os
                         ::dup2(to_server[1], STDOUT_FILENO); os::stdout_fd = STDOUT_FILENO;
                         ::dup2(to_server[1], STDERR_FILENO); os::stderr_fd = STDERR_FILENO;
                         os::fdscleanup();
-                        os::signals::state.reset();
+                        os::signals::listener.reset();
                         os::process::spawn(cwd, cmdline);
                     }
                     // Parent branch.
@@ -3939,11 +4080,11 @@ namespace netxs::os
             void handle(s11n::xs::clipdata         lock)
             {
                 auto& clipdata = lock.thing;
-                if (!clipdata.size && clipdata.utf8.size()) clipdata.size = dtvt::win_sz / 2; // Set the default size if no size is specified.
-                auto metadata = mime::meta(clipdata.size, clipdata.form);
-                os::clipboard::set(metadata, clipdata.utf8);
-                s11n::sysboard.send(dtvt::client, id_t{}, clipdata.size, clipdata.utf8, clipdata.form);
-                clipdata.set();
+                if (clipdata.form == mime::disabled) input::board::normalize(clipdata);
+                else                                 clipdata.set();
+                os::clipboard::set(clipdata);
+                auto crop = utf::trunc(clipdata.utf8, dtvt::win_sz.y / 2); // Trim preview before sending.
+                s11n::sysboard.send(dtvt::client, id_t{}, clipdata.size, crop.str(), clipdata.form);
             }
             void handle(s11n::xs::clipdata_request lock)
             {
@@ -4010,14 +4151,14 @@ namespace netxs::os
                 while (extio && extio.send(intio.recv())) { }
                 extio.shut();
             }};
-            //todo forward signals to intio
+            //todo // Forward signals to intio.
             while (intio && intio.send(extio.recv())) { }
 
             //todo wait extio reconnection
             //extio.shut();
             //while (true)
             //{
-            //    std::this_thread::sleep_for(1s);
+            //    os::sleep(1s);
             //}
 
             intio.shut();
@@ -4042,11 +4183,13 @@ namespace netxs::os
 
             #if defined(_WIN32)
 
-                auto reply = std::vector<INPUT_RECORD>(1);
+                auto items = std::vector<INPUT_RECORD>{};
                 auto count = DWORD{};
                 auto point = utfx{};
                 auto toutf = text{};
+                auto wcopy = wide{};
                 auto kbmod = si32{};
+                auto ctrlv = bool{};
                 auto cinfo = CONSOLE_SCREEN_BUFFER_INFO{};
                 auto check = [](auto& changed, auto& oldval, auto newval)
                 {
@@ -4056,166 +4199,180 @@ namespace netxs::os
                         oldval = newval;
                     }
                 };
-                fd_t waits[] = { os::stdin_fd, alarm };
-                while (alive && WAIT_OBJECT_0 == ::WaitForMultipleObjects(2, waits, FALSE, INFINITE))
+                auto waits = os::stdin_fd != os::invalid_fd ? std::vector{ (fd_t)os::signals::alarm, (fd_t)alarm, os::stdin_fd }
+                                                            : std::vector{ (fd_t)os::signals::alarm, (fd_t)alarm };
+                while (alive)
                 {
-                    if (!::GetNumberOfConsoleInputEvents(os::stdin_fd, &count))
+                    auto cause = ::WaitForMultipleObjects((DWORD)waits.size(), waits.data(), FALSE, INFINITE);
+                    if (cause == WAIT_OBJECT_0)
                     {
-                        break;
-                    }
-                    else if (count)
-                    {
-                        if (count > reply.size()) reply.resize(count);
-                        if (!::ReadConsoleInputW(os::stdin_fd, reply.data(), (DWORD)reply.size(), &count))
+                        auto& queue = os::signals::fetch();
+                        for (auto signal : queue)
                         {
-                            break;
-                        }
-                        else
-                        {
-                            auto entry = reply.begin();
-                            auto limit = entry + count;
-                            while (alive && entry != limit)
+                            if (signal == os::signals::ctrl_c)
                             {
-                                auto& r = *entry++;
-                                switch (r.EventType)
+                                k.extflag = faux;
+                                k.virtcod = 'C';
+                                k.scancod = ::MapVirtualKeyW('C', MAPVK_VK_TO_VSC);
+                                k.pressed = true;
+                                k.keycode = input::key::KeyC;
+                                k.cluster = "\x03";
+                                keybd(k);
+                            }
+                            else if (signal == os::signals::ctrl_break)
+                            {
+                                k.extflag = faux;
+                                k.virtcod = ansi::c0_etx;
+                                k.scancod = ansi::ctrl_break;
+                                k.pressed = true;
+                                k.keycode = input::key::Break;
+                                k.cluster = "\x03";
+                                keybd(k);
+                            }
+                            else if (signal == os::signals::close
+                                  || signal == os::signals::logoff
+                                  || signal == os::signals::shutdown)
+                            {
+                                alive = faux;
+                                break;
+                            }
+                        }
+                        continue;
+                    }
+                    if (cause != WAIT_OBJECT_0 + 2) break;
+                    if (!::GetNumberOfConsoleInputEvents(os::stdin_fd, &count)) break;
+                    if (count == 0) continue;
+                    items.resize(count);
+                    if (!::ReadConsoleInputW(os::stdin_fd, items.data(), count, &count)) break;
+                    auto head = items.begin();
+                    auto tail = items.end();
+                    while (alive && head != tail)
+                    {
+                        auto& r = *head++;
+                        if (ctrlv) // Pull clipboard data.
+                        {
+                            if (r.EventType == KEY_EVENT)
+                            {
+                                wcopy += r.Event.KeyEvent.uChar.UnicodeChar;
+                                continue;
+                            }
+                            else ctrlv = faux;
+                        }
+                        if (r.EventType == KEY_EVENT)
+                        {
+                            auto modstat = os::nt::modstat(kbmod, r.Event.KeyEvent.dwControlKeyState, r.Event.KeyEvent.wVirtualScanCode, r.Event.KeyEvent.bKeyDown);
+                                 if (modstat.repeats) continue; // We don't repeat modifiers.
+                            else if (modstat.changed)
+                            {
+                                k.ctlstat = kbmod;
+                                m.ctlstat = kbmod;
+                                m.doubled = faux;
+                                m.doubled = faux;
+                                m.wheeled = faux;
+                                m.hzwheel = faux;
+                                m.wheeldt = 0;
+                                m.changed++;
+                                mouse(m); // Fire mouse event to update kb modifiers.
+                            }
+                            if (utf::tocode(r.Event.KeyEvent.uChar.UnicodeChar, point))
+                            {
+                                if (point) utf::to_utf_from_code(point, toutf);
+                                k.extflag = r.Event.KeyEvent.dwControlKeyState & ENHANCED_KEY;
+                                k.virtcod = r.Event.KeyEvent.wVirtualKeyCode;
+                                k.scancod = r.Event.KeyEvent.wVirtualScanCode;
+                                k.pressed = r.Event.KeyEvent.bKeyDown;
+                                k.keycode = input::key::xlat(r.Event.KeyEvent.wVirtualKeyCode, r.Event.KeyEvent.wVirtualScanCode, r.Event.KeyEvent.dwControlKeyState);
+                                k.cluster = toutf;
+                                do
                                 {
-                                    case KEY_EVENT:
+                                    keybd(k);
+                                }
+                                while (r.Event.KeyEvent.wRepeatCount-- > 1);
+                            }
+                            else if (std::distance(head, tail) > 2) // Surrogate pairs special case.
+                            {
+                                auto& dn_1 = r;
+                                auto& up_1 = *head;
+                                auto& dn_2 = *(head + 1);
+                                auto& up_2 = *(head + 2);
+                                if (dn_1.Event.KeyEvent.uChar.UnicodeChar == up_1.Event.KeyEvent.uChar.UnicodeChar && dn_1.Event.KeyEvent.bKeyDown != 0 && up_1.Event.KeyEvent.bKeyDown == 0
+                                 && dn_2.Event.KeyEvent.uChar.UnicodeChar == up_2.Event.KeyEvent.uChar.UnicodeChar && dn_2.Event.KeyEvent.bKeyDown != 0 && up_2.Event.KeyEvent.bKeyDown == 0
+                                 && utf::tocode(up_2.Event.KeyEvent.uChar.UnicodeChar, point))
+                                {
+                                    head += 3;
+                                    utf::to_utf_from_code(point, toutf);
+                                    k.extflag = r.Event.KeyEvent.dwControlKeyState & ENHANCED_KEY;
+                                    k.virtcod = r.Event.KeyEvent.wVirtualKeyCode;
+                                    k.scancod = r.Event.KeyEvent.wVirtualScanCode;
+                                    k.cluster = toutf;
+                                    k.keycode = input::key::xlat(r.Event.KeyEvent.wVirtualKeyCode, r.Event.KeyEvent.wVirtualScanCode, r.Event.KeyEvent.dwControlKeyState);
+                                    do
                                     {
-                                        auto modstat = os::nt::modstat(kbmod, r.Event.KeyEvent.dwControlKeyState, r.Event.KeyEvent.wVirtualScanCode, r.Event.KeyEvent.bKeyDown);
-                                             if (modstat.repeats) break; // We don't repeat modifiers.
-                                        else if (modstat.changed)
-                                        {
-                                            k.ctlstat = kbmod;
-                                            m.ctlstat = kbmod;
-                                            m.doubled = faux;
-                                            m.doubled = faux;
-                                            m.wheeled = faux;
-                                            m.hzwheel = faux;
-                                            m.wheeldt = 0;
-                                            m.changed++;
-                                            mouse(m); // Fire mouse event to update kb modifiers.
-                                        }
-                                        if (utf::tocode(r.Event.KeyEvent.uChar.UnicodeChar, point))
-                                        {
-                                            if (point) utf::to_utf_from_code(point, toutf);
-                                            k.extflag = r.Event.KeyEvent.dwControlKeyState & ENHANCED_KEY;
-                                            k.virtcod = r.Event.KeyEvent.wVirtualKeyCode;
-                                            k.scancod = r.Event.KeyEvent.wVirtualScanCode;
-                                            k.pressed = r.Event.KeyEvent.bKeyDown;
-                                            k.keycode = input::key::xlat(r.Event.KeyEvent.wVirtualKeyCode, r.Event.KeyEvent.wVirtualScanCode, r.Event.KeyEvent.dwControlKeyState);
-                                            k.cluster = toutf;
-                                            do
-                                            {
-                                                keybd(k);
-                                            }
-                                            while (r.Event.KeyEvent.wRepeatCount-- > 1);
-                                        }
-                                        else if (std::distance(entry, limit) > 2) // Surrogate pairs special case.
-                                        {
-                                            auto& dn_1 = r;
-                                            auto& up_1 = *entry;
-                                            auto& dn_2 = *(entry + 1);
-                                            auto& up_2 = *(entry + 2);
-                                            if (dn_1.Event.KeyEvent.uChar.UnicodeChar == up_1.Event.KeyEvent.uChar.UnicodeChar && dn_1.Event.KeyEvent.bKeyDown != 0 && up_1.Event.KeyEvent.bKeyDown == 0
-                                             && dn_2.Event.KeyEvent.uChar.UnicodeChar == up_2.Event.KeyEvent.uChar.UnicodeChar && dn_2.Event.KeyEvent.bKeyDown != 0 && up_2.Event.KeyEvent.bKeyDown == 0
-                                             && utf::tocode(up_2.Event.KeyEvent.uChar.UnicodeChar, point))
-                                            {
-                                                entry += 3;
-                                                utf::to_utf_from_code(point, toutf);
-                                                k.extflag = r.Event.KeyEvent.dwControlKeyState & ENHANCED_KEY;
-                                                k.virtcod = r.Event.KeyEvent.wVirtualKeyCode;
-                                                k.scancod = r.Event.KeyEvent.wVirtualScanCode;
-                                                k.cluster = toutf;
-                                                k.keycode = input::key::xlat(r.Event.KeyEvent.wVirtualKeyCode, r.Event.KeyEvent.wVirtualScanCode, r.Event.KeyEvent.dwControlKeyState);
-                                                do
-                                                {
-                                                    k.pressed = true;
-                                                    keybd(k);
-                                                    k.pressed = faux;
-                                                    keybd(k);
-                                                }
-                                                while (r.Event.KeyEvent.wRepeatCount-- > 1);
-                                            }
-                                        }
-                                        point = {};
-                                        toutf.clear();
-                                        break;
+                                        k.pressed = true;
+                                        keybd(k);
+                                        k.pressed = faux;
+                                        keybd(k);
                                     }
-                                    case MENU_EVENT: // Forward console control events.
-                                        if (r.Event.MenuEvent.dwCommandId & nt::console::event::custom)
-                                        switch (r.Event.MenuEvent.dwCommandId ^ nt::console::event::custom)
-                                        {
-                                            case nt::console::event::ctrl_c:
-                                                k.extflag = faux;
-                                                k.virtcod = 'C';
-                                                k.scancod = ::MapVirtualKeyW('C', MAPVK_VK_TO_VSC);
-                                                k.pressed = true;
-                                                k.keycode = input::key::KeyC;
-                                                k.cluster = "\x03";
-                                                keybd(k);
-                                                break;
-                                            case nt::console::event::ctrl_break:
-                                                k.extflag = faux;
-                                                k.virtcod = ansi::c0_etx;
-                                                k.scancod = ansi::ctrl_break;
-                                                k.pressed = true;
-                                                k.keycode = input::key::Break;
-                                                k.cluster = "\x03";
-                                                keybd(k);
-                                                break;
-                                            case nt::console::event::close:
-                                            case nt::console::event::logoff:
-                                            case nt::console::event::shutdown:
-                                                alive = faux;;
-                                                break;
-                                            case nt::console::event::style:
-                                                if (entry != limit && entry->EventType == MENU_EVENT)
-                                                {
-                                                    auto r = *entry++;
-                                                    style(deco{ r.Event.MenuEvent.dwCommandId });
-                                                }
-                                                break;
-                                            //todo
-                                            //case PASTE_BEGIN:
-                                            //    break;
-                                            //case PASTE_END:
-                                            //    break;
-                                        }
-                                        break;
-                                    case MOUSE_EVENT:
-                                    {
-                                        auto changed = 0;
-                                        check(changed, m.ctlstat, kbmod);
-                                        check(changed, m.buttons, r.Event.MouseEvent.dwButtonState & 0b00011111);
-                                        check(changed, m.doubled, !!(r.Event.MouseEvent.dwEventFlags & DOUBLE_CLICK));
-                                        check(changed, m.wheeled, !!(r.Event.MouseEvent.dwEventFlags & MOUSE_WHEELED));
-                                        check(changed, m.hzwheel, !!(r.Event.MouseEvent.dwEventFlags & MOUSE_HWHEELED));
-                                        check(changed, m.wheeldt, static_cast<int16_t>((0xFFFF0000 & r.Event.MouseEvent.dwButtonState) >> 16)); // dwButtonState too large when mouse scrolls
-                                        if (!(dtvt::vtmode & ui::console::nt16 && m.wheeldt)) // Skip the mouse coord update when wheeling on win7/8 (broken coords).
-                                        {
-                                            check(changed, m.coordxy, twod{ r.Event.MouseEvent.dwMousePosition.X, r.Event.MouseEvent.dwMousePosition.Y });
-                                        }
-                                        if (changed || m.wheeled || m.hzwheel) // Don't fire the same state (conhost fires the same events every second).
-                                        {
-                                            m.changed++;
-                                            mouse(m); // Fire mouse event to update kb modifiers.
-                                        }
-                                        break;
-                                    }
-                                    case WINDOW_BUFFER_SIZE_EVENT:
-                                    {
-                                        auto changed = 0;
-                                        check(changed, w.winsize, dtvt::consize());
-                                        if (changed) winsz(w);
-                                        break;
-                                    }
-                                    case FOCUS_EVENT:
-                                        f.state = r.Event.FocusEvent.bSetFocus;
-                                        focus(f);
-                                        if (!f.state) kbmod = {}; // To keep the modifiers from sticking.
-                                        break;
+                                    while (r.Event.KeyEvent.wRepeatCount-- > 1);
                                 }
                             }
+                            point = {};
+                            toutf.clear();
+                        }
+                        else if (r.EventType == MENU_EVENT) // Forward console control events.
+                        {
+                            if (r.Event.MenuEvent.dwCommandId & nt::console::event::custom)
+                            switch (r.Event.MenuEvent.dwCommandId ^ nt::console::event::custom)
+                            {
+                                case nt::console::event::style:
+                                    if (head != tail && head->EventType == MENU_EVENT)
+                                    {
+                                        auto r = *head++;
+                                        style(deco{ r.Event.MenuEvent.dwCommandId });
+                                    }
+                                    break;
+                                case nt::console::event::paste_begin:
+                                    ctrlv = true;
+                                    break;
+                                case nt::console::event::paste_end:
+                                    ctrlv = faux;
+                                    utf::to_utf(wcopy, p.txtdata);
+                                    paste(p);
+                                    wcopy.clear();
+                                    p.txtdata.clear();
+                                    break;
+                            }
+                        }
+                        else if (r.EventType == MOUSE_EVENT)
+                        {
+                            auto changed = 0;
+                            check(changed, m.ctlstat, kbmod);
+                            check(changed, m.buttons, r.Event.MouseEvent.dwButtonState & 0b00011111);
+                            check(changed, m.doubled, !!(r.Event.MouseEvent.dwEventFlags & DOUBLE_CLICK));
+                            check(changed, m.wheeled, !!(r.Event.MouseEvent.dwEventFlags & MOUSE_WHEELED));
+                            check(changed, m.hzwheel, !!(r.Event.MouseEvent.dwEventFlags & MOUSE_HWHEELED));
+                            check(changed, m.wheeldt, static_cast<si16>((0xFFFF0000 & r.Event.MouseEvent.dwButtonState) >> 16)); // dwButtonState too large when mouse scrolls
+                            if (!(dtvt::vtmode & ui::console::nt16 && m.wheeldt)) // Skip the mouse coord update when wheeling on win7/8 (broken coords).
+                            {
+                                check(changed, m.coordxy, twod{ r.Event.MouseEvent.dwMousePosition.X, r.Event.MouseEvent.dwMousePosition.Y });
+                            }
+                            if (changed || m.wheeled || m.hzwheel) // Don't fire the same state (conhost fires the same events every second).
+                            {
+                                m.changed++;
+                                mouse(m);
+                            }
+                        }
+                        else if (r.EventType == WINDOW_BUFFER_SIZE_EVENT)
+                        {
+                            auto changed = 0;
+                            check(changed, w.winsize, dtvt::consize());
+                            if (changed) winsz(w);
+                        }
+                        else if (r.EventType == FOCUS_EVENT)
+                        {
+                            f.state = r.Event.FocusEvent.bSetFocus;
+                            focus(f);
+                            if (!f.state) kbmod = {}; // To keep the modifiers from sticking.
                         }
                     }
                 }
@@ -4264,17 +4421,14 @@ namespace netxs::os
                 }
                 else // Trying to get direct access to a PS/2 mouse.
                 {
-                    log(prompt::tty, "Linux console ", tty_name);
-                    auto imps2_init_string = "\xf3\xc8\xf3\x64\xf3\x50"sv;
+                    log("%%Linux console %tty%", prompt::tty, tty_name);
+                    auto imps2_string = "\xf3\xc8\xf3\x64\xf3\x50"sv;
                     auto mouse_device = "/dev/input/mice";
-                    auto mouse_fallback1 = "/dev/input/mice.vtm";
-                    auto mouse_fallback2 = "/dev/input/mice_vtm"; //todo deprecated
+                    auto mouse_shadow = "/dev/input/mice.vtm";
                     auto fd = ::open(mouse_device, O_RDWR);
-                    if (fd == -1) fd = ::open(mouse_fallback1, O_RDWR);
-                    if (fd == -1) log("%%Error opening %mouse_device% and % mouse_fallback%, error %code%%desc%", prompt::tty, mouse_device, mouse_fallback1, errno, errno == 13 ? " - permission denied" : "");
-                    if (fd == -1) fd = ::open(mouse_fallback2, O_RDWR);
-                    if (fd == -1) log("%%Error opening %mouse_device% and % mouse_fallback%, error %code%%desc%", prompt::tty, mouse_device, mouse_fallback2, errno, errno == 13 ? " - permission denied" : "");
-                    else if (io::send(fd, imps2_init_string))
+                    if (fd == -1) fd = ::open(mouse_shadow, O_RDWR);
+                    if (fd == -1) log("%%Error opening %mouse_device% and %mouse_shadow%, error %code%%desc%", prompt::tty, mouse_device, mouse_shadow, errno, errno == 13 ? " - permission denied" : "");
+                    else if (io::send(fd, imps2_string))
                     {
                         auto ack = char{};
                         io::recv(fd, &ack, sizeof(ack));
@@ -4326,48 +4480,14 @@ namespace netxs::os
                     }
                     else total += accum;
                     auto strv = view{ total };
-
-                    //#ifndef PROD
-                    //if (close)
-                    //{
-                    //    close = faux;
-                    //    notify(e2::conio::preclose, close);
-                    //    if (total.front() == '\033') // two consecutive escapes
-                    //    {
-                    //        log("\t - two consecutive escapes: \n\tstrv:        ", strv);
-                    //        notify(e2::conio::quit, 0);
-                    //        return;
-                    //    }
-                    //}
-                    //#endif
-
                     //todo unify (it is just a proof of concept)
                     while (auto len = strv.size())
                     {
                         auto pos = 0_sz;
                         auto unk = true;
-
                         if (strv.at(0) == '\033')
                         {
                             ++pos;
-
-                            //#ifndef PROD
-                            //if (pos == len) // the only one esc
-                            //{
-                            //    close = true;
-                            //    total = strv;
-                            //    log("\t - preclose: ", canal);
-                            //    notify(e2::conio::preclose, close);
-                            //    break;
-                            //}
-                            //else if (strv.at(pos) == '\033') // two consecutive escapes
-                            //{
-                            //    total.clear();
-                            //    log("\t - two consecutive escapes: ", canal);
-                            //    notify(e2::conio::quit,0);
-                            //    break;
-                            //}
-                            //#else
                             if (pos == len) // the only one esc
                             {
                                 // Pass Esc.
@@ -4386,7 +4506,6 @@ namespace netxs::os
                                 total = strv.substr(1);
                                 break;
                             }
-                            //#endif
                             else if (strv.at(pos) == '[')
                             {
                                 if (++pos == len) { total = strv; break; } // incomlpete
@@ -4639,11 +4758,21 @@ namespace netxs::os
                 auto wndname = utf::to_utf("vtmWindowClass");
                 auto wndproc = [](auto hwnd, auto uMsg, auto wParam, auto lParam)
                 {
-                    auto sync = [](auto&& utf8, auto form)
+                    static auto alive = flag{ true };
+                    auto sync = [](qiew utf8, auto form)
                     {
+                        auto meta = qiew{};
+                        if (form == mime::disabled)
+                        {
+                            auto step = utf8.find(';');
+                            if (step != view::npos)
+                            {
+                                meta = utf8.substr(0, step++);
+                                utf8.remove_prefix(step);
+                            }
+                        }
                         auto clipdata = tty::stream.clipdata.freeze();
-                        input::board::set(clipdata.thing, id_t{}, dtvt::win_sz / 2, std::forward<decltype(utf8)>(utf8), form);
-                        clipdata.thing.set();
+                        input::board::normalize(clipdata.thing, id_t{}, datetime::now(), dtvt::win_sz / 2, utf8, form, meta);
                         auto crop = utf::trunc(clipdata.thing.utf8, dtvt::win_sz.y / 2); // Trim preview before sending.
                         tty::stream.sysboard.send(dtvt::client, id_t{}, clipdata.thing.size, crop.str(), clipdata.thing.form);
                     };
@@ -4677,7 +4806,7 @@ namespace netxs::os
                                         if (auto lptr = ::GlobalLock(hglb))
                                         {
                                             auto size = ::GlobalSize(hglb);
-                                            auto data = text((char*)lptr, size - 1/*trailing null*/);
+                                            auto data = view((char*)lptr, size - 1/*trailing null*/);
                                             sync(data, mime::disabled);
                                             ::GlobalUnlock(hglb);
                                         }
@@ -4710,7 +4839,7 @@ namespace netxs::os
                                     }
                                     while (format = ::EnumClipboardFormats(format));
                                 }
-                                else sync(text{}, mime::textonly);
+                                else sync(view{}, mime::textonly);
                             }
                             ok(::CloseClipboard(), "::CloseClipboard()", os::unexpected);
                             break;
@@ -4718,6 +4847,18 @@ namespace netxs::os
                         case WM_DESTROY:
                             ok(::RemoveClipboardFormatListener(hwnd), "::RemoveClipboardFormatListener()", os::unexpected);
                             ::PostQuitMessage(0);
+                            if (alive.exchange(faux))
+                            {
+                                os::signals::place(os::signals::close); // taskkill /pid nnn
+                            }
+                            break;
+                        case WM_ENDSESSION:
+                            if (wParam && alive.exchange(faux))
+                            {
+                                     if (lParam & ENDSESSION_CLOSEAPP) os::signals::place(os::signals::close);
+                                else if (lParam & ENDSESSION_LOGOFF)   os::signals::place(os::signals::logoff);
+                                else                                   os::signals::place(os::signals::shutdown);
+                            }
                             break;
                         default: return DefWindowProc(hwnd, uMsg, wParam, lParam);
                     }
@@ -4731,15 +4872,15 @@ namespace netxs::os
                 };
                 if (ok(::RegisterClassExW(&wnddata) || os::error() == ERROR_CLASS_ALREADY_EXISTS, "::RegisterClassExW()", os::unexpected))
                 {
+                    os::clipboard::winhndl = ::CreateWindowExW(0, wndname.c_str(), 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
                     auto stop = fd_t{ alarm };
-                    auto hwnd = ::CreateWindowExW(0, wndname.c_str(), 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
                     auto next = MSG{};
                     while (next.message != WM_QUIT)
                     {
                         if (auto yield = ::MsgWaitForMultipleObjects(1, &stop, FALSE, INFINITE, QS_ALLINPUT);
                                  yield == WAIT_OBJECT_0)
                         {
-                            ::DestroyWindow(hwnd);
+                            ::DestroyWindow(os::clipboard::winhndl);
                             break;
                         }
                         while (::PeekMessageW(&next, NULL, 0, 0, PM_REMOVE) && next.message != WM_QUIT)
@@ -4818,7 +4959,7 @@ namespace netxs::os
             clips.join();
             input.join(); // Wait close() to complete.
             intio.shut(); // Close link to server.
-            //test: std::this_thread::sleep_for(2000ms); // Uncomment to test for delayed input events.
+            //test: os::sleep(2000ms); // Uncomment to test for delayed input events.
 
             #if defined(_WIN32)
                 io::send(os::stdout_fd, ansi::altbuf(faux).cursor(true).bpmode(faux));
@@ -4833,12 +4974,13 @@ namespace netxs::os
                     os::close(os::stdout_fd);
                     os::stdout_fd = saved_fd;
                     ok(::SetConsoleActiveScreenBuffer(os::stdout_fd), "::SetConsoleActiveScreenBuffer()", os::unexpected);
+                    //todo sync current active buffer size (wt issue)
                 }
             #else 
                 io::send(os::stdout_fd, vtend);
             #endif
 
-            std::this_thread::sleep_for(200ms); // Wait for delayed input events (e.g. mouse reports lagging over remote ssh).
+            os::sleep(200ms); // Wait for delayed input events (e.g. mouse reports lagging over remote ssh).
             io::drop(); // Discard delayed events to avoid garbage in the shell's readline.
         }
         auto splice(xipc client)
@@ -4857,10 +4999,10 @@ namespace netxs::os
             readline(auto send, auto shut)
                 : alive{ true }
             {
-                if (os::dtvt::vtmode & ui::console::onlylog) return;
                 thread = std::thread{ [&, send, shut]
                 {
                     dtvt::scroll = true;
+                    auto quiet = os::dtvt::vtmode & ui::console::onlylog;
                     auto osout = tty::cout;
                     auto width = si32{};
                     auto block = escx{};
@@ -4930,7 +5072,7 @@ namespace netxs::os
                     auto keybd = [&](auto& data)
                     {
                         auto guard = std::unique_lock{ mutex };
-                        if (!alive || !data.pressed || data.cluster.empty()) return;
+                        if (!alive || quiet || !data.pressed || data.cluster.empty()) return;
                         switch (data.cluster.front()) 
                         {
                             case 0x03: enter(ansi::err("Ctrl+C\r\n")); alarm.bell(); break;
@@ -4968,7 +5110,13 @@ namespace netxs::os
                         panel = data.winsize;
                     };
                     auto focus = [&](auto& data) { if (!alive) return;/*if (data.state) log<faux>('-');*/ };
-                    auto paste = [&](auto& data) { if (!alive) return; };
+                    auto paste = [&](auto& data)
+                    {
+                        auto guard = std::lock_guard{ mutex };
+                        if (!alive || quiet || data.txtdata.empty()) return;
+                        block += data.txtdata;
+                        print(true);
+                    };
                     auto close = [&](auto& data) 
                     {
                         if (alive.exchange(faux))

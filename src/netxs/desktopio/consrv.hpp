@@ -506,6 +506,7 @@ struct impl : consrv
         text  toANSI; // evnt: ANSI   decoder buffer.
         irec  leader; // evnt: Hanging key event record (lead byte).
         work  ostask; // evnt: Console task thread for the child process.
+        bool  ctrl_c; // evnt: Ctrl+C was pressed.
         cast  macros; // evnt: Doskey macros storage.
         hist  inputs; // evnt: Input history per process name storage.
 
@@ -513,7 +514,8 @@ struct impl : consrv
             :  server{ serv },
                closed{ faux },
                ondata{ true },
-               leader{      }
+               leader{      },
+               ctrl_c{ faux }
         { }
 
         auto& ref_history(text& exe)
@@ -710,12 +712,12 @@ struct impl : consrv
             if (ostask.joinable()) ostask.join();
             ostask = std::thread{[what, pgroup, io_log = server.io_log, joined = server.joined, prompt = escx{ server.prompt }]() mutable
             {
-                if (io_log) prompt.add(what == nt::console::event::ctrl_c     ? "Ctrl+C"
-                                     : what == nt::console::event::ctrl_break ? "Ctrl+Break"
-                                     : what == nt::console::event::close      ? "Ctrl Close"
-                                     : what == nt::console::event::logoff     ? "Ctrl Logoff"
-                                     : what == nt::console::event::shutdown   ? "Ctrl Shutdown"
-                                                                              : "Unknown", " event index ", index);
+                if (io_log) prompt.add(what == os::signals::ctrl_c     ? "Ctrl+C"
+                                     : what == os::signals::ctrl_break ? "Ctrl+Break"
+                                     : what == os::signals::close      ? "Ctrl Close"
+                                     : what == os::signals::logoff     ? "Ctrl Logoff"
+                                     : what == os::signals::shutdown   ? "Ctrl Shutdown"
+                                                                       : "Unknown", " event index ", index);
                 for (auto& client : joined)
                 {
                     if (!pgroup || pgroup == client.pgroup)
@@ -775,6 +777,7 @@ struct impl : consrv
         }
         auto generate(wiew wstr, ui32 s = 0)
         {
+            //todo implement bracketed-paste using menu events (vt or menu bounds)
             stream.reserve(wstr.size());
             auto head = wstr.begin();
             auto tail = wstr.end();
@@ -1077,15 +1080,17 @@ struct impl : consrv
                 if (gear.keybd::scancod == ansi::ctrl_break)
                 {
                     stream.pop_back();
-                    if (gear.pressed) alert(nt::console::event::ctrl_break);
+                    if (gear.pressed) alert(os::signals::ctrl_break);
                 }
                 else
                 {
-                    if (server.inpmod & nt::console::inmode::preprocess)
+                    if (gear.pressed)
                     {
-                        if (gear.pressed) alert(nt::console::event::ctrl_c);
-                        //todo revise
-                        //stream.pop_back();
+                        ctrl_c = true;
+                        if (server.inpmod & nt::console::inmode::preprocess)
+                        {
+                            alert(os::signals::ctrl_c);
+                        }
                     }
                 }
             }
@@ -1106,6 +1111,24 @@ struct impl : consrv
         template<class L>
         auto readline(L& lock, bool& cancel, bool utf16, bool EOFon, ui32 stops, text& nameview)
         {
+            static constexpr auto noalias = "<noalias>"sv;
+
+            auto terminate = ctrl_c && nameview == noalias && server.inpmod & nt::console::inmode::echo;
+            ctrl_c = faux; // Clear to avoid interference with copy/move/del commands.
+            if (terminate)
+            {
+                lock.unlock();
+                if constexpr (isreal())
+                {
+                    server.uiterm.update([&]
+                    {
+                        auto& term = server.uiterm;
+                        term.ondata("(Ctrl+C = Y) ");
+                    });
+                }
+                lock.lock();
+            }
+
             //todo bracketed paste support
             // save server.uiterm.bpmode
             // server.uiterm.bpmode = true;
@@ -1255,12 +1278,20 @@ struct impl : consrv
                                     else if (c == '\t')                                                 { burn();     hist.save(line); line.insert("    ", mode); }
                                     else if (c == 'C' - '@')
                                     {
-                                        hist.save(line);
-                                        cooked.ustr = "\n";
-                                        done = true;
-                                        crlf = 2;
-                                        line.insert(cell{}.c0_to_txt(c), mode);
-                                        if (n == 0) pops++;
+                                        if (terminate)
+                                        {
+                                            line = "y";
+                                            cook(c, 1);
+                                        }
+                                        else
+                                        {
+                                            hist.save(line);
+                                            cooked.ustr = {};
+                                            done = true;
+                                            crlf = 1;
+                                            line.insert(cell{}.c0_to_txt(c), mode);
+                                            if (n == 0) pops++;
+                                        }
                                     }
                                     else
                                     {
@@ -3859,13 +3890,30 @@ struct impl : consrv
         struct payload : drvpacket<payload>
         { };
         auto& packet = payload::cast(upload);
-        auto window_ptr = select_buffer(packet.target);
-        if (!window_ptr) return;
         log("\tset active buffer: ", utf::to_hex_0x(packet.target));
         if constexpr (isreal())
         {
-            auto& console = *window_ptr;
-            uiterm.reset_to_altbuf(console);
+            if (packet.target)
+            {
+                auto handle_ptr = (hndl*)packet.target;
+                if (handle_ptr->link == &uiterm.target) // Restore original buffer mode.
+                {
+                    auto& console = *uiterm.target;
+                    if (altmod) uiterm.reset_to_altbuf(console);
+                    else        uiterm.reset_to_normal(console);
+                }
+                else // Switch to additional buffer.
+                {
+                    auto window_ptr = select_buffer(packet.target);
+                    if (!window_ptr) return;
+                    if (uiterm.target == &uiterm.normal || uiterm.target == &uiterm.altbuf) // Save/update original buffer mode.
+                    {
+                        altmod = uiterm.target == &uiterm.altbuf;
+                    }
+                    auto& console = *window_ptr;
+                    uiterm.reset_to_altbuf(console);
+                }
+            }
         }
     }
     auto api_scrollback_cursor_coor_set      ()
@@ -4840,19 +4888,21 @@ struct impl : consrv
     wide        toWIDE; // consrv: Buffer for UTF-8-UTF-16 conversion.
     rich        filler; // consrv: Buffer for filling operations.
     apis        apimap; // consrv: Fx reference.
-    ui32        inpmod; // consrv: Events mode flag set.
-    ui32        outmod; // consrv: Scrollbuffer mode flag set.
+    ui32        inpmod; // consrv: Events buffer flags.
+    ui32        outmod; // consrv: Scroll buffer flags.
+    bool        altmod; // consrv: Saved buffer selector (altbuf/normal).
     face        mirror; // consrv: Viewport bitmap buffer.
     flag        allout; // consrv: All clients detached.
     para        celler; // consrv: Buffer for converting raw text to cells.
     xlat        inpenc; // consrv: Current code page decoder for input stream.
     xlat        outenc; // consrv: Current code page decoder for output stream.
 
-    void start()
+    auto& create_window()
     {
-        reset();
-        events.reset();
-        signal.flush();
+        if (os::dtvt::isolated)
+        {
+            return os::clipboard::winhndl;
+        }
         window = std::thread{ [&]
         {
             auto wndname = text{ "vtmConsoleWindowClass" };
@@ -4863,7 +4913,7 @@ struct impl : consrv
                 {
                     case WM_CREATE: break;
                     case WM_DESTROY: ::PostQuitMessage(0); break;
-                    case WM_CLOSE: //todo revise (see taskkill /pid <processID>)
+                    case WM_CLOSE:
                     default: return DefWindowProcA(hwnd, uMsg, wParam, lParam);
                 }
                 return LRESULT{};
@@ -4900,10 +4950,19 @@ struct impl : consrv
                 return;
             }
         }};
-        while (!winhnd) // Waiting for a win32 window to be created.
+        return winhnd;
+    }
+    void start()
+    {
+        reset();
+        events.reset();
+        signal.flush();
+        auto& nominal_window = create_window();
+        while (!nominal_window) // Waiting for a win32 window to be created.
         {
             std::this_thread::yield();
         }
+        winhnd = nominal_window;
         server = std::thread{ [&]
         {
             while (condrv != os::invalid_fd)
@@ -5017,6 +5076,7 @@ struct impl : consrv
           winhnd{                                                },
           inpmod{ nt::console::inmode::preprocess                },
           outmod{                                                },
+          altmod{ faux                                           },
           prompt{ utf::concat(win32prompt)                       },
           inpenc{ std::make_shared<decoder>(*this, os::codepage) },
           outenc{ inpenc                                         }
@@ -5166,7 +5226,7 @@ struct consrv : ipc::stdcon
             ::dup2(fds.value, STDOUT_FILENO); os::stdout_fd = STDOUT_FILENO;
             ::dup2(fds.value, STDERR_FILENO); os::stderr_fd = STDERR_FILENO;
             os::fdscleanup();
-            os::signals::state.reset();
+            os::signals::listener.reset();
             if (!fdm || !rc1 || !rc2 || !rc3 || !rc4 || !fds) // Report if something went wrong.
             {
                 log("fdm: ", fdm.value, " errcode: ", fdm.error, "\n"

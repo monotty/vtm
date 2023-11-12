@@ -24,13 +24,13 @@ jobs:
             cpu: universal
             arch: any
             cxx: c++
-            flags: '-DCMAKE_OSX_ARCHITECTURES="arm64;x86_64" -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0 -DCMAKE_CXX_FLAGS_RELEASE="-DNDEBUG"'
+            flags: '-DCMAKE_OSX_ARCHITECTURES="arm64;x86_64" -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0 -DCMAKE_CXX_FLAGS_RELEASE="-O2 -DNDEBUG"'
           - os: windows-latest
             platform: windows
             cpu: Win32
             arch: x86
             cxx: cl
-            flags: '-DCMAKE_CXX_FLAGS_RELEASE="/MT /DNDEBUG" -A '
+            flags: '-DCMAKE_CXX_FLAGS_RELEASE="/MT /O2 /DNDEBUG" -A '
           - os: windows-latest
             cxx: cl
           - os: ubuntu-latest
@@ -50,9 +50,9 @@ jobs:
             cxx: /bin/aarch64-linux-gnu-g++
 
           - os: ubuntu-latest
-            flags: '-DCMAKE_CXX_FLAGS_RELEASE="-static -s -DNDEBUG"'
+            flags: '-DCMAKE_CXX_FLAGS_RELEASE="-static -s -O2 -DNDEBUG"'
           - os: windows-latest
-            flags: '-DCMAKE_CXX_FLAGS_RELEASE="/MT /DNDEBUG" -A '
+            flags: '-DCMAKE_CXX_FLAGS_RELEASE="/MT /O2 /DNDEBUG" -A '
 
           - os: ubuntu-latest
             platform: linux
@@ -97,11 +97,17 @@ jobs:
       if: matrix.os != 'windows-latest' && matrix.cpu != 'arm' && matrix.cpu != 'arm64'
       run: ${{ steps.strings.outputs.bin }}/vtm -v
 
-    - name: Test (Windows)
-      if: matrix.os == 'windows-latest' && matrix.cpu != 'arm' && matrix.cpu != 'arm64'
+    - name: Test AV (Windows)
+      if: matrix.os == 'windows-latest'
       run: |
-        ${{ steps.strings.outputs.bin }}/Release/vtm.exe -v
-      shell: cmd
+        $fileName = "${{ steps.strings.outputs.bin }}/Release/vtm.exe"
+        $MpCmdRun = "C:\Program Files\Windows Defender\MpCmdRun.exe"
+        Set-Service -Name wuauserv -StartupType Manual -Status Running
+        Remove-MpPreference -ExclusionPath (Get-MpPreference).ExclusionPath
+        Set-MpPreference -MAPSReporting Advanced
+        & '7z' a -tzip c:\vtm.zip $fileName
+        & $MpCmdRun -SignatureUpdate
+        & $MpCmdRun -Scan -ScanType 3 -File c:\vtm.zip
 
     - name: Pack (POSIX)
       if: matrix.os != 'windows-latest'

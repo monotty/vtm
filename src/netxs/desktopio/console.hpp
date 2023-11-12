@@ -194,11 +194,11 @@ namespace netxs::ui
                 auto& keybd = lock.thing;
                 notify(e2::conio::keybd, keybd);
             }
-            //void handle(s11n::xs::syspaste    lock)
-            //{
-            //    auto& paste = lock.thing;
-            //    notify(e2::conio::paste, paste);
-            //}
+            void handle(s11n::xs::syspaste    lock)
+            {
+                auto& paste = lock.thing;
+                notify(e2::conio::paste, paste);
+            }
             void handle(s11n::xs::sysmouse    lock)
             {
                 auto& mouse = lock.thing;
@@ -242,9 +242,11 @@ namespace netxs::ui
             }
             void handle(s11n::xs::sysclose    lock)
             {
-                auto& item = lock.thing;
-                auto backup = owner.This();
-                notify<tier::anycast>(e2::form::proceed::quit::one, item.fast);
+                // Immediately reply (w/o queueing) on sysclose request to avoid deadlock.
+                // In case of recursive connection via terminal, ui::term schedules self-closing and waiting for the vtty to be released inside the task broker.
+                // vtm client waits for disconnect acknowledge which is scheduled (if scheduled) right after the vtty cleanup task.
+                lock.unlock();
+                disconnect();
             }
         };
 
@@ -398,7 +400,6 @@ namespace netxs::ui
             span tooltip_timeout; // conf: Timeout for tooltip.
             cell tooltip_colors; // conf: Tooltip rendering colors.
             bool tooltip_enabled; // conf: Enable tooltips.
-            bool glow_fx; // conf: Enable glow effect in main menu.
             bool debug_overlay; // conf: Enable to show debug overlay.
             text debug_toggle; // conf: Debug toggle shortcut.
             bool show_regions; // conf: Highlight region ownership.
@@ -443,13 +444,11 @@ namespace netxs::ui
                         background_image.size(block.limits());
                         background_image.output(block);
                     }
-                    glow_fx           = config.take("glowfx", true);
                     simple            = faux;
                 }
                 else
                 {
                     simple            = !(legacy_mode & ui::console::direct);
-                    glow_fx           = faux;
                     title             = "";
                 }
                 vtmode = legacy_mode & ui::console::nt16   ? svga::nt16
@@ -538,6 +537,10 @@ namespace netxs::ui
                 {
                     forward(k);
                 };
+                boss.LISTEN(tier::release, e2::conio::paste, p, memo)
+                {
+                    forward(p);
+                };
                 boss.LISTEN(tier::release, e2::conio::focus, f, memo)
                 {
                     forward(f);
@@ -594,13 +597,19 @@ namespace netxs::ui
             X(mouse_btn_6  , "left+right combo" ) \
             X(last_event   , "event"            )
 
-            #define X(a, b) a,
-            enum prop { prop_list count };
-            #undef X
+            enum prop
+            {
+                #define X(a, b) a,
+                prop_list
+                #undef X
+            };
 
-            #define X(a, b) b,
-            text description[prop::count] = { prop_list };
-            #undef X
+            static constexpr auto description = std::to_array(
+            {
+                #define X(a, b) b##sv,
+                prop_list
+                #undef X
+            });
             #undef prop_list
 
             base& boss;
@@ -624,7 +633,7 @@ namespace netxs::ui
 
             void shadow()
             {
-                for (auto i = 0; i < prop::count; i++)
+                for (auto i = 0; i < (si32)description.size(); i++)
                 {
                     status[i].ease();
                 }
@@ -646,7 +655,6 @@ namespace netxs::ui
             {
                 shadow();
                 status[prop::last_event].set(stress) = "size";
-
                 status[prop::win_size].set(stress) =
                     std::to_string(new_size.x) + " x " +
                     std::to_string(new_size.y);
@@ -676,6 +684,8 @@ namespace netxs::ui
                     utf::format(track.totals) + " bytes";
 
                 track.number++;
+                status.reindex();
+                auto ctx = canvas.change_basis(canvas.area());
                 canvas.output(status);
             }
             void stop()
@@ -1259,7 +1269,7 @@ namespace netxs::ui
                 if (!gear_ptr) return;
                 auto& gear =*gear_ptr;
                 auto& data = gear.board::cargo;
-                conio.clipdata.send(canal, ext_gear_id, data.hash, data.size, data.utf8, data.form);
+                conio.clipdata.send(canal, ext_gear_id, data.hash, data.size, data.utf8, data.form, data.meta);
             };
             LISTEN(tier::request, hids::events::clipbrd, from_gear, tokens)
             {
@@ -1393,7 +1403,7 @@ namespace netxs::ui
         tick quartz; // host: Frame rate synchronizator.
         si32 maxfps; // host: Frame rate.
         list debris; // host: Wrecked regions.
-        xmls config; // host: Running configuration.
+        xmls config; // host: Resultant settings.
         subs tokens; // host: Subscription tokens.
         flag active; // host: Host is available for connections.
 

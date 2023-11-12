@@ -17,6 +17,7 @@ namespace netxs::prompt
     static constexpr auto   xml = " xml: "sv;
     static constexpr auto   cin = "stdin: "sv;
     static constexpr auto  cout = "stdout: "sv;
+    static constexpr auto resultant_settings = "Resultant settings:"sv;
 
     #define prompt_list \
         X(apps) /* */ \
@@ -792,14 +793,22 @@ namespace netxs::directvt
         //STRUCT_macro(quit,              (bool, fast))
         STRUCT_macro_lite(expose)
         STRUCT_macro(focusbus,          (id_t, gear_id) (time, guid) (hint, cause))
-        STRUCT_macro(clipdata,          (id_t, gear_id) (time, hash) (twod, size) (text, utf8) (si32, form))
+        STRUCT_macro(clipdata,          (id_t, gear_id) (time, hash) (twod, size) (text, utf8) (si32, form) (text, meta))
         STRUCT_macro(clipdata_request,  (id_t, gear_id) (time, hash))
         STRUCT_macro(sysboard,          (id_t, gear_id) (twod, size) (text, utf8) (si32, form))
         STRUCT_macro(sysclose,          (bool, fast))
-        STRUCT_macro(syspaste,          (id_t, gear_id) (ui32, secbits) (ui32, format) (text, data))
+        STRUCT_macro(syspaste,          (id_t, gear_id) (text, txtdata))
         STRUCT_macro(sysfocus,          (id_t, gear_id) (bool, state) (bool, focus_combine) (bool, focus_force_group))
         STRUCT_macro(syswinsz,          (id_t, gear_id) (twod, winsize))
-        STRUCT_macro(syskeybd,          (id_t, gear_id) (ui32, ctlstat) (bool, extflag) (ui32, virtcod) (ui32, scancod) (bool, pressed) (text, cluster) (bool, handled) (si32, keycode))
+        STRUCT_macro(syskeybd,          (id_t, gear_id)  // syskeybd: Devide id.
+                                        (ui32, ctlstat)  // syskeybd: Keybd modifiers.
+                                        (bool, extflag) //todo deprecated
+                                        (ui32, virtcod) //todo deprecated
+                                        (ui32, scancod)  // syskeybd: Scancode.
+                                        (bool, pressed)  // syskeybd: Key is pressed.
+                                        (text, cluster)  // syskeybd: Generated string.
+                                        (bool, handled)  // syskeybd: Key event is handled.
+                                        (si32, keycode)) // syskeybd: Key id.
         STRUCT_macro(sysmouse,          (id_t, gear_id)  // sysmouse: Devide id.
                                         (ui32, ctlstat)  // sysmouse: Keybd modifiers.
                                         (ui32, enabled)  // sysmouse: Mouse device health status.

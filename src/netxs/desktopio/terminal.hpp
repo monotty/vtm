@@ -384,11 +384,12 @@ namespace netxs::ui
                 : owner{ owner },
                   encod{ prot::w32 }
             {
-                owner.LISTEN(tier::release, e2::form::state::keybd::focus::state, s, token)
+                owner.LISTEN(tier::release, e2::form::state::keybd::focus::count, count, token)
                 {
-                    if (state(s))
+                    auto focused = !!count;
+                    if (state(focused))
                     {
-                        owner.ipccon.focus(s, encod);
+                        owner.ipccon.focus(focused, encod);
                     }
                 };
                 owner.SIGNAL(tier::request, e2::form::state::keybd::check, state.last);
@@ -6230,7 +6231,8 @@ namespace netxs::ui
             auto delimpos = data.find(';');
             if (delimpos != text::npos)
             {
-                clipdata.utf8 = data.substr(0, ++delimpos);
+                clipdata.meta = data.substr(0, delimpos++);
+                clipdata.utf8.clear();
                 utf::unbase64(data.substr(delimpos), clipdata.utf8);
                 clipdata.form = mime::disabled;
                 clipdata.size = target->panel;
@@ -6673,6 +6675,17 @@ namespace netxs::ui
             }
             return data.utf8;
         }
+        auto _paste(auto& data)
+        {
+            follow[axis::X] = true;
+            if (bpmode)
+            {
+                data = "\033[200~" + data + "\033[201~";
+            }
+            //todo paste is a special type operation like a mouse reporting.
+            //todo pasting must be ready to be interruped by any pressed key (to interrupt a huge paste).
+            data_out(data);
+        }
         auto paste(hids& gear)
         {
             auto& console = *target;
@@ -6680,14 +6693,7 @@ namespace netxs::ui
             if (data.size())
             {
                 pro::focus::set(this->This(), gear.id, pro::focus::solo::off, pro::focus::flip::off);
-                follow[axis::X] = true;
-                if (bpmode)
-                {
-                    data = "\033[200~" + data + "\033[201~";
-                }
-                //todo paste is a special type operation like a mouse reporting.
-                //todo pasting must be ready to be interruped by any pressed key (to interrupt a huge paste).
-                data_out(data);
+                _paste(data);
                 return true;
             }
             return faux;
@@ -6755,8 +6761,7 @@ namespace netxs::ui
             }
             else if (selection_passed()) // Paste from clipboard.
             {
-                gear.owner.RISEUP(tier::request, hids::events::clipbrd, gear);
-                utf8 = gear.board::cargo.utf8;
+                utf8 = get_clipboard_text(gear);
             }
             if (utf8.size())
             {
@@ -7242,18 +7247,17 @@ namespace netxs::ui
                     origin = new_area.coor;
                 }
             };
+            LISTEN(tier::release, hids::events::paste, gear)
+            {
+                _paste(gear.paste::txtdata);
+            };
             LISTEN(tier::release, hids::events::keybd::data::post, gear)
             {
                 //todo configurable Ctrl+Ins, Shift+Ins etc.
                 if (gear.handled) return; // Don't pass registered keyboard shortcuts.
-                if (gear.cluster.size())
+                if (config.resetonkey && gear.doinput())
                 {
                     this->RISEUP(tier::release, e2::form::animate::reset, 0); // Reset scroll animation.
-                }
-
-                if (gear.pressed && config.resetonkey
-                && (gear.cluster.size() || !gear.kbmod()))
-                {
                     unsync = true;
                     follow[axis::X] = true;
                     follow[axis::Y] = true;
@@ -7514,12 +7518,12 @@ namespace netxs::ui
                         auto& data = gear.board::cargo;
                         if (data.hash != c.hash)
                         {
-                            s11n::clipdata.send(master, c.gear_id, data.hash, data.size, data.utf8, data.form);
+                            s11n::clipdata.send(master, c.gear_id, data.hash, data.size, data.utf8, data.form, data.meta);
                             return;
                         }
                     }
                     else log(prompt::dtvt, ansi::err("Unregistered input device id: ", c.gear_id));
-                    s11n::clipdata.send(master, c.gear_id, c.hash, dot_00, text{}, mime::ansitext);
+                    s11n::clipdata.send(master, c.gear_id, c.hash, dot_00, text{}, mime::ansitext, text{});
                 });
             }
             //void handle(s11n::xs::focus               lock)
@@ -7841,7 +7845,7 @@ namespace netxs::ui
                 if (auto parent = base::parent()) parent_id = parent->id;
                 if (canvas.size())
                 {
-                    splash.zoom(canvas, cell::shaders::fullid(parent_id));
+                    splash.zoom(canvas, cell::shaders::onlyid(parent_id));
                     splash.output(errmsg);
                     splash.blur(2, [](cell& c) { c.fgc(rgba::transit(c.bgc(), c.fgc(), 127)); });
                     splash.output(errmsg);
