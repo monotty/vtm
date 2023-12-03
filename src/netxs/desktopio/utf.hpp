@@ -946,14 +946,14 @@ namespace netxs::utf
     }
     // utf: Return left substring (from begin) until delimeter (lazy=faux: from left, true: from right).
     template<class T>
-    T cutoff(T const& txt, T const& delimiter = T{ '.' }, bool lazy = true)
+    T cutoff(T const& txt, T const& delimiter = T{ '.' }, bool lazy = true, size_t skip = 0)
     {
-        return txt.substr(0, lazy ? txt.find(delimiter) : txt.rfind(delimiter));
+        return txt.substr(0, lazy ? txt.find(delimiter, skip) : txt.rfind(delimiter, txt.size() - skip));
     }
     template<class T>
-    T cutoff(T const& txt, char delimiter, bool lazy = true)
+    T cutoff(T const& txt, char delimiter, bool lazy = true, size_t skip = 0)
     {
-        return txt.substr(0, lazy ? txt.find(delimiter) : txt.rfind(delimiter));
+        return txt.substr(0, lazy ? txt.find(delimiter, skip) : txt.rfind(delimiter, txt.size() - skip));
     }
     template<class T>
     inline T domain(T const& txt)
@@ -1113,12 +1113,12 @@ namespace netxs::utf
                 auto frag = view{ utf8.data() + cur, pos - cur };
                 if constexpr (SkipEmpty) if (frag.empty()) { cur = pos + 1; continue; }
                 if constexpr (Plain) proc(frag);
-                else            if (!proc(frag)) return;
+                else            if (!proc(frag)) return faux;
                 cur = pos + 1;
             }
             auto end = view{ utf8.data() + cur, utf8.size() - cur };
-            if constexpr (SkipEmpty) if (end.empty()) return;
-            proc(end);
+            if constexpr (SkipEmpty) if (end.empty()) return true;
+            return proc(end);
         }
         else
         {
@@ -1130,12 +1130,12 @@ namespace netxs::utf
                 auto frag = view{ utf8.data() + next, cur - next };
                 if constexpr (SkipEmpty) if (frag.empty()) { cur = pos; continue; }
                 if constexpr (Plain) proc(frag);
-                else            if (!proc(frag)) return;
+                else            if (!proc(frag)) return faux;
                 cur = pos;
             }
             auto end = view{ utf8.data(), cur };
-            if constexpr (SkipEmpty) if (end.empty()) return;
-            proc(end);
+            if constexpr (SkipEmpty) if (end.empty()) return true;
+            return proc(end);
         }
     }
     template<feed Dir = feed::fwd, bool SkipEmpty = faux, class V1, class V2>

@@ -2138,7 +2138,7 @@ namespace netxs::ui
         {
             auto publish = [&](auto& combo)
             {
-                combo.coord = flow::print<true, Split>(combo, *this, printfx);
+                combo.coord = this->flow::print<true, Split>(combo, *this, printfx);
             };
             textpage.stream(publish);
         }
@@ -2439,6 +2439,8 @@ namespace netxs::ui
         X(danger    , "Danger color")                  \
         X(action    , "Action color")                  \
         X(selected  , "Selected item color")           \
+        X(active    , "Active item color")             \
+        X(focused   , "Focused item color")            \
         X(label     , "Static label color")            \
         X(inactive  , "Inactive label color")          \
         X(menu_white, "Light menu color")              \
@@ -2452,7 +2454,7 @@ namespace netxs::ui
         };
         #undef prop_list
 
-        prop active  = prop::brighter;
+        prop dynamic = prop::brighter;
         prop passive = prop::shadower;
     };
 }

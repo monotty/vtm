@@ -29,7 +29,7 @@ namespace netxs::events::userland
 namespace netxs::app::textancy
 {
     static constexpr auto id = "text";
-    static constexpr auto desc = "Desktopio Text Editor (DEMO)";
+    static constexpr auto desc = "Text Editor (DEMO)";
 
     using events = netxs::events::userland::textancy;
 
@@ -75,7 +75,7 @@ displaying the requested definition in a popup window or temporary buffer. Some 
 
 )";
 
-        auto build = [](text cwd, text arg, xmls& config, text patch)
+        auto build = [](text env, text cwd, text arg, xmls& config, text patch)
         {
             auto highlight_color = skin::color(tone::highlight);
 

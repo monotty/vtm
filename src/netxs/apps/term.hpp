@@ -77,7 +77,7 @@ namespace netxs::events::userland
 namespace netxs::app::term
 {
     static constexpr auto id = "term";
-    static constexpr auto desc = "Desktopio Terminal";
+    static constexpr auto desc = "Terminal Emulator";
 
     using events = netxs::events::userland::term;
 
@@ -331,7 +331,7 @@ namespace netxs::app::term
             {
                 _submit<true>(boss, item, [](auto& boss, auto& item, auto& gear)
                 {
-                    boss.RISEUP(tier::release, e2::form::layout::fullscreen, gear);
+                    boss.RISEUP(tier::preview, e2::form::size::enlarge::fullscreen, gear);
                 });
             }
             static void TerminalRestart(ui::item& boss, menu::item& item)
@@ -620,16 +620,13 @@ namespace netxs::app::term
 
     namespace
     {
-        auto build = [](text cwd, text arg, xmls& config, text patch)
+        auto build = [](text env, text cwd, text arg, xmls& config, text patch)
         {
             auto menu_white = skin::color(tone::menu_white);
             auto cB = menu_white;
 
             auto window = ui::cake::ctor();
-            auto arg_shadow = view{ arg };
-            auto term_type = shared::app_class(arg_shadow);
-            arg = arg_shadow;
-            if (term_type == shared::app_type::normal)
+            if (os::dtvt::active)
             {
                 //todo revise focus
                 window->plugin<pro::focus>()
@@ -637,10 +634,10 @@ namespace netxs::app::term
                       ->plugin<pro::acryl>()
                       ->plugin<pro::cache>();
             }
-            else window->plugin<pro::focus>(pro::focus::mode::focusable, faux);
+            else window->plugin<pro::focus>(pro::focus::mode::focusable);
 
             auto object = window->attach(ui::fork::ctor(axis::Y))
-                                ->colors(cB.fgc(), cB.bgc());
+                                ->colors(cB);
             auto term_stat_area = object->attach(slot::_2, ui::fork::ctor(axis::Y));
             auto layers = term_stat_area->attach(slot::_1, ui::cake::ctor())
                                         ->limits(dot_11, { 400,200 });
@@ -663,7 +660,7 @@ namespace netxs::app::term
                             {
                                 gate_ptr->SIGNAL(tier::release, e2::form::proceed::onbehalf, [&](auto& gear)
                                 {
-                                    boss.RISEUP(tier::release, e2::form::layout::fullscreen, gear);
+                                    boss.RISEUP(tier::preview, e2::form::size::enlarge::fullscreen, gear);
                                 });
                             }
                         }
@@ -685,7 +682,8 @@ namespace netxs::app::term
                 });
 
             auto shell = os::env::shell() + " -i";
-            auto inst = scroll->attach(ui::term::ctor(cwd, arg.empty() ? shell : arg, config))
+            auto cmd = arg.empty() ? shell : arg;
+            auto inst = scroll->attach(ui::term::ctor(config))
                               ->plugin<pro::focus>(pro::focus::mode::focused);
             auto scroll_bars = layers->attach(ui::fork::ctor());
             auto vt = scroll_bars->attach(slot::_2, ui::grip<axis::Y>::ctor(scroll));
@@ -780,7 +778,7 @@ namespace netxs::app::term
                 ->attach_property(ui::term::events::layout::wrapln,  app::term::events::release::wrapln)
                 ->attach_property(ui::term::events::layout::align,   app::term::events::release::align)
                 ->attach_property(ui::term::events::search::status,  app::term::events::search::status)
-                ->invoke([](auto& boss)
+                ->invoke([&](auto& boss)
                 {
                     boss.LISTEN(tier::anycast, e2::form::proceed::quit::any, fast)
                     {
@@ -788,7 +786,7 @@ namespace netxs::app::term
                     };
                     boss.LISTEN(tier::preview, e2::form::proceed::quit::one, fast)
                     {
-                        boss.sighup(fast);
+                        boss.close(fast);
                     };
                     boss.LISTEN(tier::anycast, app::term::events::cmd, cmd)
                     {
@@ -837,9 +835,9 @@ namespace netxs::app::term
                     {
                         boss.set_align(align);
                     };
-                    boss.LISTEN(tier::anycast, e2::form::upon::started, root)
+                    boss.LISTEN(tier::anycast, e2::form::upon::started, root, -, (cmd, cwd, env))
                     {
-                        boss.start();
+                        boss.start(cmd, cwd, env);
                     };
                     boss.LISTEN(tier::anycast, app::term::events::search::forward, gear)
                     {

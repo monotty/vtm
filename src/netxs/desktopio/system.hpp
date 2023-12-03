@@ -1143,6 +1143,8 @@ namespace netxs::os
         }
     };
 
+    using fdrw = sptr<sock>;
+
     struct fire
     {
         flag fired{};
@@ -1152,20 +1154,45 @@ namespace netxs::os
             fd_t h; // fire: Descriptor for IO interrupt.
 
             operator auto () { return h; }
-            fire(bool i = 1) { ok(h = ::CreateEventW(NULL, i, FALSE, NULL), "::CreateEventW()", os::unexpected); }
+            fire(qiew name = {})
+            {
+                ok(h = ::CreateEventW(NULL, TRUE, FALSE, name ? utf::to_utf(name).c_str() : nullptr), "::CreateEventW()", os::unexpected);
+            }
            ~fire()           { os::close(h); }
             void reset()     { fired.exchange(true); ::SetEvent(h);   }
             void flush()     { fired.exchange(faux); ::ResetEvent(h); }
+            auto wait(span timeout = {})
+            {
+                auto t = timeout == span{} ? INFINITE : datetime::round<DWORD>(timeout);
+                return WAIT_OBJECT_0 == ::WaitForSingleObject(h, t);
+            }
 
         #else
 
             fd_t h[2] = { os::invalid_fd, os::invalid_fd }; // fire: Descriptors for IO interrupt.
 
             operator auto () { return h[0]; }
-            fire()           { ok(::pipe(h), "::pipe(2)", os::unexpected); }
+            fire(qiew name = {})
+            {
+                ok(::pipe(h), "::pipe(2)", os::unexpected);
+            }
            ~fire()           { for (auto& f : h) os::close(f); }
             void reset()     { fired.exchange(true); auto c = ' '; auto rc = ::write(h[1], &c, sizeof(c)); }
             void flush()     { fired.exchange(faux); auto c = ' '; auto rc = ::read(h[0], &c, sizeof(c)); }
+            auto wait(span timeout = {})
+            {
+                using namespace std::chrono;
+                auto s = datetime::round<decltype(::timeval::tv_sec), seconds>(timeout);
+                auto m = datetime::round<decltype(::timeval::tv_usec), microseconds>(timeout - seconds{ s });
+                auto v = ::timeval{ .tv_sec = s, .tv_usec = m };
+                auto t = timeout != span{} ? &v : nullptr /*infinite*/;
+                auto socks = fd_set{};
+                FD_ZERO(&socks);
+                FD_SET(h[0], &socks);
+                auto nfds = 1 + h[0];
+                auto fired = ::select(nfds, &socks, 0, 0, t);
+                return fired;
+            }
 
         #endif
         void bell() { reset(); }
@@ -1543,6 +1570,45 @@ namespace netxs::os
 
     namespace env
     {
+        // os::env: Return the current environment block with additional records.
+        auto add(qiew additional_recs)
+        {
+            #if defined(_WIN32)
+                auto env_ptr = ::GetEnvironmentStringsW();
+                auto end_ptr = env_ptr;
+                while (*end_ptr++ || *end_ptr) // Find \0\0.
+                { }
+                auto env_cur = utf::to_utf(env_ptr, (size_t)(end_ptr - env_ptr));
+                ::FreeEnvironmentStringsW(env_ptr);
+            #else
+                auto env_ptr = environ;
+                auto env_cur = text{};
+                while (*env_ptr)
+                {
+                    env_cur += *env_ptr++;
+                    env_cur += '\0';
+                }
+            #endif
+            auto env_map = std::map<text, text>{};
+            auto combine = [&](auto subset)
+            {
+                utf::divide(subset, '\0', [&](qiew rec)
+                {
+                    if (rec.empty()) return;
+                    auto var = utf::cutoff(rec, '=', true, 1); // 1: Skip the first char to support cmd.exe's strange subdirs like =A:=A:\Dir.
+                    auto val = rec.substr(var.size() + 1/*=*/);
+                    env_map[var] = val;
+                });
+            };
+            combine(env_cur);
+            combine(additional_recs);
+            env_cur.clear();
+            for (auto& [key, val] : env_map)
+            {
+                env_cur += key + '=' + val + '\0';
+            }
+            return env_cur;
+        }
         // os::env: Get envvar value.
         auto get(qiew variable)
         {
@@ -1570,6 +1636,17 @@ namespace netxs::os
                 auto var = variable.str();
                 auto val = value.str();
                 ok(::setenv(var.c_str(), val.c_str(), 1), "::setenv()", os::unexpected);
+            #endif
+        }
+        // os::env: Unset envvar.
+        auto unset(qiew variable)
+        {
+            #if defined(_WIN32)
+                auto var = utf::to_utf(variable);
+                ok(::SetEnvironmentVariableW(var.c_str(), nullptr), "::SetEnvironmentVariableW()", os::unexpected);
+            #else
+                auto var = variable.str();
+                ok(::unsetenv(var.c_str()), "::unsetenv()", os::unexpected);
             #endif
         }
         // os::env: Get list of envvars using wildcard.
@@ -1643,8 +1720,8 @@ namespace netxs::os
     {
         #if defined(_WIN32)
             static const auto pipe_ns = "\\\\.\\pipe\\";
-            static const auto wr_pipe = "\\\\.\\pipe\\w_";
-            static const auto rd_pipe = "\\\\.\\pipe\\r_";
+            auto wr_pipe(text name) { return pipe_ns + name + "_w"; }
+            auto rd_pipe(text name) { return pipe_ns + name + "_r"; }
         #endif
         // os::path: OS settings path.
         static const auto etc = []
@@ -1891,18 +1968,37 @@ namespace netxs::os
         }
     }
 
-    namespace ipc
+    namespace process
     {
-        struct memory
+        static const auto elevated = []
         {
-            static auto get(view reference)
+            #if defined(_WIN32)
+                auto issuer = SID_IDENTIFIER_AUTHORITY{ SECURITY_NT_AUTHORITY };
+                auto admins = PSID{};
+                auto member = BOOL{};
+                auto result = ::AllocateAndInitializeSid(&issuer, 2, SECURITY_BUILTIN_DOMAIN_RID, DOMAIN_ALIAS_RID_ADMINS, 0, 0, 0, 0, 0, 0, &admins)
+                           && ::CheckTokenMembership(nullptr, admins, &member)
+                           && member;
+                ::FreeSid(admins);
+            #else
+                auto result = !::getuid(); // If getuid() == 0 - we are running under sudo/root.
+            #endif
+            return result;
+        }();
+
+        namespace memory
+        {
+            auto ref(text prefix)
+            {
+                return (process::elevated ? "Global\\" : "Local\\") + prefix + "_config";
+            }
+            auto get(text ospath)
             {
                 auto utf8 = text{};
                 #if defined(_WIN32)
 
-                    if (auto ref = utf::to_int<intptr_t, 0x10>(reference))
+                    if (auto handle = ::OpenFileMappingA(FILE_MAP_READ, FALSE, ospath.c_str()))
                     {
-                        auto handle = (HANDLE)ref.value();
                         if (auto data = ::MapViewOfFile(handle, FILE_MAP_READ, 0, 0, 0))
                         {
                             utf8 = (char*)data;
@@ -1914,22 +2010,443 @@ namespace netxs::os
                 #endif
                 return utf8;
             }
-            static auto set(view data)
+            auto set(text ospath, view data)
             {
                 #if defined(_WIN32)
 
                     auto source = view{ data.data(), data.size() + 1/*trailing null*/ };
-                    auto handle = ::CreateFileMappingA(os::invalid_fd, nullptr, PAGE_READWRITE, 0, (DWORD)source.size(), nullptr); ok(handle, "::CreateFileMappingA()", os::unexpected);
-                    auto buffer = ::MapViewOfFile(handle, FILE_MAP_WRITE, 0, 0, 0);                                                ok(buffer, "::MapViewOfFile()", os::unexpected);
+                    auto handle = ::CreateFileMappingA(os::invalid_fd, nullptr, PAGE_READWRITE, 0, (DWORD)source.size(), ospath.c_str()); ok(handle, "::CreateFileMappingA()", os::unexpected);
+                    auto buffer = ::MapViewOfFile(handle, FILE_MAP_WRITE, 0, 0, 0);                                                          ok(buffer, "::MapViewOfFile()", os::unexpected);
                     std::copy(std::begin(source), std::end(source), (char*)buffer);
                     ok(::UnmapViewOfFile(buffer), "::UnmapViewOfFile()", os::unexpected);
-                    ok(::SetHandleInformation(handle, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT), "::SetHandleInformation()", os::unexpected);
                     return handle;
 
                 #endif
             }
+        }
+
+        auto getid()
+        {
+            #if defined(_WIN32)
+                auto id = static_cast<ui32>(::GetCurrentProcessId());
+            #else
+                auto id = static_cast<ui32>(::getpid());
+            #endif
+            ui::console::id = std::pair{ id, datetime::now() };
+            return ui::console::id;
+        }
+        static auto id = process::getid();
+        static auto arg0 = text{};
+        struct args
+        {
+        private:
+            using list = std::list<text>;
+            using it_t = list::iterator;
+
+            list data{};
+            it_t iter{};
+
+            // args: Recursive argument matching.
+            template<class I>
+            auto test(I&& item) { return faux; }
+            // args: Recursive argument matching.
+            template<class I, class T, class ...Args>
+            auto test(I&& item, T&& sample, Args&&... args)
+            {
+                return item == sample || test(item, std::forward<Args>(args)...);
+            }
+
+        public:
+            args(int argc, char** argv)
+            {
+                #if defined(_WIN32)
+                    auto line = utf::to_utf(::GetCommandLineW());
+                    data.splice(data.end(), split(line));
+                #else
+                    auto head = argv;
+                    auto tail = argv + argc;
+                    while (head != tail)
+                    {
+                        data.splice(data.end(), split(*head++));
+                    }
+                #endif
+                if (data.size())
+                {
+                    process::arg0 = data.front();
+                    data.pop_front();
+                }
+                reset();
+            }
+            // args: Split command line options into tokens.
+            template<class T = list>
+            static T split(view line)
+            {
+                auto args = T{};
+                line = utf::trim(line);
+                while (line.size())
+                {
+                    auto item = utf::get_token(line);
+                    if (item.size()) args.emplace_back(item);
+                }
+                return args;
+            }
+            // args: Reset arg iterator to begin.
+            void reset()
+            {
+                iter = data.begin();
+            }
+            // args: Return true if not the end.
+            operator bool () const { return iter != data.end(); }
+            // args: Test the starting substring of the current argument.
+            template<class ...Args>
+            auto starts(Args&&... args)
+            {
+                auto result = iter != data.end() && (iter->starts_with(args) || ...);
+                return result;
+            }
+            // args: Test the current argument and step forward if met.
+            template<class ...Args>
+            auto match(Args&&... args)
+            {
+                auto result = iter != data.end() && test(*iter, std::forward<Args>(args)...);
+                if (result) ++iter;
+                return result;
+            }
+            // args: Return current argument and step forward.
+            template<class ...Args>
+            auto next()
+            {
+                return iter != data.end() ? view{ *iter++ }
+                                          : view{};
+            }
+            // args: Return the rest of the command line arguments.
+            auto rest()
+            {
+                auto crop = text{};
+                if (iter != data.end())
+                {
+                    crop += *iter++;
+                    while (iter != data.end())
+                    {
+                        crop.push_back(' ');
+                        crop += *iter++;
+                    }
+                }
+                return crop;
+            }
         };
 
+        template<bool NameOnly = faux>
+        auto binary()
+        {
+            auto result = text{};
+            #if defined(_WIN32)
+
+                auto handle = ::GetCurrentProcess();
+                auto buffer = wide(MAX_PATH, 0);
+                while (buffer.size() <= 32768)
+                {
+                    auto length = ::GetModuleFileNameExW(handle,         // hProcess
+                                                         NULL,           // hModule
+                                                         buffer.data(),  // lpFilename
+                                      static_cast<DWORD>(buffer.size()));// nSize
+                    if (length == 0) break;
+                    if (buffer.size() > length + 1)
+                    {
+                        result = utf::to_utf(buffer.data(), length);
+                        break;
+                    }
+                    buffer.resize(buffer.size() << 1);
+                }
+
+            #elif defined(__linux__) || defined(__NetBSD__)
+
+                auto path = ::realpath("/proc/self/exe", nullptr);
+                if (path)
+                {
+                    result = text(path);
+                    ::free(path);
+                }
+
+            #elif defined(__APPLE__)
+
+                auto size = uint32_t{};
+                if (-1 == ::_NSGetExecutablePath(nullptr, &size))
+                {
+                    auto buff = std::vector<char>(size);
+                    if (0 == ::_NSGetExecutablePath(buff.data(), &size))
+                    {
+                        auto path = ::realpath(buff.data(), nullptr);
+                        if (path)
+                        {
+                            result = text(path);
+                            ::free(path);
+                        }
+                    }
+                }
+
+            #elif defined(__FreeBSD__)
+
+                auto size = 0_sz;
+                auto name = std::to_array({ CTL_KERN, KERN_PROC, KERN_PROC_PATHNAME, -1 });
+                if (::sysctl(name.data(), name.size(), nullptr, &size, nullptr, 0) == 0)
+                {
+                    auto buff = std::vector<char>(size);
+                    if (::sysctl(name.data(), name.size(), buff.data(), &size, nullptr, 0) == 0)
+                    {
+                        result = text(buff.data(), size);
+                    }
+                }
+
+            #endif
+            #if not defined(_WIN32)
+
+                if (result.empty())
+                {
+                          auto path = ::realpath("/proc/self/exe",        nullptr);
+                    if (!path) path = ::realpath("/proc/curproc/file",    nullptr);
+                    if (!path) path = ::realpath("/proc/self/path/a.out", nullptr);
+                    if (path)
+                    {
+                        result = text(path);
+                        ::free(path);
+                    }
+                }
+
+            #endif
+            if (result.empty())
+            {
+                os::fail("Can't get current module file path, fallback to '", process::arg0, "`");
+                result = process::arg0;
+            }
+            if constexpr (NameOnly)
+            {
+                auto code = std::error_code{};
+                auto file = fs::directory_entry(result, code);
+                if (!code)
+                {
+                    result = file.path().filename().string();
+                }
+            }
+            auto c = result.front();
+            if (c != '\"' && c != '\'' && result.find(' ') != text::npos)
+            {
+                result = '\"' + result + '\"';
+            }
+            return result;
+        }
+        template<bool Fast = faux>
+        void exit(int code)
+        {
+            if constexpr (Fast) ::_exit(code); // Skip atexit hooks and stdio buffer flushes.
+            else
+            {
+                #if defined(_WIN32)
+                ::ExitProcess(code);
+                #else
+                ::exit(code);
+                #endif
+            }
+        }
+        template<class ...Args>
+        void exit(int code, Args&&... args)
+        {
+            log(args...);
+            process::exit(code);
+        }
+        auto sysfork()
+        {
+            #if defined(_WIN32)
+            #else
+
+                auto lock = netxs::logger::globals();
+                auto crop = ::fork();
+                if (!crop)
+                {
+                    os::process::id = os::process::getid();
+                }
+                return crop;
+
+            #endif
+        }
+        auto execvpe(text cmd, text env)
+        {
+            #if defined(_WIN32)
+            #else
+
+                if (auto args = os::process::args::split(cmd); args.size())
+                {
+                    auto& binary = args.front();
+                    if (binary.size() > 2) // Remove quotes,
+                    {
+                        auto c = binary.front();
+                        if (binary.back() == c && (c == '\"' || c == '\''))
+                        {
+                            binary = binary.substr(1, binary.size() - 2);
+                        }
+                    }
+                    auto argv = std::vector<char*>{};
+                    for (auto& c : args)
+                    {
+                        argv.push_back(c.data());
+                    }
+                    argv.push_back(nullptr);
+                    auto envp = std::vector<char*>{};
+                    for (auto& c : utf::divide<feed::fwd, true>(env, '\0'))
+                    {
+                        envp.push_back((char*)c.data());
+                    }
+                    envp.push_back(nullptr);
+                    auto backup = environ;
+                    environ = envp.data();
+                    ::execvp(argv.front(), argv.data());
+                    environ = backup;
+                }
+
+            #endif
+        }
+        //todo deprecated
+        template<bool Logs = true, bool Daemon = faux>
+        auto exec(text cmd, text env)
+        {
+            if constexpr (Logs) log(prompt::exec, "'", cmd, "'");
+            #if defined(_WIN32)
+                
+                auto shadow = view{ cmd };
+                auto binary = utf::to_utf(utf::get_token(shadow));
+                auto params = utf::to_utf(shadow);
+                auto ShExecInfo = ::SHELLEXECUTEINFOW{};
+                ShExecInfo.cbSize = sizeof(::SHELLEXECUTEINFOW);
+                ShExecInfo.fMask = SEE_MASK_NOCLOSEPROCESS;
+                ShExecInfo.hwnd = NULL;
+                ShExecInfo.lpVerb = NULL;
+                ShExecInfo.lpFile = binary.c_str();
+                ShExecInfo.lpParameters = params.c_str();
+                ShExecInfo.lpDirectory = NULL;
+                ShExecInfo.nShow = 0;
+                ShExecInfo.hInstApp = NULL;
+                if (::ShellExecuteExW(&ShExecInfo)) return true;
+
+            #else
+
+                auto p_id = os::process::sysfork();
+                if (p_id == 0) // Child branch.
+                {
+                    if constexpr (Daemon)
+                    {
+                        //::umask(0); // Set the file mode creation mask for child process.
+                        os::close(os::stdin_fd );
+                        os::close(os::stdout_fd);
+                        os::close(os::stderr_fd);
+                    }
+                    os::process::execvpe(cmd, env);
+                    auto errcode = errno;
+                    if constexpr (Logs) os::fail(prompt::exec, "Failed to spawn '", cmd, "'");
+                    os::process::exit<true>(errcode);
+                }
+                else if (p_id > 0) // Parent branch.
+                {
+                    auto stat = int{};
+                    ::waitpid(p_id, &stat, 0); // Wait for the child to avoid zombies.
+                    if (WIFEXITED(stat) && WEXITSTATUS(stat) == 0)
+                    {
+                        return true; // Child forked and exited successfully.
+                    }
+                }
+
+            #endif
+            if constexpr (Logs) os::fail(prompt::exec, "Failed to spawn '", cmd, "'");
+            return faux;
+        }
+        auto fork(text prefix, view config)
+        {
+            #if defined(_WIN32)
+
+                auto ospath = process::memory::ref(prefix);
+                auto handle = process::memory::set(ospath, config);
+                auto cmdarg = utf::to_utf(utf::concat(os::process::binary(), " --onlylog", " -p ", prefix, " -c :", ospath, " -s"));
+                auto proinf = PROCESS_INFORMATION{};
+                auto upinfo = STARTUPINFOEXW{ sizeof(STARTUPINFOEXW) };
+                auto ptoken = os::invalid_fd;
+                auto slzero = DWORD{ 0 };
+                auto rc = ::OpenProcessToken(::GetCurrentProcess(), TOKEN_ALL_ACCESS, &ptoken);
+                rc = rc && ::CreateProcessAsUserW(ptoken,
+                                                  nullptr,                      // lpApplicationName
+                                                  cmdarg.data(),                // lpCommandLine
+                                                  nullptr,                      // lpProcessAttributes
+                                                  nullptr,                      // lpThreadAttributes
+                                                  TRUE,                         // bInheritHandles
+                                                  DETACHED_PROCESS |            // dwCreationFlags
+                                                  EXTENDED_STARTUPINFO_PRESENT, // override startupInfo type
+                                                  nullptr,                      // lpEnvironment
+                                                  nullptr,                      // lpCurrentDirectory
+                                                  &upinfo.StartupInfo,          // lpStartupInfo
+                                                  &proinf);                     // lpProcessInformation
+                os::close(ptoken);
+                auto success = std::unique_ptr<std::remove_pointer<fd_t>::type, decltype(&::CloseHandle)>(handle, &::CloseHandle); // Do not close until confirmation from the child process is received.
+                if (rc) // Success. The fork concept is not supported on Windows.
+                {
+                    os::close(proinf.hProcess);
+                    os::close(proinf.hThread);
+                }
+                else success.reset();
+
+            #else
+
+                auto success = faux;
+                auto p_id = os::process::sysfork();
+                if (p_id == 0) // Child process.
+                {
+                    p_id = os::process::sysfork(); // Second fork to detach process and avoid zombies.
+                    if (p_id == 0) // GrandChild process.
+                    {
+                        ::setsid(); // Open new session and new process group in it.
+                        os::close(os::stdin_fd ); // No stdio needed in daemon mode.
+                        os::close(os::stdout_fd); //
+                        os::close(os::stderr_fd); //
+                        return std::pair{ success, true }; // Child branch.
+                    }
+                    else if (p_id > 0) os::process::exit<true>(0); // Success.
+                    else               os::process::exit<true>(1); // Fail.
+                }
+                else if (p_id > 0) // Parent branch. Reap the child process and leaving the grandchild process detached.
+                {
+                    auto stat = int{};
+                    ::waitpid(p_id, &stat, 0);
+                    success = WIFEXITED(stat) && WEXITSTATUS(stat) == 0;
+                }
+
+            #endif
+
+            if (success) log(prompt::os, "Process forked");
+            else         os::fail("Failed to fork process");
+
+            return std::pair{ std::move(success), faux }; // Parent branch.
+        }
+        void spawn(text cmd, text cwd, text env)
+        {
+            #if defined(_WIN32)
+            #else
+
+                if (cwd.size())
+                {
+                    auto err = std::error_code{};
+                    fs::current_path(cwd, err);
+                    if (err) log("%%Failed to change current directory to '%cwd%', error code: %code%\n", prompt::os, cwd, err.value());
+                }
+                os::process::execvpe(cmd, env);
+                auto err_code = os::error();
+                log(ansi::bgc(reddk).fgc(whitelt).add("Process creation error ", err_code, " \n"
+                                                      " cwd: ", cwd.empty() ? "not specified"s : cwd, " \n"
+                                                      " cmd: ", cmd, " ").nil());
+                os::process::exit<true>(err_code);
+
+            #endif
+        }
+    }
+
+    namespace ipc
+    {
         struct stdcon : pipe
         {
             sock handle; // ipc::stdcon: IO descriptor.
@@ -2175,10 +2692,10 @@ namespace netxs::os
                         return faux;
                     }
 
-                    log(prompt::sock, "Creds from SO_PEERCRED:",
-                      "\n      pid : ", cred.pid,
-                      "\n      euid: ", cred.uid,
-                      "\n      egid: ", cred.gid);
+                    if constexpr (debugmode) log(prompt::sock, "Creds from SO_PEERCRED:",
+                        "\n      pid : ", cred.pid,
+                        "\n      euid: ", cred.uid,
+                        "\n      egid: ", cred.gid);
 
                 #elif defined(__BSD__)
 
@@ -2196,10 +2713,10 @@ namespace netxs::os
                         return faux;
                     }
 
-                    log(prompt::sock, "Creds from ::getpeereid():",
-                      "\n      pid : ", id,
-                      "\n      euid: ", euid,
-                      "\n      egid: ", egid);
+                    if constexpr (debugmode) log(prompt::sock, "Creds from ::getpeereid():",
+                        "\n      pid : ", id,
+                        "\n      euid: ", euid,
+                        "\n      egid: ", egid);
 
                 #endif
 
@@ -2211,11 +2728,8 @@ namespace netxs::os
                 auto client = sptr<ipc::socket>{};
                 #if defined(_WIN32)
 
-                    auto to_server = os::path::rd_pipe + scpath;
-                    auto to_client = os::path::wr_pipe + scpath;
-                    auto next_link = [&](auto h, auto const& path, auto type)
+                    auto next_link = [&](auto& next_waiting_point, auto h, auto path, auto type)
                     {
-                        auto next_waiting_point = os::invalid_fd;
                         auto connected = ::ConnectNamedPipe(h, NULL)
                             ? true
                             : (::GetLastError() == ERROR_PIPE_CONNECTED);
@@ -2238,31 +2752,23 @@ namespace netxs::os
                             //       LocalSystem account, administrators, and the creator owner. They also grant read access to
                             //       members of the Everyone group and the anonymous account.
                             //       Without write access, the desktop will be inaccessible to non-owners.
+                            if (next_waiting_point == os::invalid_fd) os::fail(prompt::meet, "::CreateNamedPipe()", os::unexpected);
                         }
                         else if (pipe::active) os::fail(prompt::meet, "Not active");
 
-                        return next_waiting_point;
+                        auto success = next_waiting_point != os::invalid_fd;
+                        return success;
                     };
 
-                    auto r = next_link(handle.r, to_server, PIPE_ACCESS_INBOUND);
-                    if (r == os::invalid_fd)
+                    auto r = os::invalid_fd;
+                    auto w = os::invalid_fd;
+                    if (next_link(r, handle.r, os::path::rd_pipe(scpath), PIPE_ACCESS_INBOUND)
+                     && next_link(w, handle.w, os::path::wr_pipe(scpath), PIPE_ACCESS_OUTBOUND))
                     {
-                        if (pipe::active) os::fail(prompt::meet, "::CreateNamedPipe(r)", os::unexpected);
+                        client = ptr::shared<ipc::socket>(handle);
+                        handle = { r, w };
                     }
-                    else
-                    {
-                        auto w = next_link(handle.w, to_client, PIPE_ACCESS_OUTBOUND);
-                        if (w == os::invalid_fd)
-                        {
-                            ::CloseHandle(r);
-                            if (pipe::active) os::fail(prompt::meet, "::CreateNamedPipe(w)", os::unexpected);
-                        }
-                        else
-                        {
-                            client = ptr::shared<ipc::socket>(handle);
-                            handle = { r, w };
-                        }
-                    }
+                    else os::close(r);
 
                 #else
 
@@ -2289,8 +2795,8 @@ namespace netxs::os
                 {
                     if constexpr (debugmode) log(prompt::xipc, "Closing server side link ", handle);
                     #if defined(_WIN32)
-                        auto to_client = os::path::wr_pipe + scpath;
-                        auto to_server = os::path::rd_pipe + scpath;
+                        auto to_client = os::path::wr_pipe(scpath);
+                        auto to_server = os::path::rd_pipe(scpath);
                         if (handle.w != os::invalid_fd) ::DeleteFileW(utf::to_utf(to_client).c_str()); // Interrupt ::ConnectNamedPipe(). Disconnection order does matter.
                         if (handle.r != os::invalid_fd) ::DeleteFileW(utf::to_utf(to_server).c_str()); // This may fail, but this is ok - it means the client is already disconnected.
                     #else
@@ -2304,7 +2810,7 @@ namespace netxs::os
                 auto state = pipe::shut();
                 if (state)
                 {
-                    if constexpr (debugmode) log(prompt::xipc, "Client disconnects: ", handle);
+                    if constexpr (debugmode) log(prompt::xipc, "Link shutdown: ", handle);
                     #if defined(_WIN32)
                         ::DisconnectNamedPipe(handle.w);
                         handle.shutdown(); // To trigger the read end to close.
@@ -2321,124 +2827,63 @@ namespace netxs::os
                 }
                 return state;
             }
-            template<role Role, bool Log = true, class P = noop>
-            static auto open(text path, span retry_timeout = {}, P retry_proc = {})
+            template<role Role, bool Log = true>
+            static auto open(text name, bool& denied)
             {
                 auto r = os::invalid_fd;
                 auto w = os::invalid_fd;
                 auto socket = sptr<ipc::socket>{};
-                auto try_start = [&](auto play, auto retry_proc)
-                {
-                    auto done = play();
-                    if (!done)
-                    {
-                        if (!retry_proc())
-                        {
-                           if constexpr (Log) os::fail("Failed to start server");
-                        }
-                        else
-                        {
-                            auto stop = datetime::now() + retry_timeout;
-                            do
-                            {
-                                os::sleep(100ms);
-                                done = play();
-                            }
-                            while (!done && stop > datetime::now());
-                        }
-                    }
-                    return done;
-                };
 
                 #if defined(_WIN32)
 
-                    auto to_server = os::path::rd_pipe + path;
-                    auto to_client = os::path::wr_pipe + path;
+                    auto to_server = os::path::rd_pipe(name);
+                    auto to_client = os::path::wr_pipe(name);
 
                     if constexpr (Role == role::server)
                     {
-                        auto test = [](text const& path, text prefix = os::path::pipe_ns)
+                        auto pipe = [&](auto& h, auto& path, auto type)
                         {
-                            auto hits = faux;
-                            auto next = WIN32_FIND_DATAW{};
-                            auto name = utf::to_utf(path.substr(prefix.size()));
-                            auto what = utf::to_utf(prefix + '*');
-                            auto hndl = ::FindFirstFileW(what.c_str(), &next);
-                            if (hndl != os::invalid_fd)
-                            {
-                                do hits = next.cFileName == name;
-                                while (!hits && ::FindNextFileW(hndl, &next));
-
-                                if (hits) log(prompt::path, path);
-                                ::FindClose(hndl);
-                            }
-                            return hits;
-                        };
-                        if (test(to_server))
-                        {
-                            os::fail("Server already running");
-                            return socket;
-                        }
-
-                        auto pipe = [](auto const& path, auto type)
-                        {
-                            return ::CreateNamedPipeW(utf::to_utf(path).c_str(),// pipe path
-                                                      type,                     // read/write access
-                                                      PIPE_TYPE_BYTE |          // message type pipe
-                                                      PIPE_READMODE_BYTE |      // message-read mode
-                                                      PIPE_WAIT,                // blocking mode
-                                                      PIPE_UNLIMITED_INSTANCES, // max instances
-                                                      os::pipebuf,              // output buffer size
-                                                      os::pipebuf,              // input buffer size
-                                                      0,                        // client time-out
-                                                      NULL);                    // DACL
+                            h = ::CreateNamedPipeW(utf::to_utf(path).c_str(),// pipe path
+                                                   type,                     // read/write access
+                                                   PIPE_TYPE_BYTE |          // message type pipe
+                                                   PIPE_READMODE_BYTE |      // message-read mode
+                                                   PIPE_WAIT,                // blocking mode
+                                                   PIPE_UNLIMITED_INSTANCES, // max instances
+                                                   os::pipebuf,              // output buffer size
+                                                   os::pipebuf,              // input buffer size
+                                                   0,                        // client time-out
+                                                   NULL);                    // DACL
+                            auto success = h != os::invalid_fd;
+                            if (!success && os::error() == ERROR_ACCESS_DENIED) denied = true;
+                            return success;
                         };
 
-                        r = pipe(to_server, PIPE_ACCESS_INBOUND);
-                        if (r == os::invalid_fd)
+                        if (!pipe(r, to_server, PIPE_ACCESS_INBOUND)
+                         || !pipe(w, to_client, PIPE_ACCESS_OUTBOUND))
                         {
-                            os::fail("::CreateNamedPipe(r)", os::unexpected);
-                        }
-                        else
-                        {
-                            w = pipe(to_client, PIPE_ACCESS_OUTBOUND);
-                            if (w == os::invalid_fd)
-                            {
-                                os::fail("::CreateNamedPipe(w)", os::unexpected);
-                                os::close(r);
-                            }
+                            os::close(r);
+                            os::fail("Creation endpoint error");
                         }
                     }
                     else if constexpr (Role == role::client)
                     {
-                        auto pipe = [](auto const& path, auto type)
+                        auto pipe = [&](auto& h, auto& path, auto type)
                         {
-                            return ::CreateFileW(utf::to_utf(path).c_str(),
-                                                 type,
-                                                 0,             // no sharing
-                                                 NULL,          // default security attributes
-                                                 OPEN_EXISTING, // opens existing pipe
-                                                 0,             // default attributes
-                                                 NULL);         // no template file
+                            h = ::CreateFileW(utf::to_utf(path).c_str(),
+                                              type,
+                                              0,             // no sharing
+                                              NULL,          // default security attributes
+                                              OPEN_EXISTING, // opens existing pipe
+                                              0,             // default attributes
+                                              NULL);         // no template file
+                            auto success = h != os::invalid_fd;
+                            if (!success && os::error() == ERROR_ACCESS_DENIED) denied = true;
+                            return success;
                         };
-                        auto play = [&]
+                        if (!pipe(w, to_server, GENERIC_WRITE)
+                         || !pipe(r, to_client, GENERIC_READ))
                         {
-                            w = pipe(to_server, GENERIC_WRITE);
-                            if (w == os::invalid_fd)
-                            {
-                                return faux;
-                            }
-
-                            r = pipe(to_client, GENERIC_READ);
-                            if (r == os::invalid_fd)
-                            {
-                                os::close(w);
-                                return faux;
-                            }
-                            return true;
-                        };
-                        if (!try_start(play, retry_proc))
-                        {
+                            os::close(w);
                             if constexpr (Log) os::fail("Connection error");
                         }
                     }
@@ -2458,9 +2903,11 @@ namespace netxs::os
                             fs::create_directory(home, ec);
                             if (ec && Log) log("%%Directory '%path%' creation error %error%", prompt::path, home.string(), ec.value());
                         }
-                        path = (home / path).string() + ".sock";
+                        auto path = (home / name).string() + ".sock";
                         sun_path--; // File system unix domain socket.
                         if constexpr (Log) log(prompt::open, "File system socket ", path);
+                    #else
+                        auto path = name;
                     #endif
 
                     if (path.size() > sizeof(sockaddr_un::sun_path) - 2)
@@ -2478,25 +2925,16 @@ namespace netxs::os
                         auto sock_addr_len = (socklen_t)(sizeof(addr) - (sizeof(sockaddr_un::sun_path) - path.size() - 1));
                         std::copy(path.begin(), path.end(), sun_path);
 
-                        auto play = [&]
-                        {
-                            return -1 != ::connect(r, (struct sockaddr*)&addr, sock_addr_len);
-                        };
-
                         if constexpr (Role == role::server)
                         {
                             #if defined(__BSD__)
                                 if (fs::exists(path))
                                 {
-                                    if (play())
+                                    log(prompt::path, "Removing filesystem socket file ", path);
+                                    if (-1 == ::unlink(path.c_str())) // Cleanup file system socket.
                                     {
-                                        os::fail("Server already running");
+                                        os::fail("Failed to remove socket file");
                                         os::close(r);
-                                    }
-                                    else
-                                    {
-                                        log(prompt::path, "Removing filesystem socket file ", path);
-                                        ::unlink(path.c_str()); // Cleanup file system socket.
                                     }
                                 }
                             #endif
@@ -2511,11 +2949,12 @@ namespace netxs::os
                                 os::fail("Unix socket listening error for ", path);
                                 os::close(r);
                             }
+                            std::swap(path, name); // To unlink.
                         }
                         else if constexpr (Role == role::client)
                         {
-                            path.clear(); // No need to unlink a file system socket on client disconnect.
-                            if (!try_start(play, retry_proc))
+                            name.clear(); // No need to unlink a file system socket on client disconnect.
+                            if (-1 == ::connect(r, (struct sockaddr*)&addr, sock_addr_len))
                             {
                                 if constexpr (Log) os::fail("Connection failed");
                                 os::close(r);
@@ -2526,7 +2965,7 @@ namespace netxs::os
                 #endif
                 if (r != os::invalid_fd && w != os::invalid_fd)
                 {
-                    socket = ptr::shared<ipc::socket>(r, w, path);
+                    socket = ptr::shared<ipc::socket>(r, w, name);
                 }
                 return socket;
             }
@@ -2542,428 +2981,19 @@ namespace netxs::os
             auto b = ptr::shared<ipc::xcross>(a); // Queue entanglement for xlink.
             return std::pair{ a, b };
         }
-    }
-
-    namespace process
-    {
-        static const auto elevated = []
+        auto newpipe()
         {
+            auto h = std::pair{ os::invalid_fd /*r*/, os::invalid_fd /*w*/ };
             #if defined(_WIN32)
-                auto issuer = SID_IDENTIFIER_AUTHORITY{ SECURITY_NT_AUTHORITY };
-                auto admins = PSID{};
-                auto member = BOOL{};
-                auto result = ::AllocateAndInitializeSid(&issuer, 2, SECURITY_BUILTIN_DOMAIN_RID, DOMAIN_ALIAS_RID_ADMINS, 0, 0, 0, 0, 0, 0, &admins)
-                           && ::CheckTokenMembership(nullptr, admins, &member)
-                           && member;
-                ::FreeSid(admins);
+                auto sa = SECURITY_ATTRIBUTES{};
+                sa.nLength = sizeof(SECURITY_ATTRIBUTES);
+                sa.lpSecurityDescriptor = NULL;
+                sa.bInheritHandle = TRUE;
+                ok(::CreatePipe(&h.first, &h.second, &sa, 0), "::CreatePipe()", os::unexpected);
             #else
-                auto result = !::getuid(); // If getuid() == 0 - we are running under sudo/root.
+                ok(::pipe(&h.first), "::pipe(pair)", os::unexpected);
             #endif
-            return result;
-        }();
-        auto getid()
-        {
-            #if defined(_WIN32)
-                auto id = static_cast<ui32>(::GetCurrentProcessId());
-            #else
-                auto id = static_cast<ui32>(::getpid());
-            #endif
-            ui::console::id = std::pair{ id, datetime::now() };
-            return ui::console::id;
-        }
-        static auto id = process::getid();
-        static auto arg0 = text{};
-        struct args
-        {
-        private:
-            using list = std::list<text>;
-            using it_t = list::iterator;
-
-            list data{};
-            it_t iter{};
-
-            // args: Recursive argument matching.
-            template<class I>
-            auto test(I&& item) { return faux; }
-            // args: Recursive argument matching.
-            template<class I, class T, class ...Args>
-            auto test(I&& item, T&& sample, Args&&... args)
-            {
-                return item == sample || test(item, std::forward<Args>(args)...);
-            }
-
-        public:
-            args(int argc, char** argv)
-            {
-                #if defined(_WIN32)
-                    auto line = utf::to_utf(::GetCommandLineW());
-                    data.splice(data.end(), split(line));
-                #else
-                    auto head = argv;
-                    auto tail = argv + argc;
-                    while (head != tail)
-                    {
-                        data.splice(data.end(), split(*head++));
-                    }
-                #endif
-                if (data.size())
-                {
-                    process::arg0 = data.front();
-                    data.pop_front();
-                }
-                reset();
-            }
-            // args: Split command line options into tokens.
-            template<class T = list>
-            static T split(view line)
-            {
-                auto args = T{};
-                line = utf::trim(line);
-                while (line.size())
-                {
-                    auto item = utf::get_token(line);
-                    if (item.size()) args.emplace_back(item);
-                }
-                return args;
-            }
-            // args: Reset arg iterator to begin.
-            void reset()
-            {
-                iter = data.begin();
-            }
-            // args: Return true if not the end.
-            operator bool () const { return iter != data.end(); }
-            // args: Test the current argument and step forward if met.
-            template<class ...Args>
-            auto match(Args&&... args)
-            {
-                auto result = iter != data.end() && test(*iter, std::forward<Args>(args)...);
-                if (result) ++iter;
-                return result;
-            }
-            // args: Return current argument and step forward.
-            template<class ...Args>
-            auto next()
-            {
-                return iter != data.end() ? view{ *iter++ }
-                                        : view{};
-            }
-            // args: Return the rest of the command line arguments.
-            auto rest()
-            {
-                auto crop = text{};
-                if (iter != data.end())
-                {
-                    crop += *iter++;
-                    while (iter != data.end())
-                    {
-                        crop.push_back(' ');
-                        crop += *iter++;
-                    }
-                }
-                return crop;
-            }
-        };
-
-        template<bool NameOnly = faux>
-        auto binary()
-        {
-            auto result = text{};
-            #if defined(_WIN32)
-
-                auto handle = ::GetCurrentProcess();
-                auto buffer = wide(MAX_PATH, 0);
-                while (buffer.size() <= 32768)
-                {
-                    auto length = ::GetModuleFileNameExW(handle,         // hProcess
-                                                         NULL,           // hModule
-                                                         buffer.data(),  // lpFilename
-                                      static_cast<DWORD>(buffer.size()));// nSize
-                    if (length == 0) break;
-                    if (buffer.size() > length + 1)
-                    {
-                        result = utf::to_utf(buffer.data(), length);
-                        break;
-                    }
-                    buffer.resize(buffer.size() << 1);
-                }
-
-            #elif defined(__linux__) || defined(__NetBSD__)
-
-                auto path = ::realpath("/proc/self/exe", nullptr);
-                if (path)
-                {
-                    result = text(path);
-                    ::free(path);
-                }
-
-            #elif defined(__APPLE__)
-
-                auto size = uint32_t{};
-                if (-1 == ::_NSGetExecutablePath(nullptr, &size))
-                {
-                    auto buff = std::vector<char>(size);
-                    if (0 == ::_NSGetExecutablePath(buff.data(), &size))
-                    {
-                        auto path = ::realpath(buff.data(), nullptr);
-                        if (path)
-                        {
-                            result = text(path);
-                            ::free(path);
-                        }
-                    }
-                }
-
-            #elif defined(__FreeBSD__)
-
-                auto size = 0_sz;
-                auto name = std::to_array({ CTL_KERN, KERN_PROC, KERN_PROC_PATHNAME, -1 });
-                if (::sysctl(name.data(), name.size(), nullptr, &size, nullptr, 0) == 0)
-                {
-                    auto buff = std::vector<char>(size);
-                    if (::sysctl(name.data(), name.size(), buff.data(), &size, nullptr, 0) == 0)
-                    {
-                        result = text(buff.data(), size);
-                    }
-                }
-
-            #endif
-            #if not defined(_WIN32)
-
-                if (result.empty())
-                {
-                          auto path = ::realpath("/proc/self/exe",        nullptr);
-                    if (!path) path = ::realpath("/proc/curproc/file",    nullptr);
-                    if (!path) path = ::realpath("/proc/self/path/a.out", nullptr);
-                    if (path)
-                    {
-                        result = text(path);
-                        ::free(path);
-                    }
-                }
-
-            #endif
-            if (result.empty())
-            {
-                os::fail("Can't get current module file path, fallback to '", process::arg0, "`");
-                result = process::arg0;
-            }
-            if constexpr (NameOnly)
-            {
-                auto code = std::error_code{};
-                auto file = fs::directory_entry(result, code);
-                if (!code)
-                {
-                    result = file.path().filename().string();
-                }
-            }
-            auto c = result.front();
-            if (c != '\"' && c != '\'' && result.find(' ') != text::npos)
-            {
-                result = '\"' + result + '\"';
-            }
-            return result;
-        }
-        template<bool Fast = faux>
-        void exit(int code)
-        {
-            if constexpr (Fast) ::_exit(code); // Skip atexit hooks and stdio buffer flushes.
-            else
-            {
-                #if defined(_WIN32)
-                ::ExitProcess(code);
-                #else
-                ::exit(code);
-                #endif
-            }
-        }
-        template<class ...Args>
-        void exit(int code, Args&&... args)
-        {
-            log(args...);
-            process::exit(code);
-        }
-        auto sysfork()
-        {
-            #if defined(_WIN32)
-            #else
-
-                auto lock = netxs::logger::globals();
-                auto crop = ::fork();
-                if (!crop)
-                {
-                    os::process::id = os::process::getid();
-                }
-                return crop;
-
-            #endif
-        }
-        auto execvp(text cmdline)
-        {
-            #if defined(_WIN32)
-            #else
-
-                if (auto args = os::process::args::split(cmdline); args.size())
-                {
-                    auto& binary = args.front();
-                    if (binary.size() > 2) // Remove quotes,
-                    {
-                        auto c = binary.front();
-                        if (binary.back() == c && (c == '\"' || c == '\''))
-                        {
-                            binary = binary.substr(1, binary.size() - 2);
-                        }
-                    }
-                    auto argv = std::vector<char*>{};
-                    for (auto& c : args)
-                    {
-                        argv.push_back(c.data());
-                    }
-                    argv.push_back(nullptr);
-                    ::execvp(argv.front(), argv.data());
-                }
-
-            #endif
-        }
-        //todo deprecated
-        template<bool Logs = true, bool Daemon = faux>
-        auto exec(text cmdline)
-        {
-            if constexpr (Logs) log(prompt::exec, "'", cmdline, "'");
-            #if defined(_WIN32)
-                
-                auto shadow = view{ cmdline };
-                auto binary = utf::to_utf(utf::get_token(shadow));
-                auto params = utf::to_utf(shadow);
-                auto ShExecInfo = ::SHELLEXECUTEINFOW{};
-                ShExecInfo.cbSize = sizeof(::SHELLEXECUTEINFOW);
-                ShExecInfo.fMask = SEE_MASK_NOCLOSEPROCESS;
-                ShExecInfo.hwnd = NULL;
-                ShExecInfo.lpVerb = NULL;
-                ShExecInfo.lpFile = binary.c_str();
-                ShExecInfo.lpParameters = params.c_str();
-                ShExecInfo.lpDirectory = NULL;
-                ShExecInfo.nShow = 0;
-                ShExecInfo.hInstApp = NULL;
-                if (::ShellExecuteExW(&ShExecInfo)) return true;
-
-            #else
-
-                auto p_id = os::process::sysfork();
-                if (p_id == 0) // Child branch.
-                {
-                    if constexpr (Daemon)
-                    {
-                        ::umask(0); // Set the file mode creation mask for child process (all access bits are set by default).
-                        os::close(os::stdin_fd );
-                        os::close(os::stdout_fd);
-                        os::close(os::stderr_fd);
-                    }
-                    os::process::execvp(cmdline);
-                    auto errcode = errno;
-                    if constexpr (Logs) os::fail(prompt::exec, "Failed to spawn '", cmdline, "'");
-                    os::process::exit<true>(errcode);
-                }
-                else if (p_id > 0) // Parent branch.
-                {
-                    auto stat = int{};
-                    ::waitpid(p_id, &stat, 0); // Wait for the child to avoid zombies.
-                    if (WIFEXITED(stat) && WEXITSTATUS(stat) == 0)
-                    {
-                        return true; // Child forked and exited successfully.
-                    }
-                }
-
-            #endif
-            if constexpr (Logs) os::fail(prompt::exec, "Failed to spawn '", cmdline, "'");
-            return faux;
-        }
-        auto fork(bool& result, view prefix, view config)
-        {
-            result = faux;
-            #if defined(_WIN32)
-
-                auto handle = os::ipc::memory::set(config);
-                auto cmdarg = utf::to_utf(utf::concat(os::process::binary(), " --onlylog", " -p ", prefix, " -c :", handle, " -s"));
-                auto proinf = PROCESS_INFORMATION{};
-                auto upinfo = STARTUPINFOEXW{ sizeof(STARTUPINFOEXW) };
-                auto buffer = std::vector<byte>{};
-                auto buflen = SIZE_T{ 0 };
-                ::InitializeProcThreadAttributeList(nullptr, 1, 0, &buflen);
-                result = buflen;
-                buffer.resize(buflen);
-                upinfo.lpAttributeList = reinterpret_cast<LPPROC_THREAD_ATTRIBUTE_LIST>(buffer.data());
-                result = result && ::InitializeProcThreadAttributeList(upinfo.lpAttributeList, 1, 0, &buflen);
-                result = result && ::UpdateProcThreadAttribute(upinfo.lpAttributeList, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST, &handle, sizeof(handle), nullptr, nullptr);
-                result = result && ::CreateProcessW(nullptr,                      // lpApplicationName
-                                                    cmdarg.data(),                // lpCommandLine
-                                                    nullptr,                      // lpProcessAttributes
-                                                    nullptr,                      // lpThreadAttributes
-                                                    TRUE,                         // bInheritHandles
-                                                    DETACHED_PROCESS |            // dwCreationFlags
-                                                    EXTENDED_STARTUPINFO_PRESENT, // override startupInfo type
-                                                    nullptr,                      // lpEnvironment
-                                                    nullptr,                      // lpCurrentDirectory
-                                                    &upinfo.StartupInfo,          // lpStartupInfo
-                                                    &proinf);                     // lpProcessInformation
-                os::close(handle);
-                if (result) // Success. The fork concept is not supported on Windows.
-                {
-                    os::close(proinf.hProcess);
-                    os::close(proinf.hThread);
-                }
-
-            #else
-
-                auto p_id = os::process::sysfork();
-                if (p_id == 0) // Child process.
-                {
-                    p_id = os::process::sysfork(); // Second fork to detach process and avoid zombies.
-                    if (p_id == 0) // GrandChild process.
-                    {
-                        ::setsid(); // Open new session and new process group in it.
-                        ::umask(0); // Set the file mode creation mask for child process (all access bits are set by default).
-                        os::close(os::stdin_fd ); // No stdio needed in daemon mode.
-                        os::close(os::stdout_fd); //
-                        os::close(os::stderr_fd); //
-                        return true;
-                    }
-                    else if (p_id > 0) os::process::exit<true>(0); // Success.
-                    else               os::process::exit<true>(1); // Fail.
-                }
-                else if (p_id > 0) // Parent branch. Reap the child process and leaving the grandchild process detached.
-                {
-                    auto stat = int{};
-                    ::waitpid(p_id, &stat, 0);
-                    result = WIFEXITED(stat) && WEXITSTATUS(stat) == 0;
-                }
-
-            #endif
-
-            if (result) log(prompt::os, "Process forked");
-            else   os::fail(prompt::os, "Can't fork process");
-
-            return faux; // Parent branch.
-        }
-        void spawn(text cwd, text cmdline)
-        {
-            #if defined(_WIN32)
-            #else
-
-                if (cwd.size())
-                {
-                    auto err = std::error_code{};
-                    fs::current_path(cwd, err);
-                    if (err) log("%%Failed to change current working directory to '%cwd%', error code: %code%\n", prompt::os, cwd, err.value());
-                }
-                os::process::execvp(cmdline);
-                auto err_code = os::error();
-                log(ansi::bgc(reddk).fgc(whitelt).add("Process creation error ", err_code, " \n"
-                                                      " cwd: ", cwd.empty() ? "not specified"s : cwd, " \n"
-                                                      " cmd: ", cmdline, " ").nil());
-                os::process::exit<true>(err_code);
-
-            #endif
+            return h;
         }
     }
 
@@ -3079,9 +3109,8 @@ namespace netxs::os
             }
             if (active) // If we in dtvt mode.
             {
-                os::close(os::stderr_fd); // Close because not in use.
                 #if not defined(_WIN32)
-                fdscleanup(); // There are duplicate stdin/stdout handles among the leaked parent process handles, and this prevents them from being closed. Affected ssh, nc, ncat, socat.
+                fdscleanup(); // There are duplicated stdin/stdout handles among the leaked parent process handles, and this prevents them from being closed. Affected ssh, nc, ncat, socat.
                 #endif
             }
             else
@@ -3107,7 +3136,6 @@ namespace netxs::os
                         dtvt::mode |= ui::console::nt16; // Legacy console detected - nt::console::outmode::vt + no_auto_cr not supported.
                         outmode &= ~(nt::console::outmode::no_auto_cr | nt::console::outmode::vt);
                         ok(::SetConsoleMode(os::stdout_fd, outmode), "::SetConsoleMode(os::stdout_fd)", os::unexpected);
-                        log(prompt::os, "16-color windows console");
                     }
                     auto size = DWORD{ os::pipebuf };
                     auto wstr = wide(size, 0);
@@ -3156,17 +3184,24 @@ namespace netxs::os
             if (os::dtvt::active)
             {
                 log(prompt::os, "DirectVT mode");
-                mode |= ui::console::direct;
+                dtvt::mode |= ui::console::direct;
             }
             else
             {
-                #if defined(__linux__)
-                if (os::linux_console) mode |= ui::console::mouse;
-                #endif
-                if (auto term = os::env::get("TERM"); term.size())
-                {
-                    log(prompt::os, "Terminal type \"", term, "\"");
+                auto colorterm = os::env::get("COLORTERM");
+                auto term = text{ dtvt::mode & ui::console::nt16 ? "Windows Console" : "" };
+                if (term.empty()) term = os::env::get("TERM");
+                if (term.empty()) term = os::env::get("TERM_PROGRAM");
+                if (term.empty()) term = "VT";
 
+                #if defined(__linux__)
+                    if (os::linux_console) dtvt::mode |= ui::console::mouse;
+                #elif defined(_WIN32)
+                    dtvt::mode |= ui::console::nt; // Use win32 console api for input.
+                #endif
+
+                if (colorterm != "truecolor" && colorterm != "24bit")
+                {
                     auto vt16colors = { // https://github.com//termstandard/colors
                         "ansi",
                         "linux",
@@ -3180,7 +3215,7 @@ namespace netxs::os
 
                     if (term.ends_with("16color") || term.ends_with("16colour"))
                     {
-                        mode |= ui::console::vt16;
+                        dtvt::mode |= ui::console::vt16;
                     }
                     else
                     {
@@ -3188,42 +3223,156 @@ namespace netxs::os
                         {
                             if (term == type)
                             {
-                                mode |= ui::console::vt16;
+                                dtvt::mode |= ui::console::vt16;
                                 break;
                             }
                         }
-                        if (!mode)
+                        if (!(dtvt::mode & ui::console::vt16))
                         {
                             for (auto& type : vt256colors)
                             {
                                 if (term == type)
                                 {
-                                    mode |= ui::console::vt256;
+                                    dtvt::mode |= ui::console::vt256;
                                     break;
                                 }
                             }
                         }
                     }
-
-                    if (os::env::get("TERM_PROGRAM") == "Apple_Terminal")
-                    {
-                        log("%%macOS Apple Terminal detected", prompt::os);
-                        if (!(mode & ui::console::vt16)) mode |= ui::console::vt256;
-                    }
-                    log(prompt::os, "Color mode: ", mode & ui::console::vt16  ? "16-color"
-                                                  : mode & ui::console::vt256 ? "256-color"
-                                                                              : "true-color");
-                    log(prompt::os, "Mouse mode: ", mode & ui::console::mouse ? "console" : "vt-style");
+                    #if defined(__APPLE__)
+                        if (!(dtvt::mode & ui::console::vt16)) // Apple terminal detection.
+                        {
+                            dtvt::mode |= ui::console::vt256;
+                        }
+                    #endif
                 }
+
+                log(prompt::os, "Terminal type: ", term);
+                log(prompt::os, "Color mode: ", dtvt::mode & ui::console::vt16  ? "VT 16-color"
+                                              : dtvt::mode & ui::console::nt16  ? "Win32 Console API 16-color"
+                                              : dtvt::mode & ui::console::vt256 ? "VT 256-color"
+                                                                                : "VT truecolor");
+                log(prompt::os, "Mouse mode: ", dtvt::mode & ui::console::mouse ? "PS/2"
+                                              : dtvt::mode & ui::console::nt    ? "Win32 Console API"
+                                                                                : "VT-style");
             }
-            return mode;
+            return dtvt::mode;
         }();
+
+        auto connect(text cmd, text cwd, text env, fdrw fds)
+        {
+            log("%%New process '%cmd%' at the %path%", prompt::dtvt, utf::debase(cmd), cwd.empty() ? "current directory"s : "'" + cwd + "'");
+            auto result = true;
+            auto onerror = [&]()
+            {
+                log(prompt::dtvt, ansi::err("Process creation error", ' ', utf::to_hex_0x(os::error())),
+                    "\r\n\tcwd: '", cwd, "'",
+                    "\r\n\tcmd: '", cmd, "'");
+            };
+            #if defined(_WIN32)
+
+                auto wcmd = utf::to_utf(cmd);
+                auto wcwd = utf::to_utf(cwd);
+                auto wenv = utf::to_utf(os::env::add(env));
+                auto startinf = STARTUPINFOEXW{ sizeof(STARTUPINFOEXW) };
+                auto procsinf = PROCESS_INFORMATION{};
+                auto attrbuff = std::vector<byte>{};
+                auto attrsize = SIZE_T{ 0 };
+                ::InitializeProcThreadAttributeList(nullptr, 1, 0, &attrsize);
+                attrbuff.resize(attrsize);
+                startinf.lpAttributeList = reinterpret_cast<LPPROC_THREAD_ATTRIBUTE_LIST>(attrbuff.data());
+                startinf.StartupInfo.dwFlags    = STARTF_USESTDHANDLES;
+                startinf.StartupInfo.hStdInput  = fds->r;
+                startinf.StartupInfo.hStdOutput = fds->w;
+                result = true
+                && ::InitializeProcThreadAttributeList(startinf.lpAttributeList, 1, 0, &attrsize)
+                && ::UpdateProcThreadAttribute(startinf.lpAttributeList,
+                                               0,
+                                               PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
+                                              &startinf.StartupInfo.hStdInput,
+                                        sizeof(startinf.StartupInfo.hStdInput) * 2,
+                                               nullptr,
+                                               nullptr)
+                && ::CreateProcessW(nullptr,                             // lpApplicationName
+                                    wcmd.data(),                         // lpCommandLine
+                                    nullptr,                             // lpProcessAttributes
+                                    nullptr,                             // lpThreadAttributes
+                                    TRUE,                                // bInheritHandles
+                                    DETACHED_PROCESS |                   // create without attached console, dwCreationFlags
+                                    EXTENDED_STARTUPINFO_PRESENT |       // override startupInfo type
+                                    CREATE_UNICODE_ENVIRONMENT,          // Environment block in UTF-16.
+                                    wenv.data(),                         // lpEnvironment
+                                    wcwd.size() ? wcwd.c_str()           // lpCurrentDirectory
+                                                : nullptr,
+                                    &startinf.StartupInfo,               // lpStartupInfo (ptr to STARTUPINFO)
+                                    &procsinf);                          // lpProcessInformation
+                if (result)
+                {
+                    os::close(procsinf.hThread);
+                    os::close(procsinf.hProcess);
+                }
+                else onerror();
+            
+            #else
+
+                auto p_id = os::process::sysfork(); // dtvt-app can be either a real dtvt-app or a proxy
+                                                    // like SSH/netcat/inetd that forwards traffic from a real dtvt-app.
+                if (p_id == 0) // Child branch.
+                {
+                    auto p_id = os::process::sysfork(); // Second fork to detach process and avoid zombies.
+                    if (p_id == 0) // Grandchild process.
+                    {
+                        os::dtvt::active = true;
+                        ::setsid(); // Dissociate from existing controlling terminal (create a new session without a controlling terminal).
+                        ::dup2(fds->r, STDIN_FILENO);  os::stdin_fd  = STDIN_FILENO;
+                        ::dup2(fds->w, STDOUT_FILENO); os::stdout_fd = STDOUT_FILENO;
+                        ::close(STDERR_FILENO);        os::stderr_fd = os::invalid_fd;
+                        fds.reset();
+                        if (cwd.size())
+                        {
+                            auto err = std::error_code{};
+                            fs::current_path(cwd, err);
+                            if (err) log("%%%err%Failed to change current directory to '%cwd%', error code: %code%%nil%", prompt::dtvt, ansi::err(), cwd, utf::to_hex_0x(err.value()), ansi::nil());
+                            else     log("%%Change current directory to '%cwd%'", prompt::dtvt, cwd);
+                        }
+                        os::fdscleanup();
+                        env = os::env::add(env);
+                        os::signals::listener.reset();
+                        os::process::execvpe(cmd, env);
+                        onerror();
+                        os::process::exit<true>(0);
+                    }
+                    else if (p_id > 0) os::process::exit<true>(0); // Fast exit the child process and leave the grandchild process detached.
+                    else
+                    {
+                        onerror();
+                        os::process::exit<true>(1); // Something went wrong. Fast exit anyway.
+                    }
+                }
+                else if (p_id > 0) // Parent branch. Reap the child process to avoid zombies.
+                {
+                    auto stat = int{};
+                    ::waitpid(p_id, &stat, 0); // Close zombie.
+                    if (WIFEXITED(stat) && WEXITSTATUS(stat) != 0)
+                    {
+                        result = faux;
+                        onerror(); // Catch fast exit(1).
+                    }
+                }
+                else
+                {
+                    result = faux;
+                    onerror();
+                }
+
+            #endif
+            return result;
+        }
 
         struct vtty
         {
             using s11n = directvt::binary::s11n;
 
-            fd_t                    prochndl{ os::invalid_fd };
             flag                    attached{};
             ipc::stdcon             termlink{};
             std::thread             stdinput{};
@@ -3233,7 +3382,7 @@ namespace netxs::os
 
             operator bool () { return attached; }
 
-            void cleanup()
+            void payoff()
             {
                 if constexpr (debugmode) log(prompt::dtvt, "Destructor started");
                 if (attached.exchange(faux)) // Detach child process and forget.
@@ -3247,155 +3396,6 @@ namespace netxs::os
                     stdinput.join();
                 }
                 if constexpr (debugmode) log(prompt::dtvt, "Destructor complete");
-            }
-            auto attach_process(text cwd, text cmdline, twod winsz, size_t config_size)
-            {
-                auto marker = directvt::binary::marker{ config_size, winsz };
-                utf::change(cmdline, "\\\"", "'");
-                log("%%New process '%cmdline%' at the %path%", prompt::dtvt, utf::debase(cmdline), cwd.empty() ? "current working directory"s : "'" + cwd + "'");
-                auto onerror = [&]()
-                {
-                    log(prompt::dtvt, ansi::err("Process creation error", ' ', utf::to_hex_0x(os::error())),
-                        "\r\n\tcwd: '", cwd, "'",
-                        "\r\n\tcmd: '", cmdline, "'");
-                };
-                #if defined(_WIN32)
-
-                    auto s_pipe_r = os::invalid_fd;
-                    auto s_pipe_w = os::invalid_fd;
-                    auto m_pipe_r = os::invalid_fd;
-                    auto m_pipe_w = os::invalid_fd;
-                    auto startinf = STARTUPINFOEXW{ sizeof(STARTUPINFOEXW) };
-                    auto procsinf = PROCESS_INFORMATION{};
-                    auto attrbuff = std::vector<byte>{};
-                    auto attrsize = SIZE_T{ 0 };
-                    auto stdhndls = std::array<HANDLE, 2>{};
-
-                    auto tunnel = [&]
-                    {
-                        auto sa = SECURITY_ATTRIBUTES{};
-                        sa.nLength = sizeof(SECURITY_ATTRIBUTES);
-                        sa.lpSecurityDescriptor = NULL;
-                        sa.bInheritHandle = TRUE;
-                        if (::CreatePipe(&s_pipe_r, &m_pipe_w, &sa, 0)
-                        && ::CreatePipe(&m_pipe_r, &s_pipe_w, &sa, 0))
-                        {
-                            io::send(m_pipe_w, marker);
-                            startinf.StartupInfo.dwFlags    = STARTF_USESTDHANDLES;
-                            startinf.StartupInfo.hStdInput  = s_pipe_r;
-                            startinf.StartupInfo.hStdOutput = s_pipe_w;
-                            return true;
-                        }
-                        else
-                        {
-                            os::close(m_pipe_w);
-                            os::close(m_pipe_r);
-                            os::close(s_pipe_w);
-                            os::close(s_pipe_r);
-                            return faux;
-                        }
-                    };
-                    auto fillup = [&]
-                    {
-                        stdhndls[0] = s_pipe_r;
-                        stdhndls[1] = s_pipe_w;
-                        ::InitializeProcThreadAttributeList(nullptr, 1, 0, &attrsize);
-                        attrbuff.resize(attrsize);
-                        startinf.lpAttributeList = reinterpret_cast<LPPROC_THREAD_ATTRIBUTE_LIST>(attrbuff.data());
-                        if (::InitializeProcThreadAttributeList(startinf.lpAttributeList, 1, 0, &attrsize)
-                         && ::UpdateProcThreadAttribute(startinf.lpAttributeList,
-                                                        0,
-                                                        PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
-                                                        &stdhndls,
-                                                        sizeof(stdhndls),
-                                                        nullptr,
-                                                        nullptr))
-                        {
-                            return true;
-                        }
-                        else return faux;
-                    };
-                    auto create = [&]
-                    {
-                        auto wide_cmdline = utf::to_utf(cmdline);
-                        return ::CreateProcessW(nullptr,                             // lpApplicationName
-                                                wide_cmdline.data(),                 // lpCommandLine
-                                                nullptr,                             // lpProcessAttributes
-                                                nullptr,                             // lpThreadAttributes
-                                                TRUE,                                // bInheritHandles
-                                                DETACHED_PROCESS |                   // create without attached console, dwCreationFlags
-                                                EXTENDED_STARTUPINFO_PRESENT,        // override startupInfo type
-                                                nullptr,                             // lpEnvironment
-                                                cwd.size() ? utf::to_utf(cwd).c_str()// lpCurrentDirectory
-                                                           : nullptr,
-                                                &startinf.StartupInfo,               // lpStartupInfo (ptr to STARTUPINFO)
-                                                &procsinf);                          // lpProcessInformation
-                    };
-                    auto result = tunnel() && fillup() && create();
-                    if (result)
-                    {
-                        os::close( procsinf.hThread );
-                        prochndl = procsinf.hProcess;
-                    }
-                    else
-                    {
-                        onerror();
-                    }
-
-                #else
-
-                    fd_t to_server[2] = { os::invalid_fd, os::invalid_fd };
-                    fd_t to_client[2] = { os::invalid_fd, os::invalid_fd };
-                    ok(::pipe(to_server), "::pipe(to_server)", os::unexpected);
-                    ok(::pipe(to_client), "::pipe(to_client)", os::unexpected);
-                    auto s_pipe_r = to_client[0];
-                    auto s_pipe_w = to_server[1];
-                    auto m_pipe_r = to_server[0];
-                    auto m_pipe_w = to_client[1];
-                    io::send(m_pipe_w, marker);
-
-                    auto p_id = os::process::sysfork(); // dtvt-app can be either a real dtvt-app or a proxy
-                                                        // like SSH/netcat/inetd that forwards traffic from a real dtvt-app.
-                    if (p_id == 0) // Child branch.
-                    {
-                        auto p_id = os::process::sysfork(); // Second fork to detach process and avoid zombies.
-                        if (p_id == 0) // Grandchild process.
-                        {
-                            os::dtvt::active = true;
-                            ::dup2(s_pipe_r, STDIN_FILENO);  os::stdin_fd  = STDIN_FILENO;
-                            ::dup2(s_pipe_w, STDOUT_FILENO); os::stdout_fd = STDOUT_FILENO;
-                            if (cwd.size())
-                            {
-                                auto err = std::error_code{};
-                                fs::current_path(cwd, err);
-                                if (err) log("%%%err%Failed to change current working directory to '%cwd%', error code: %code%%nil%", prompt::dtvt, ansi::err(), cwd, utf::to_hex_0x(err.value()), ansi::nil());
-                                else     log("%%Change current working directory to '%cwd%'", prompt::dtvt, cwd);
-                            }
-                            os::fdscleanup();
-                            os::signals::listener.reset();
-                            os::process::execvp(cmdline);
-                            onerror();
-                            os::process::exit<true>(0);
-                        }
-                        else if (p_id > 0) os::process::exit<true>(0); // Fast exit the child process and leave the grandchild process detached.
-                        else
-                        {
-                            onerror();
-                            os::process::exit<true>(1); // Something went wrong. Fast exit anyway.
-                        }
-                    }
-                    else if (p_id > 0) // Parent branch. Reap the child process to avoid zombies.
-                    {
-                        auto stat = int{};
-                        ::waitpid(p_id, &stat, 0); // Close zombie.
-                        if (WIFEXITED(stat) && WEXITSTATUS(stat) != 0) onerror(); // Catch fast exit(1).
-                    }
-                    else onerror();
-
-                #endif
-                os::close(s_pipe_w); // Close inheritable handles to avoid deadlocking at process exit.
-                os::close(s_pipe_r); // Only when all write handles to the pipe are closed, the ReadFile function returns zero.
-                return ipc::stdcon{ m_pipe_r, m_pipe_w };
             }
             void writer()
             {
@@ -3417,34 +3417,37 @@ namespace netxs::os
                 }
                 if constexpr (debugmode) log(prompt::dtvt, "Writing thread ended", ' ', utf::to_hex_0x(std::this_thread::get_id()));
             }
-            void reader(auto receiver)
+            void runapp(text config, twod initsize, auto connect, auto receiver, auto shutdown)
             {
-                if constexpr (debugmode) log(prompt::dtvt, "Reading thread started", ' ', utf::to_hex_0x(std::this_thread::get_id()));
-                directvt::binary::stream::reading_loop(termlink, receiver);
-                if constexpr (debugmode) log(prompt::dtvt, "Reading thread ended", ' ', utf::to_hex_0x(std::this_thread::get_id()));
-            }
-            void start(text cwd, text cmdline, text config, twod winsz, auto receiver, auto shutdown)
-            {
-                stdinput = std::thread{[&, cwd, cmdline, config, winsz, receiver, shutdown]
+                stdinput = std::thread{[&, config, initsize, connect, receiver, shutdown]
                 {
-                    auto config_size = config.size();
-                    termlink = attach_process(cwd, cmdline, winsz, config_size);
-                    if (config_size)
+                    auto [s_pipe_r, m_pipe_w] = os::ipc::newpipe();
+                    auto [m_pipe_r, s_pipe_w] = os::ipc::newpipe();
+                    io::send(m_pipe_w, directvt::binary::marker{ config.size(), initsize });
+                    if (config.size())
                     {
                         auto guard = std::lock_guard{ writemtx };
                         writebuf = config + writebuf;
                     }
+                    termlink = ipc::stdcon{ m_pipe_r, m_pipe_w };
+
+                    auto cmd = connect(ptr::shared<sock>(s_pipe_r, s_pipe_w));
+
                     attached.exchange(!!termlink);
                     if (attached)
                     {
-                        if constexpr (debugmode) log("%%DirectVT console created for process '%cmdline%'", prompt::dtvt, utf::debase(cmdline));
+                        if constexpr (debugmode) log("%%DirectVT console created for process '%cmd%'", prompt::dtvt, utf::debase(cmd));
                         writesyn.notify_one(); // Flush temp buffer.
                         auto stdwrite = std::thread{[&] { writer(); }};
-                        reader(receiver);
+
+                        if constexpr (debugmode) log(prompt::dtvt, "Reading thread started", ' ', utf::to_hex_0x(std::this_thread::get_id()));
+                        directvt::binary::stream::reading_loop(termlink, receiver);
+                        if constexpr (debugmode) log(prompt::dtvt, "Reading thread ended", ' ', utf::to_hex_0x(std::this_thread::get_id()));
+
                         if (attached.exchange(faux)) writesyn.notify_one(); // Interrupt writing thread.
                         if constexpr (debugmode) log(prompt::dtvt, "Writing thread joining", ' ', utf::to_hex_0x(stdinput.get_id()));
                         stdwrite.join();
-                        log("%%Process '%cmdline%' disconnected", prompt::dtvt, utf::debase(cmdline));
+                        log("%%Process '%cmd%' disconnected", prompt::dtvt, utf::debase(cmd));
                         shutdown();
                     }
                 }};
@@ -3453,7 +3456,7 @@ namespace netxs::os
             {
                 auto guard = std::lock_guard{ writemtx };
                 writebuf += data;
-                if (attached) writesyn.notify_one();
+                writesyn.notify_one();
             }
         };
     }
@@ -3475,7 +3478,7 @@ namespace netxs::os
 
             operator bool () { return attached; }
 
-            void cleanup(bool io_log)
+            void payoff(bool io_log)
             {
                 if (stdwrite.joinable())
                 {
@@ -3487,42 +3490,36 @@ namespace netxs::os
                 writebuf = {};
                 if (termlink) termlink->cleanup(io_log);
             }
-            template<class Term>
-            void attach_process(Term& terminal, text cwd, text cmdline, twod win_size)
+            void create(auto& terminal, text cmd, text cwd, text env, twod win, fdrw fds)
             {
-                utf::change(cmdline, "\\\"", "\"");
-                if (terminal.io_log) log("%%New TTY of size %win_size%", prompt::vtty, win_size);
-                                     log("%%New process '%cmdline%' at the %path%", prompt::vtty, utf::debase(cmdline), cwd.empty() ? "current working directory"s : "'" + cwd + "'");
+                if (terminal.io_log) log("%%New TTY of size %win_size%", prompt::vtty, win);
+                                     log("%%New process '%cmd%' at the %path%", prompt::vtty, utf::debase(cmd), cwd.empty() ? "current directory"s : "'" + cwd + "'");
                 if (!termlink)
                 {
                     termlink = consrv::create(terminal);
                 }
-                termsize(win_size);
-                auto trailer = [&, cmdline]
+                termsize(win);
+                auto trailer = [&, cmd]
                 {
                     if (attached.exchange(faux))
                     {
                         auto exitcode = termlink->wait();
-                        log("%%Process '%cmdline%' exited with code %code%", prompt::vtty, utf::debase(cmdline), utf::to_hex_0x(exitcode));
+                        log("%%Process '%cmd%' exited with code %code%", prompt::vtty, utf::debase(cmd), utf::to_hex_0x(exitcode));
                         writesyn.notify_one(); // Interrupt writing thread.
-                        if (!signaled.exchange(true))
-                        {
-                            terminal.onexit(exitcode); // Only if the process terminates on its own (not forced by sighup).
-                        }
+                        terminal.onexit(exitcode, "Process exited", signaled.exchange(true)); // Only if the process terminates on its own (not forced by sighup).
                     }
                 };
-                auto errcode = termlink->attach(terminal, win_size, cwd, cmdline, trailer);
+                auto errcode = termlink->attach(terminal, cmd, cwd, env, win, trailer, fds);
                 if (errcode)
                 {
                     terminal.onexit(errcode, "Process creation error \r\n"s
                                              " cwd: "s + (cwd.empty() ? "not specified"s : cwd) + " \r\n"s
-                                             " cmd: "s + cmdline + " "s);
+                                             " cmd: "s + cmd + " "s);
                 }
                 attached.exchange(!errcode);
                 writesyn.notify_one(); // Flush temp buffer.
             }
-            template<class Term>
-            void writer(Term& terminal)
+            void writer(auto& terminal)
             {
                 auto guard = std::unique_lock{ writemtx };
                 auto cache = text{};
@@ -3541,14 +3538,13 @@ namespace netxs::os
                     guard.lock();
                 }
             }
-            template<class Term>
-            void start(Term& terminal, text cwd, text cmdline, twod win_size)
+            void runapp(auto& terminal, text cmd, text cwd, text env, twod win, fdrw fds = {})
             {
                 signaled.exchange(faux);
-                stdwrite = std::thread{[&, cwd, cmdline, win_size]
+                stdwrite = std::thread{[&, cmd, cwd, env, win, fds]
                 {
                     if (terminal.io_log) log(prompt::vtty, "Writing thread started", ' ', utf::to_hex_0x(stdwrite.get_id()));
-                    attach_process(terminal, cwd, cmdline, win_size);
+                    create(terminal, cmd, cwd, env, win, fds);
                     writer(terminal);
                     if (terminal.io_log) log(prompt::vtty, "Writing thread ended", ' ', utf::to_hex_0x(stdwrite.get_id()));
                 }};
@@ -3703,8 +3699,8 @@ namespace netxs::os
             { }
 
             virtual void write(view data) = 0;
-            virtual void start(text cwd, text cmdline, twod winsz, std::function<void(view)> input_hndl,
-                                                                   std::function<void(si32, view)> shutdown_hndl) = 0;
+            virtual void runapp(text cmd, text cwd, text env, twod win, std::function<void(view)> input_hndl,
+                                                                        std::function<void(si32, view)> shutdown_hndl) = 0;
             virtual void shut() = 0;
             virtual bool connected() = 0;
         };
@@ -3749,7 +3745,7 @@ namespace netxs::os
                 termlink.stop();
             }
             // task: Cleaning in order to be able to restart.
-            void cleanup()
+            void payoff()
             {
                 if (stdwrite.joinable())
                 {
@@ -3784,14 +3780,13 @@ namespace netxs::os
                 auto exit_code = 0;// os::process::wait(prompt::task, proc_pid, prochndl);
                 return exit_code;
             }
-            virtual void start(text cwd, text cmdline, twod winsz, std::function<void(view)> input_hndl,
-                                                                   std::function<void(si32, view)> shutdown_hndl) override
+            virtual void runapp(text cmd, text cwd, text env, twod win, std::function<void(view)> input_hndl,
+                                                                        std::function<void(si32, view)> shutdown_hndl) override
             {
                 receiver = input_hndl;
                 shutdown = shutdown_hndl;
-                utf::change(cmdline, "\\\"", "'");
-                log("%%New process '%cmdline%' at the %cwd%", prompt::task, utf::debase(cmdline), cwd.empty() ? "current working directory"s
-                                                                                                              : "'" + cwd + "'");
+                log("%%New process '%cmd%' at the %cwd%", prompt::task, utf::debase(cmd), cwd.empty() ? "current directory"s
+                                                                                                      : "'" + cwd + "'");
                 #if defined(_WIN32)
 
                     auto s_pipe_r = os::invalid_fd;
@@ -3851,17 +3846,20 @@ namespace netxs::os
                     };
                     auto create = [&]
                     {
-                        auto wide_cmdline = utf::to_utf(cmdline);
+                        auto wcmd = utf::to_utf(cmd);
+                        auto wcwd = utf::to_utf(cwd);
+                        auto wenv = utf::to_utf(os::env::add(env));
                         return ::CreateProcessW(nullptr,                             // lpApplicationName
-                                                wide_cmdline.data(),                 // lpCommandLine
+                                                wcmd.data(),                         // lpCommandLine
                                                 nullptr,                             // lpProcessAttributes
                                                 nullptr,                             // lpThreadAttributes
                                                 TRUE,                                // bInheritHandles
                                                 DETACHED_PROCESS |                   // create without attached console, dwCreationFlags
-                                                EXTENDED_STARTUPINFO_PRESENT,        // override startupInfo type
-                                                nullptr,                             // lpEnvironment
-                                                cwd.size() ? utf::to_utf(cwd).c_str()// lpCurrentDirectory
-                                                           : nullptr,
+                                                EXTENDED_STARTUPINFO_PRESENT |       // override startupInfo type
+                                                CREATE_UNICODE_ENVIRONMENT,          // Environment block in UTF-16.
+                                                wenv.data(),                         // lpEnvironment
+                                                wcwd.size() ? wcwd.c_str()           // lpCurrentDirectory
+                                                            : nullptr,
                                                 &startinf.StartupInfo,               // lpStartupInfo (ptr to STARTUPINFO)
                                                 &procsinf);                          // lpProcessInformation
                     };
@@ -3882,10 +3880,10 @@ namespace netxs::os
 
                 #else
 
-                    fd_t to_server[2] = { os::invalid_fd, os::invalid_fd };
-                    fd_t to_client[2] = { os::invalid_fd, os::invalid_fd };
-                    ok(::pipe(to_server), "::pipe(to_server)", os::unexpected);
-                    ok(::pipe(to_client), "::pipe(to_client)", os::unexpected);
+                    auto to_server = std::to_array({ os::invalid_fd, os::invalid_fd });
+                    auto to_client = std::to_array({ os::invalid_fd, os::invalid_fd });
+                    ok(::pipe(to_server.data()), "::pipe(to_server)", os::unexpected);
+                    ok(::pipe(to_client.data()), "::pipe(to_client)", os::unexpected);
                     termlink = { to_server[0], to_client[1] };
                     proc_pid = os::process::sysfork();
                     if (proc_pid == 0) // Child branch.
@@ -3896,8 +3894,9 @@ namespace netxs::os
                         ::dup2(to_server[1], STDOUT_FILENO); os::stdout_fd = STDOUT_FILENO;
                         ::dup2(to_server[1], STDERR_FILENO); os::stderr_fd = STDERR_FILENO;
                         os::fdscleanup();
+                        env = os::env::add(env);
                         os::signals::listener.reset();
-                        os::process::spawn(cwd, cmdline);
+                        os::process::spawn(cmd, cwd, env);
                     }
                     // Parent branch.
                     os::close(to_client[0]);
@@ -3916,7 +3915,7 @@ namespace netxs::os
                 {
                     wait_child();
                 }
-                cleanup();
+                payoff();
             }
             void read_socket_thread()
             {
@@ -3983,10 +3982,10 @@ namespace netxs::os
             {
                 vtty::sighup();
             }
-            virtual void start(text cwd, text cmdline, twod winsz, std::function<void(view)> input_hndl,
-                                                                   std::function<void(si32, view)> shutdown_hndl) override
+            virtual void runapp(text cmd, text cwd, text env, twod win, std::function<void(view)> input_hndl,
+                                                                        std::function<void(si32, view)> shutdown_hndl) override
             {
-                vtty::start(base_tty::terminal, cwd, cmdline, winsz);
+                vtty::runapp(base_tty::terminal, cmd, cwd, env, win);
             }
             tty(Term& terminal)
                 : base_tty{ terminal }
@@ -4971,10 +4970,16 @@ namespace netxs::os
                 }
                 if (saved_fd != os::invalid_fd)
                 {
+                    auto s = dtvt::consize();
                     os::close(os::stdout_fd);
                     os::stdout_fd = saved_fd;
-                    ok(::SetConsoleActiveScreenBuffer(os::stdout_fd), "::SetConsoleActiveScreenBuffer()", os::unexpected);
-                    //todo sync current active buffer size (wt issue)
+                    if (ok(::SetConsoleActiveScreenBuffer(os::stdout_fd), "::SetConsoleActiveScreenBuffer()", os::unexpected))
+                    {
+                        if (!(dtvt::vtmode & ui::console::nt16) && s != dtvt::consize()) // wt issue GH #16231
+                        {
+                            std::cout << prompt::os << ansi::err("Terminal is out of sync. See https://github.com/microsoft/terminal/issues/16231 for details.") << "\n";
+                        }
+                    }
                 }
             #else 
                 io::send(os::stdout_fd, vtend);

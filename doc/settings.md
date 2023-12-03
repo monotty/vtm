@@ -198,7 +198,9 @@ Attribute  | Description                                       | Value type | Ma
 `bgc`      |  App window background color                      | `RGBA`     |           |
 `fgc`      |  App window foreground color                      | `RGBA`     |           |
 `winsize`  |  App window 2D size                               | `x;y`      |           |
+`winform`  |  App window state                                 | `undefined` \| `maximized` \| `minimized` |           |
 `slimmenu` |  App window menu vertical size                    | `boolean`  |           | `no`
+`env`      |  Environment variable in "var=val" format         | `string`   |           |
 `cwd`      |  Current working directory                        | `string`   |           |
 `type`     |  App type                                         | `string`   |           | `SHELL`
 `param`    |  App constructor arguments                        | `string`   |           | empty
@@ -218,12 +220,13 @@ Type     | Format
 Type              | Parameter        | Description
 ------------------|------------------|-----------
 `DirectVT`        | `_command line_` | Run `_command line_` using DirectVT protocol. Usage example `type=DirectVT param="_command line_"`.
+`XLVT`\|`XLinkVT` | `_command line_` | Run `_command line_` using DirectVT protocol with controlling terminal attached for OpenSSH interactivity. Usage example `type=XLVT param="_command line_"`.
 `ANSIVT`          | `_command line_` | Run `_command line_` inside the built-in terminal. Usage example `type=ANSIVT param="_command line_"`. Same as `type=DirectVT param="$0 -r term _command line_"`.
 `SHELL` (default) | `_command line_` | Run `_command line_` on top of a system shell that runs inside the built-in terminal. Usage example `type=SHELL param="_command line_"`. Same as `type=DirectVT param="$0 -r term _shell_ -c _command line_"`.
 `Group`           | [[ v[`n:m:w`] \| h[`n:m:w`] ] ( id_1 \| _nested_block_ , id_2 \| _nested_block_ )] | Run tiling window manager with layout specified in `param`. Usage example `type=Group param="h1:1(Term, Term)"`.
 `Region`          | | The `param` attribute is not used, use attribute `title=_view_title_` to set region name.
 
-The following configuration items have the same meaning:
+The following configuration items produce the same final result:
 ```
 <item …. param=‘mc’/>
 <item …. type=SHELL param=‘mc’/>
@@ -241,7 +244,7 @@ Note: The following configuration sections are not implemented yet:
 
 ```xml
 <config>
-    <menu selected=Term item*>  <!-- Use asterisk to drop existing (hardcoded) menu items. -->
+    <menu selected=Term item*>  <!-- Use asterisk to remove previous/existing items from the list. -->
         <item id=Term/>  <!-- title=id type=SHELL param=os_default_shell -->
     </menu>
 </config>
@@ -263,7 +266,7 @@ Note: Hardcoded settings are built from the [/src/vtm.xml](../src/vtm.xml) sourc
                 " It can be configured in ~/.config/vtm/settings.xml "
             </notes>
         </item>
-        <item* hidden=no fgc=whitedk bgc=0x00000000 winsize=0,0 wincoor=0,0 />
+        <item* hidden=no fgc=whitedk bgc=0x00000000 winsize=0,0 wincoor=0,0 winform=undefined /> <!-- winform: undefined | maximized | minimized -->
         <item id=Term label="Term" type=DirectVT title="Terminal Emulator" notes=" Terminal Emulator " param="$0 -r term">
             <config>   <!-- The following config partially overrides the base configuration. It is valid for DirectVT apps only. -->
                 <term>
@@ -283,8 +286,8 @@ Note: Hardcoded settings are built from the [/src/vtm.xml](../src/vtm.xml) sourc
                         <mode = text/> <!-- text | ansi | rich | html | protected | none -->
                     </selection>
                     <menu>
-                        <autohide=on/>  <!--  If true/on, show menu only on hover. -->
-                        <enabled="on"/>
+                        <autohide=off/>  <!--  If true/on, show window menu only on hover. -->
+                        <enabled=true/>
                         <slim=1/>
                     </menu>
                 </term>
@@ -295,7 +298,7 @@ Note: Hardcoded settings are built from the [/src/vtm.xml](../src/vtm.xml) sourc
    <!-- <item id=Far        label="Far"        type=SHELL    title="Far Manager"                 param="far"                                         notes=" Far Manager in its own window "/> -->
    <!-- <item id=mc         label="mc"         type=SHELL    title="Midnight Commander"    param="mc"               notes=" Midnight Commander in its own window "/> -->
         <item id=Tile       label="Tile"       type=Group    title="Tiling Window Manager" param="h1:1(Term, Term)" notes=" Tiling window manager with two terminals attached "/>
-        <item id=View       label=View         type=Region   title="\e[11:3pView: Region"                           notes=" Desktop region marker "/>
+        <item id=View       label=View         type=Region   title="\e[11:3pView: Region"  winform=maximized        notes=" Desktop region marker "/>
         <item id=Settings   label=Settings     type=DirectVT title="Settings"              param="$0 -r settings"   notes=" Settings " winsize=50,15 />
         <item id=Logs       label=Logs         type=DirectVT title="Logs"            param="$0 -q -r term $0 -m" notes=" Log monitor "/>
    <!-- <item splitter label="demo" notes=" Demo apps                    \n Feel the Desktopio Framework "/> -->
@@ -304,16 +307,16 @@ Note: Hardcoded settings are built from the [/src/vtm.xml](../src/vtm.xml) sourc
    <!-- <item id=Calc       label="Calc"       type=DirectVT title="Calc Title"            param="$0 -r calc"       notes=" Spreadsheet Calculator "/> -->
    <!-- <item id=Test       label="Test"       type=DirectVT title="Test Title"            param="$0 -r test"       notes=" Test Page "/> -->
    <!-- <item id=Truecolor  label="Truecolor"  type=DirectVT title="True Title"            param="$0 -r truecolor"  notes=" Truecolor Test "/> -->
-        <autorun item*>  <!-- Autorun of specified menu items -->
+        <autorun item*>  <!-- Autorun specified menu items      -->
             <!--  <item* id=Term winsize=80,25 />               -->
+            <!--  <item wincoor=92,31 winform=minimized />      --> <!-- Autorun supports minimized winform only. -->
+            <!--  <item wincoor=8,31 />                         -->
             <!--  <item wincoor=8,4 winsize=164,25 focused />   -->
-            <!--  <item wincoor=92,31 />                        -->
-            <!--  <item wincoor=8,31 focused />                 -->
         </autorun>
         <viewport coor=0,0/>  <!-- Viewport position for the first connected user. At runtime, this value is temporarily replaced with the next disconnecting user's viewport coordinates to restore the viewport position on reconnection. -->
         <width>    <!-- Taskbar menu width -->
-            <folded=4/>
-            <expanded=31/>
+            <folded=11/>
+            <expanded=32/>
         </width>
         <color fgc=whitedk bgc=0x60202020 />
     </menu>
@@ -463,9 +466,9 @@ Note: Hardcoded settings are built from the [/src/vtm.xml](../src/vtm.xml) sourc
             <show=true/>
         </cursor>
         <menu item*>
-            <autohide=true />  <!-- If true, show menu only on hover. -->
-            <enabled=1 />
-            <slim=1 />
+            <autohide=off/>
+            <enabled=1/>
+            <slim=1/>
             <item label="Wrap" type=Option action=TerminalWrapMode data="off">
                 <label="\e[38:2:0:255:0mWrap\e[m" data="on"/>
                 <notes>
@@ -531,16 +534,16 @@ Note: Hardcoded settings are built from the [/src/vtm.xml](../src/vtm.xml) sourc
     </term>
     <defapp>
         <menu>
-            <autohide=off />  <!--  If true, show menu only on hover. -->
-            <enabled="on"/>
-            <slim=true />
+            <autohide=off/>
+            <enabled=true/>
+            <slim=true/>
         </menu>
     </defapp>
     <tile>
         <menu>
-            <autohide=true />  <!--  If true, show menu only on hover. -->
-            <enabled="on"/>
-            <slim=1 />
+            <autohide=off/>
+            <enabled=true/>
+            <slim=true/>
         </menu>
     </tile>
     <text>      <!-- Base configuration for the Text app. It can be overridden by param's subargs. -->
