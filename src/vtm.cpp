@@ -29,7 +29,12 @@ int main(int argc, char* argv[])
     }
     else while (getopt)
     {
-        if (getopt.match("-r", "--runapp"))
+        if (getopt.match("--svc"))
+        {
+            auto ok = os::process::dispatch();
+            return ok ? 0 : 1;
+        }
+        else if (getopt.match("-r", "--runapp"))
         {
             whoami = type::runapp;
             params = getopt ? getopt.rest() : text{ app::term::id };
@@ -62,6 +67,22 @@ int main(int argc, char* argv[])
         else if (getopt.match("-l", "--listconfig"))
         {
             whoami = type::config;
+        }
+        else if (getopt.match("-u", "--uninstall"))
+        {
+            netxs::logger::wipe();
+            auto syslog = os::tty::logger();
+            auto ok = os::process::uninstall();
+            if (ok) log("%vtm% is uninstalled.", app::vtm::id);
+            return ok ? 0 : 1;
+        }
+        else if (getopt.match("-i", "--install"))
+        {
+            netxs::logger::wipe();
+            auto syslog = os::tty::logger();
+            auto ok = os::process::install();
+            if (ok) log("%vtm% %ver% is installed.", app::vtm::id, app::shared::version);
+            return ok ? 0 : 1;
         }
         else if (getopt.match("-c", "--config"))
         {
@@ -99,11 +120,13 @@ int main(int argc, char* argv[])
         }
     }
 
+    os::dtvt::checkpoint();
+
     auto denied = faux;
     auto direct = os::dtvt::active;
     auto syslog = os::tty::logger();
     auto userid = os::env::user();
-    auto prefix = vtpipe.length() ? vtpipe : utf::concat(app::shared::ipc_prefix, os::process::elevated ? "!_" : "_", userid);;
+    auto prefix = vtpipe.length() ? vtpipe : utf::concat(app::shared::ipc_prefix, os::process::elevated ? "!_" : "_", userid.second);;
     auto prefix_log = prefix + app::shared::log_suffix;
     auto failed = [&](auto cause)
     {
@@ -125,7 +148,7 @@ int main(int argc, char* argv[])
             "\n"
             "\n  Syntax:"
             "\n"
-            "\n    " + os::process::binary<true>() + " [ -c <file> ] [ -p <pipe> ] [ -q ] [ -l | -m | -d | -s | -r [<app> [<args...>]] ]"
+            "\n    " + os::process::binary<true>() + " [ -c <file> ] [ -p <pipe> ] [ -i | -u ] [ -q ] [ -l | -m | -d | -s | -r [<app> [<args...>]] ]"
             "\n"
             "\n  Options:"
             "\n"
@@ -137,7 +160,9 @@ int main(int argc, char* argv[])
             "\n    -m, --monitor      Monitor server log."
             "\n    -d, --daemon       Run server in background."
             "\n    -s, --server       Run server in interactive mode."
-            "\n    -r, --runapp <..>  Run standalone application."
+            "\n    -r, --runapp <..>  Run built-in application."
+            "\n    -i, --install      System-wide installation."
+            "\n    -u, --uninstall    System-wide deinstallation."
             "\n    -v, --version      Show version and exit."
             "\n    -?, -h, --help     Show usage message."
             "\n    --onlylog          Disable interactive user input."
@@ -151,7 +176,7 @@ int main(int argc, char* argv[])
             "\n        - Merge with user-wise settings from "   + os::path::expand(app::shared::usr_config).second +
             "\n        - Merge with DirectVT packet received from the parent process (dtvt-mode only)"
             "\n"
-            "\n  Registered applications:"
+            "\n  Built-in applications:"
             "\n"
             "\n    Term  Terminal emulator (default)"
             "\n    DTVT  DirectVT Proxy Console"
@@ -238,15 +263,13 @@ int main(int argc, char* argv[])
     {
         auto config = app::shared::load::settings(defaults, cfpath, os::dtvt::config);
         auto client = os::ipc::socket::open<os::role::client, faux>(prefix, denied);
-
-        auto ospath = os::process::memory::ref(prefix);
-        auto signal = ptr::shared<os::fire>(ospath + "started"); // Signaling that the server is ready for incoming connections.
+        auto signal = ptr::shared<os::fire>(os::process::started(prefix)); // Signaling that the server is ready for incoming connections.
 
              if (denied)                           return failed(code::noaccess);
         else if (whoami != type::client && client) return failed(code::interfer);
         else if (whoami == type::client && !client)
         {
-            log("%%New vtm session for [%userid%]", prompt::main, userid);
+            log("%%New vtm session for [%userid%]", prompt::main, userid.first);
             auto [success, successor] = os::process::fork(prefix, config.utf8());
             if (successor)
             {
@@ -265,7 +288,7 @@ int main(int argc, char* argv[])
             signal.reset();
             if (client || (client = os::ipc::socket::open<os::role::client>(prefix, denied)))
             {
-                os::tty::stream.init.send(client, userid, os::dtvt::vtmode, os::dtvt::win_sz, config.utf8());
+                os::tty::stream.init.send(client, userid.first, os::dtvt::vtmode, os::dtvt::win_sz, config.utf8());
                 os::tty::splice(client);
                 return 0;
             }
@@ -315,7 +338,7 @@ int main(int argc, char* argv[])
 
         log("%%Session started"
           "\n      user: %userid%"
-          "\n      pipe: %prefix%", prompt::main, userid, prefix);
+          "\n      pipe: %prefix%", prompt::main, userid.first, prefix);
 
         auto stdlog = std::thread{ [&]
         {
@@ -343,7 +366,7 @@ int main(int argc, char* argv[])
                                           [&]{ domain->SIGNAL(tier::general, e2::shutdown, msg, (utf::concat(prompt::main, "Shutdown on signal"))); });
         while (auto client = server->meet())
         {
-            if (client->auth(userid))
+            if (client->auth(userid.second))
             {
                 domain->run([&, client, settings](auto session_id)
                 {

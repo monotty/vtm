@@ -146,6 +146,7 @@ namespace netxs::ui
             bool resetonkey;
             bool resetonout;
             bool def_io_log;
+            bool allow_logs;
             span def_period;
             pals def_colors;
 
@@ -195,12 +196,13 @@ namespace netxs::ui
                 def_tablen = std::max(1, config.take("tablen",               si32{ 8 }    ));
                 def_lucent = std::max(0, config.take("fields/lucent",        si32{ 0xC0 } ));
                 def_margin = std::max(0, config.take("fields/size",          si32{ 0 }    ));
-                def_selmod =             config.take("selection/mode",       mime::textonly, xml::options::selmod);
+                def_selmod =             config.take("selection/mode",       mime::textonly, xml::options::format);
                 def_selalt =             config.take("selection/rect",       faux);
                 def_cur_on =             config.take("cursor/show",          true);
                 def_cursor =             config.take("cursor/style",         true, xml::options::cursor);
                 def_period =             config.take("cursor/blink",         span{ skin::globals().blink_period });
                 def_io_log =             config.take("logs",                 faux);
+                allow_logs =             true; // Disallowed for xlvt.
                 def_atexit =             config.take("atexit",               commands::atexit::smart, atexit_options);
                 def_fcolor =             config.take("color/default/fgc",    rgba{ whitelt });
                 def_bcolor =             config.take("color/default/bgc",    rgba{ blackdk });
@@ -293,14 +295,12 @@ namespace netxs::ui
             prot        encod; // m_tracking: Mouse encoding protocol.
             mode        state; // m_tracking: Mouse reporting mode.
             si32        smode; // m_tracking: Selection mode state backup.
-            si32        bttns; // m_tracking: Last buttons state.
 
             m_tracking(term& owner)
                 : owner{ owner                   },
                   encod{ prot::x11               },
                   state{ mode::none              },
-                  smode{ owner.config.def_selmod },
-                  bttns{ 0                       }
+                  smode{ owner.config.def_selmod }
             { }
 
             operator bool () { return state != mode::none; }
@@ -812,7 +812,7 @@ namespace netxs::ui
                 vt.intro[ctrl::esc][esc_decdhl] = V{ p->dhl(q); };         // ESC # ...  ESC # 3, ESC # 4, ESC # 5, ESC # 6, ESC # 8
 
                 vt.intro[ctrl::esc][esc_apc   ] = V{ p->msg(esc_apc, q); }; // ESC _ ... ST  APC.
-                vt.intro[ctrl::esc][esc_dsc   ] = V{ p->msg(esc_dsc, q); }; // ESC P ... ST  DSC.
+                vt.intro[ctrl::esc][esc_dcs   ] = V{ p->msg(esc_dcs, q); }; // ESC P ... ST  DCS.
                 vt.intro[ctrl::esc][esc_sos   ] = V{ p->msg(esc_sos, q); }; // ESC X ... ST  SOS.
                 vt.intro[ctrl::esc][esc_pm    ] = V{ p->msg(esc_pm , q); }; // ESC ^ ... ST  PM.
 
@@ -1243,7 +1243,7 @@ namespace netxs::ui
                     // Unexpected
                     case ansi::esc_csi   :
                     case ansi::esc_ocs   :
-                    case ansi::esc_dsc   :
+                    case ansi::esc_dcs   :
                     case ansi::esc_sos   :
                     case ansi::esc_pm    :
                     case ansi::esc_apc   :
@@ -6679,14 +6679,10 @@ namespace netxs::ui
         }
         auto _paste(auto& data)
         {
-            follow[axis::X] = true;
-            if (bpmode)
-            {
-                data = "\033[200~" + data + "\033[201~";
-            }
-            //todo paste is a special type operation like a mouse reporting.
             //todo pasting must be ready to be interruped by any pressed key (to interrupt a huge paste).
-            data_out(data);
+            follow[axis::X] = true;
+            follow[axis::Y] = true;
+            ipccon.paste(data, bpmode, kbmode);
         }
         auto paste(hids& gear)
         {
@@ -6769,8 +6765,16 @@ namespace netxs::ui
             {
                 pro::focus::set(this->This(), gear.id, pro::focus::solo::off, pro::focus::flip::off);
                 follow[axis::X] = true;
-                if (bpmode) data_out("\033[200~" + utf8 + "\033[201~");
-                else        data_out(utf8);
+                if (bpmode)
+                {
+                    auto temp = text{};
+                    temp.reserve(utf8.size() + ansi::paste_begin.size() + ansi::paste_end.size());
+                    temp += ansi::paste_begin;
+                    temp += utf8;
+                    temp += ansi::paste_end;
+                    std::swap(utf8, temp);
+                }
+                data_out(utf8);
                 gear.dismiss();
             }
         }
@@ -7009,8 +7013,11 @@ namespace netxs::ui
         }
         void set_log(bool state)
         {
-            io_log = state;
-            SIGNAL(tier::release, ui::term::events::io_log, state);
+            if (config.allow_logs)
+            {
+                io_log = state;
+                SIGNAL(tier::release, ui::term::events::io_log, state);
+            }
         }
         void exec_cmd(commands::ui::commands cmd)
         {
@@ -7066,25 +7073,18 @@ namespace netxs::ui
                     auto byemsg = error().add("Press Esc to close or press Enter to restart the session.\r\n")
                                          .add("\n");
                     ondata(byemsg);
-                    this->LISTEN(tier::release, hids::events::keybd::data::post, gear, onerun) //todo VS2019 requires `this`
+                    this->LISTEN(tier::release, hids::events::keybd::key::post, gear, onerun) //todo VS2019 requires `this`
                     {
-                        if (gear.pressed && gear.cluster.size())
+                        if (gear.pressed)
                         {
-                            switch (gear.cluster.front())
+                            switch (gear.keybd::generic())
                             {
-                                case ansi::c0_esc: close(); onerun.reset(); break;
-                                case ansi::c0_cr:  start(); onerun.reset(); break;
+                                case key::Esc:   close(); onerun.reset(); break;
+                                case key::Enter: start(); onerun.reset(); break;
                             }
                         }
-                        //if (gear.pressed)
-                        //{
-                        //    switch (gear.keybd::generic())
-                        //    {
-                        //        case key::Esc:   close(); onerun.reset(); break;
-                        //        case key::Enter: start(); onerun.reset(); break;
-                        //    }
-                        //}
                     };
+                    this->RISEUP(tier::release, e2::form::global::sysstart, 0);
                 };
                 auto renew = [&]
                 {
@@ -7108,10 +7108,7 @@ namespace netxs::ui
         }
         void start()
         {
-            if (!ipccon)
-            {
-                ipccon.runapp(*this, cmdarg, curdir, envvar, target->panel, fdlink);
-            }
+            RISEUP(tier::release, e2::form::upon::started, This());
         }
         void start(text cmd, text cwd, text env, os::fdrw fds = {})
         {
@@ -7119,7 +7116,10 @@ namespace netxs::ui
             curdir = cwd;
             envvar = env;
             fdlink = fds;
-            start();
+            if (!ipccon)
+            {
+                ipccon.runapp(*this, cmdarg, curdir, envvar, target->panel, fdlink);
+            }
         }
         void restart()
         {
@@ -7256,8 +7256,9 @@ namespace netxs::ui
             LISTEN(tier::release, hids::events::paste, gear)
             {
                 _paste(gear.paste::txtdata);
+                gear.dismiss();
             };
-            LISTEN(tier::release, hids::events::keybd::data::post, gear)
+            LISTEN(tier::release, hids::events::keybd::key::post, gear)
             {
                 //todo configurable Ctrl+Ins, Shift+Ins etc.
                 if (gear.handled) return; // Don't pass registered keyboard shortcuts.
@@ -7268,17 +7269,9 @@ namespace netxs::ui
                     follow[axis::X] = true;
                     follow[axis::Y] = true;
                 }
+                if (io_log) log(prompt::key, ansi::hi(input::key::map::data(gear.keycode).name));
 
-                //if (input::key::map::name(gear.keycode) == input::key::undef)
-                //{
-                //    log("gear.keycode: ",  gear.keycode,
-                //        " pressed: ", gear.pressed,
-                //        " virtcod: ", gear.virtcod,
-                //        " scancod: ", gear.scancod);
-                //}
-                if (io_log) log(prompt::key, ansi::hi(input::key::map::name(gear.keycode)));
-
-                ipccon.keybd(gear, decckm, bpmode, kbmode);
+                ipccon.keybd(gear, decckm, kbmode);
             };
             LISTEN(tier::release, e2::render::any, parent_canvas)
             {
@@ -7472,7 +7465,7 @@ namespace netxs::ui
                         gear.handled  = k.handled;
                         do
                         {
-                            parent_ptr->SIGNAL(tier::release, hids::events::keybd::data::post, gear);
+                            parent_ptr->SIGNAL(tier::release, hids::events::keybd::key::post, gear);
                             parent_ptr = parent_ptr->parent();
                         }
                         while (gear && parent_ptr);
@@ -7546,21 +7539,6 @@ namespace netxs::ui
                     s11n::clipdata.send(master, c.gear_id, c.hash, dot_00, text{}, mime::ansitext, text{});
                 });
             }
-            //void handle(s11n::xs::focus               lock)
-            //{
-            //    auto& f = lock.thing;
-            //    master.trysync(master.active, [&]
-            //    {
-            //        if (auto gear_ptr = bell::getref<hids>(f.gear_id))
-            //        {
-            //            auto& gear = *gear_ptr;
-            //            if (f.state) gear.kb_offer_8(master.This(), f.focus_force_group);
-            //            else         gear.remove_from_kb_focus(master.This());
-            //            if (f.state) pro::focus::set(master.This(), gear.id, f.focus_force_group ? pro::focus::solo::off : pro::focus::solo::on, pro::focus::flip::off);
-            //            else         pro::focus::off(master.This(), gear.id);
-            //        }
-            //    });
-            //}
             void handle(s11n::xs::header              lock)
             {
                 auto& h = lock.thing;
@@ -7654,7 +7632,13 @@ namespace netxs::ui
                 master.active.exchange(faux);
                 master.stop(true);
             }
-
+            void handle(s11n::xs::sysstart            lock)
+            {
+                netxs::events::enqueue(master.This(), [&](auto& boss)
+                {
+                    master.RISEUP(tier::release, e2::form::global::sysstart, 1);
+                });
+            }
             evnt(dtvt& master)
                 :   s11n{ *this, master.id },
                   master{ master           }
@@ -7698,7 +7682,7 @@ namespace netxs::ui
                     }
                     s11n::focusbus.send(master, seed.id, seed.guid, netxs::events::subindex(deed));
                 };
-                master.LISTEN(tier::release, hids::events::keybd::data::post, gear, tokens)
+                master.LISTEN(tier::release, hids::events::keybd::key::post, gear, tokens)
                 {
                     s11n::syskeybd.send(master, gear.id,
                                                 gear.ctlstate,
@@ -7711,31 +7695,11 @@ namespace netxs::ui
                                                 gear.keycode);
                     gear.dismiss();
                 };
-                //master.LISTEN(tier::release, hids::events::upevent::kboffer, gear, tokens)
-                //{
-                //    auto focus_state = true;
-                //    s11n::sysfocus.send(master, gear.id,
-                //                                focus_state,
-                //                                gear.focus_combine,
-                //                                gear.focus_force_group);
-                //};
-                //master.LISTEN(tier::release, hids::events::upevent::kbannul, gear, tokens)
-                //{
-                //    gear.remove_from_kb_focus(master.This());
-                //    auto focus_state = faux;
-                //    s11n::sysfocus.send(master, gear.id,
-                //                                focus_state,
-                //                                gear.focus_combine,
-                //                                gear.focus_force_group);
-                //};
-                //master.LISTEN(tier::release, hids::events::notify::keybd::lost, gear, tokens)
-                //{
-                //    auto focus_state = faux;
-                //    s11n::sysfocus.send(master, gear.id,
-                //                                focus_state,
-                //                                gear.focus_combine,
-                //                                gear.focus_force_group);
-                //};
+                master.LISTEN(tier::release, hids::events::paste, gear, tokens)
+                {
+                    s11n::syspaste.send(master, gear.id, gear.txtdata);
+                    gear.dismiss();
+                };
                 master.LISTEN(tier::general, e2::config::fps, frame_rate, tokens)
                 {
                     if (frame_rate > 0)
@@ -7825,12 +7789,17 @@ namespace netxs::ui
         // dtvt: Attach a new process.
         void start(text config, auto connect)
         {
-            if (!ipccon)
+            if (ipccon)
             {
-                auto winsize = base::size();
-                ipccon.runapp(config, winsize, connect, [&](view utf8) { ondata(utf8); },
-                                                        [&]            { onexit();     });
+                active.exchange(faux); // Do not show "Disconnected".
+                ipccon.payoff();
             }
+            errmsg = genmsg(msgs::no_signal);
+            nodata = {};
+            stream.s11n::syswinsz.freeze().thing.winsize = {};
+            active.exchange(true);
+            ipccon.runapp(config, base::size(), connect, [&](view utf8) { ondata(utf8); },
+                                                         [&]            { onexit();     });
         }
         // dtvt: Close dtvt-object.
         void stop(bool fast, bool notify = true)
@@ -7852,7 +7821,7 @@ namespace netxs::ui
             });
         }
         // dtvt: Splash screen if there is no next frame.
-        void fallback(core const& canvas, bool forced = faux)
+        void fallback(core const& canvas, bool forced = faux, bool show_msg = true)
         {
             auto size = base::size();
             if (splash.size() != size || forced)
@@ -7862,10 +7831,17 @@ namespace netxs::ui
                 if (auto parent = base::parent()) parent_id = parent->id;
                 if (canvas.size())
                 {
-                    splash.zoom(canvas, cell::shaders::onlyid(parent_id));
-                    splash.output(errmsg);
-                    splash.blur(2, [](cell& c) { c.fgc(rgba::transit(c.bgc(), c.fgc(), 127)); });
-                    splash.output(errmsg);
+                    if (show_msg)
+                    {
+                        splash.zoom(canvas, cell::shaders::onlyid(parent_id));
+                        splash.output(errmsg);
+                        splash.blur(2, [](cell& c) { c.fgc(rgba::transit(c.bgc(), c.fgc(), 127)); });
+                        splash.output(errmsg);
+                    }
+                    else
+                    {
+                        splash.fill(canvas, cell::shaders::onlyid(parent_id));
+                    }
                 }
                 else splash.wipe(cell{}.link(parent_id).bgc(blacklt).bga(0x40));
             }
@@ -7882,16 +7858,13 @@ namespace netxs::ui
             : stream{*this },
               active{ true },
               opaque{ 0xFF },
-              nodata{      },
-              errmsg{ genmsg(msgs::no_signal) }
+              nodata{      }
         {
-            //todo make it configurable (max_drops)
-            static constexpr auto max_drops = 1;
             SIGNAL(tier::general, e2::config::fps, fps, (-1));
-            maxoff = max_drops * span{ span::period::den / fps };
+            maxoff = span{ span::period::den / fps };
             LISTEN(tier::general, e2::config::fps, fps)
             {
-                maxoff = max_drops * span{ span::period::den / fps };
+                maxoff = span{ span::period::den / fps };
             };
             LISTEN(tier::anycast, e2::form::prop::lucidity, value)
             {
@@ -7922,7 +7895,7 @@ namespace netxs::ui
                          && size != canvas.size())
                         {
                             nodata = canvas.hash();
-                            fallback(canvas);
+                            fallback(canvas, faux, faux);
                             fill(parent_canvas, splash);
                             return;
                         }

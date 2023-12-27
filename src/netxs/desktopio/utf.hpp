@@ -1138,8 +1138,8 @@ namespace netxs::utf
             return proc(end);
         }
     }
-    template<feed Dir = feed::fwd, bool SkipEmpty = faux, class V1, class V2>
-    auto divide(V1 const& utf8, V2 const& delimiter, std::vector<view>& crop)
+    template<feed Dir = feed::fwd, bool SkipEmpty = faux, class V1, class V2, class Vector_qiew>
+    auto divide(V1 const& utf8, V2 const& delimiter, Vector_qiew& crop)
     {
         auto mark = qiew(delimiter);
         if (auto len = mark.size())
@@ -1169,7 +1169,7 @@ namespace netxs::utf
     template<feed Dir = feed::fwd, bool SkipEmpty = faux, class V1, class V2>
     auto divide(V1 const& utf8, V2 const& delimiter)
     {
-        auto crop = std::vector<view>{};
+        auto crop = std::vector<qiew>{};
         divide<Dir, SkipEmpty>(utf8, delimiter, crop);
         return crop;
     }
@@ -1332,7 +1332,7 @@ namespace netxs::utf
         auto y = [&](frag const& cluster)
         {
                  if (cluster.text.front() == '\\') buff += "\\\\";
-            else if (cluster.text.front() == '\0') buff += "\\0";
+            else if (cluster.text.front() == '\0') buff += "\\0"sv;
             //else if (cluster.text.front() == ' ') buff += "\x20";
             else                                   buff += cluster.text;
         };
@@ -1614,6 +1614,40 @@ namespace netxs::utf
             else break;
         }
         return qiew{ utf8.substr(0, crop) };
+    }
+    void print2(auto& input, view& format)
+    {
+        input << format;
+    }
+    void print2(auto& input, view& format, auto&& arg, auto&& ...args)
+    {
+        auto crop = [](view& format)
+        {
+            static constexpr auto delimiter = '%';
+            auto crop = format;
+            auto head = format.find(delimiter);
+            if (head == netxs::text::npos) format = {};
+            else
+            {
+                auto tail = format.find(delimiter, head + 1);
+                if (tail != netxs::text::npos)
+                {
+                    crop = format.substr(0, head); // Take leading substring.
+                    format.remove_prefix(tail + 1);
+                }
+            }
+            return crop;
+        };
+        input << crop(format) << std::forward<decltype(arg)>(arg);
+        if (format.length()) print2(input, format, std::forward<decltype(args)>(args)...);
+        else                 (void)(input << ...<< std::forward<decltype(args)>(args));
+    }
+    template<class ...Args>
+    auto fprint(view format, Args&&... args)
+    {
+        auto input = flux{};
+        print2(input, format, std::forward<Args>(args)...);
+        return input.str();
     }
 }
 

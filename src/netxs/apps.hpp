@@ -348,13 +348,14 @@ namespace netxs::app::shared
             auto cB = menu_white;
 
             auto window = ui::cake::ctor()
-                  ->invoke([&](auto& boss)
-                    {
-                        closing_on_quit(boss);
-                    });
+                ->plugin<pro::focus>(pro::focus::mode::active)
+                ->invoke([&](auto& boss)
+                {
+                    closing_on_quit(boss);
+                });
             window->plugin<pro::track>()
-                  ->plugin<pro::acryl>()
-                  ->plugin<pro::cache>();
+                ->plugin<pro::acryl>()
+                ->plugin<pro::cache>();
             //auto object = window->attach(ui::fork::ctor(axis::Y))
             //                    ->colors(cB.fgc(), cB.bgc());
             //    auto menu = object->attach(slot::_1, app::shared::menu::create(faux, {}));
@@ -424,9 +425,16 @@ namespace netxs::app::shared
                                             {
                                                 boss.set_align(align);
                                             };
-                                            boss.LISTEN(tier::anycast, e2::form::upon::started, root, -, (cmd, cwd, env))
+                                            boss.LISTEN(tier::release, e2::form::upon::started, root, -, (cmd, cwd, env))
                                             {
-                                                boss.start(cmd, cwd, env);
+                                                if (root) // root is empty when d_n_d.
+                                                {
+                                                    boss.start(cmd, cwd, env);
+                                                }
+                                            };
+                                            boss.LISTEN(tier::anycast, e2::form::upon::started, root)
+                                            {
+                                                boss.SIGNAL(tier::release, e2::form::upon::started, root);
                                             };
                                             boss.LISTEN(tier::anycast, app::term::events::search::forward, gear)
                                             {
@@ -453,11 +461,14 @@ namespace netxs::app::shared
                 {
                     boss.LISTEN(tier::anycast, e2::form::upon::started, root, -, (cmd, cwd, env, patch))
                     {
-                        boss.start(patch, [cmd, cwd, env](auto fds)
+                        if (root) // root is empty when d_n_d.
                         {
-                            os::dtvt::connect(cmd, cwd, env, fds);
-                            return cmd;
-                        });
+                            boss.start(patch, [cmd, cwd, env](auto fds)
+                            {
+                                os::dtvt::connect(cmd, cwd, env, fds);
+                                return cmd;
+                            });
+                        }
                     };
                     boss.LISTEN(tier::preview, e2::config::plugins::sizer::alive, state)
                     {
@@ -480,10 +491,8 @@ namespace netxs::app::shared
 
             auto window = ui::veer::ctor()
                 ->limits(dot_11, { 400,200 })
-                ->plugin<pro::focus>(pro::focus::mode::active);
+                ->plugin<pro::focus>(pro::focus::mode::active); // Required for standalone mode.
             auto term = ui::cake::ctor()
-                ->plugin<pro::acryl>()
-                ->plugin<pro::cache>()
                 ->active(cB);
             auto dtvt = ui::dtvt::ctor();
             auto scrl = term->attach(ui::rail::ctor());
@@ -493,6 +502,12 @@ namespace netxs::app::shared
                 ->invoke([&](auto& boss)
                 {
                     auto& dtvt_inst = *dtvt;
+                    boss.config.def_atexit = ui::term::commands::atexit::ask;
+                    if constexpr (!debugmode) // Forced disabling of logging for the controlling terminal.
+                    {
+                        boss.config.allow_logs = faux;
+                        boss.io_log = faux;
+                    }
                     boss.LISTEN(tier::anycast, e2::form::proceed::quit::any, fast)
                     {
                         boss.SIGNAL(tier::preview, e2::form::proceed::quit::one, fast);
@@ -512,28 +527,6 @@ namespace netxs::app::shared
                 ->invoke([&](auto& boss)
                 {
                     auto& term_inst = *inst;
-                    auto& window_inst = *window;
-                    boss.LISTEN(tier::anycast, e2::form::upon::started, root, -, (cmd, cwd, env, patch))
-                    {
-                        boss.start(patch, [&, cmd, cwd, env](auto fds)
-                        {
-                            term_inst.start(cmd, cwd, env, fds);
-                            return cmd;
-                        });
-                    };
-                    boss.LISTEN(tier::preview, e2::form::prop::ui::header, header)
-                    {
-                        if (window_inst.back() != boss.This())
-                        {
-                            auto gear_id_list = pro::focus::get(window_inst.back(), true); // Expropriate all foci.
-                            pro::focus::off(window_inst.back());
-                            pro::focus::set(window_inst.front(), gear_id_list, pro::focus::solo::off, pro::focus::flip::off, true); // Refocus.
-                            window_inst.roll();
-                            boss.RISEUP(tier::preview, e2::form::prop::ui::footer, footer, ());
-                            boss.reflow();
-                        }
-                        boss.bell::template expire<tier::preview>(true);
-                    };
                     boss.LISTEN(tier::preview, e2::config::plugins::sizer::alive, state)
                     {
                         boss.RISEUP(tier::release, e2::config::plugins::sizer::alive, state);
@@ -555,6 +548,39 @@ namespace netxs::app::shared
                 ->branch(term)
                 ->invoke([&](auto& boss)
                 {
+                    auto& dtvt_inst = *dtvt;
+                    auto& term_inst = *inst;
+                    boss.LISTEN(tier::release, e2::form::upon::started, root, -, (cmd, cwd, env, patch))
+                    {
+                        if (root) // root is empty when d_n_d.
+                        {
+                            dtvt_inst.start(patch, [&, cmd, cwd, env](auto fds)
+                            {
+                                term_inst.start(cmd, cwd, env, fds);
+                                return cmd;
+                            });
+                        }
+                    };
+                    boss.LISTEN(tier::anycast, e2::form::upon::started, root)
+                    {
+                        boss.SIGNAL(tier::release, e2::form::upon::started, root);
+                    };
+                    boss.LISTEN(tier::release, e2::form::global::sysstart, started, -, (order = true))
+                    {
+                        if (!!started == order)
+                        {
+                            auto t = term_inst.This();
+                            auto d = dtvt_inst.This();
+                            if (order) pro::focus::pass(t, d);
+                            else       pro::focus::pass(d, t);
+                            boss.roll();
+                            boss.back()->RISEUP(tier::preview, e2::form::prop::ui::footer, footer, ());
+                            boss.back()->reflow();
+                            boss.back()->deface();
+                            order = !order;
+                        }
+                        boss.bell::template expire<tier::release>(true);
+                    };
                     boss.LISTEN(tier::release, e2::form::proceed::quit::any, fast, -, (count = 2))
                     {
                         if (--count == 0)

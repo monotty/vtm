@@ -378,7 +378,7 @@ namespace netxs::app::term
             }
             static void TerminalSelectionMode(ui::item& boss, menu::item& item)
             {
-                item.reindex([](auto& utf8){ return netxs::get_or(xml::options::selmod, utf8, mime::disabled); });
+                item.reindex([](auto& utf8){ return netxs::get_or(xml::options::format, utf8, mime::disabled); });
                 _submit(boss, item, [](auto& boss, auto& item, auto& gear)
                 {
                     boss.SIGNAL(tier::anycast, preview::selection::mode, item.views[item.taken].value);
@@ -835,9 +835,13 @@ namespace netxs::app::term
                     {
                         boss.set_align(align);
                     };
-                    boss.LISTEN(tier::anycast, e2::form::upon::started, root, -, (cmd, cwd, env))
+                    boss.LISTEN(tier::release, e2::form::upon::started, root, -, (cmd, cwd, env))
                     {
                         boss.start(cmd, cwd, env);
+                    };
+                    boss.LISTEN(tier::anycast, e2::form::upon::started, root)
+                    {
+                        boss.SIGNAL(tier::release, e2::form::upon::started, root);
                     };
                     boss.LISTEN(tier::anycast, app::term::events::search::forward, gear)
                     {

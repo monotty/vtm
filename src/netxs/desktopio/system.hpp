@@ -22,9 +22,10 @@
     #include <Windows.h>
     #include <userenv.h>                 // ::GetUserProfileDirectoryW
     #pragma comment(lib, "Userenv.lib")
-    #pragma comment(lib, "Advapi32.lib") // ::GetUserNameW()
+    #pragma comment(lib, "Advapi32.lib") // ::StartService() for arm arch
     #include <Psapi.h>                   // ::GetModuleFileNameEx
     #include <winternl.h>                // ::NtOpenFile
+    #include <sddl.h>                    // ::ConvertSidToStringSidA()
 
 #else
 
@@ -105,12 +106,11 @@ namespace netxs::os
         using pidt = DWORD;
         using fd_t = HANDLE;
         struct tios { DWORD omode, imode, opage, ipage; wide title; CONSOLE_CURSOR_INFO caret{}; };
-        static const auto invalid_fd   = fd_t{ INVALID_HANDLE_VALUE };
-        static       auto stdin_fd     = fd_t{ ptr::test(::GetStdHandle(STD_INPUT_HANDLE ), os::invalid_fd) };
-        static       auto stdout_fd    = fd_t{ ptr::test(::GetStdHandle(STD_OUTPUT_HANDLE), os::invalid_fd) };
-        static       auto stderr_fd    = fd_t{ ptr::test(::GetStdHandle(STD_ERROR_HANDLE ), os::invalid_fd) };
-        static const auto codepage     = ui32{ ::GetOEMCP() };
-
+        static const auto codepage   = ui32{ ::GetOEMCP() };
+        static const auto invalid_fd = fd_t{ INVALID_HANDLE_VALUE };
+        static       auto stdin_fd   = fd_t{ ptr::test(::GetStdHandle(STD_INPUT_HANDLE ), os::invalid_fd) };
+        static       auto stdout_fd  = fd_t{ ptr::test(::GetStdHandle(STD_OUTPUT_HANDLE), os::invalid_fd) };
+        static       auto stderr_fd  = fd_t{ ptr::test(::GetStdHandle(STD_ERROR_HANDLE ), os::invalid_fd) };
 
     #else
 
@@ -148,8 +148,8 @@ namespace netxs::os
     template<class ...Args>
     auto fail(Args&&... msg)
     {
-        log(prompt::os, ansi::err(msg..., " (", os::error(), ") "));
-    };
+        log(prompt::os, ansi::err(utf::fprint(msg..., " (", os::error(), ") ")));
+    }
     template<bool Alert = true, class T, class ...Args>
     auto ok(T error_condition, Args&&... msg)
     {
@@ -195,6 +195,30 @@ namespace netxs::os
 
         namespace nt
         {
+            struct acl : SECURITY_ATTRIBUTES
+            {
+                // e.g.: sddl = "D:(A;;GRFW;;;WD)(A;;FA;;;CO)(A;;FA;;;SY)(A;;FA;;;BA)"
+                //  D    DACL
+                //  A    Allow
+                //  GR   FILE_GENERIC_READ
+                //  FW   FILE_WRITE_DATA
+                //  FA   Full Access
+                //  WD   Everyone
+                //  CO   Creator Owner
+                //  BA   Built-in Administrators
+                //  SY   LocalSystem
+                operator SECURITY_ATTRIBUTES* () { return this; }
+                acl(view sddl)
+                    : SECURITY_ATTRIBUTES{ sizeof(SECURITY_ATTRIBUTES) }
+                {
+                    ::ConvertStringSecurityDescriptorToSecurityDescriptorA(sddl.data(), SDDL_REVISION_1, &lpSecurityDescriptor, NULL);
+                }
+               ~acl()
+                {
+                    if (lpSecurityDescriptor) ::LocalFree(lpSecurityDescriptor);
+                }
+            };
+
             auto& get_ntdll()
             {
                 struct refs
@@ -484,12 +508,7 @@ namespace netxs::os
                                                 0,
                                                 TRUE,
                                                 DUPLICATE_SAME_ACCESS);
-                    if (ok) return handle_clone;
-                    else
-                    {
-                        log(prompt::os, "Unexpected result when duplicate system object handle, errcode ", os::error());
-                        return os::invalid_fd;
-                    }
+                    return handle_clone;
                 }
                 template<svga Mode>
                 auto attr(cell const& c)
@@ -953,6 +972,16 @@ namespace netxs::os
                 if (scrl  ) state |= SCROLLLOCK_ON;
                 return state;
             }
+            template<char C>
+            static auto takevkey()
+            {
+                struct vkey { si16 key, vkey; ui32 base; };
+                static auto x = ::VkKeyScanW(C);
+                static auto k = vkey{ x, x & 0xff, x & 0xff |((x & 0x0100 ? input::hids::anyShift : 0)
+                                                            | (x & 0x0200 ? input::hids::anyCtrl  : 0)
+                                                            | (x & 0x0400 ? input::hids::anyAlt   : 0)) << 8 };
+                return k;
+            }
             auto is_wow64()
             {
                 if constexpr (sizeof(void*) == 4)
@@ -963,7 +992,130 @@ namespace netxs::os
                 }
                 else return faux;
             }
+            auto user(auto token)
+            {
+                auto rc = true;
+                auto usage = SID_NAME_USE{};
+                auto count = DWORD{};
+                auto chars = LPSTR{};
+                ::GetTokenInformation(token, TOKEN_INFORMATION_CLASS::TokenUser, nullptr, 0, &count);
+                auto bytes = text(count, '\0');
+                rc = rc && ::GetTokenInformation(token, TOKEN_INFORMATION_CLASS::TokenUser, bytes.data(), count, &count);
+                auto& owner = *(reinterpret_cast<TOKEN_USER*>(bytes.data()));
+                auto name_len = DWORD{};
+                auto domain_len = DWORD{};
+                rc && ::LookupAccountSidW(nullptr, owner.User.Sid, nullptr, &name_len, nullptr, &domain_len, &usage);
+                auto name   = wide(name_len   ? name_len   - 1 : 0, '\0');
+                auto domain = wide(domain_len ? domain_len - 1 : 0, '\0');
+                rc = rc && ::LookupAccountSidW(nullptr, owner.User.Sid, name.data(), &name_len, domain.data(), &domain_len, &usage);
+                rc = rc && ::ConvertSidToStringSidA(owner.User.Sid, &chars);
+                auto sid = text{ rc ? chars : "" };
+                rc && ::LocalFree(chars);
+                return std::tuple{ rc, name, domain, sid };
+            }
+            auto session(auto token)
+            {
+                auto byte_count = DWORD{};
+                auto session_id = DWORD{};
+                ::GetTokenInformation(token, TOKEN_INFORMATION_CLASS::TokenSessionId, &session_id, sizeof(session_id), &byte_count);
+                return session_id;
+            }
+            auto runas(auto token, auto&& cmdarg)
+            {
+                auto proinf = PROCESS_INFORMATION{};
+                auto upinfo = STARTUPINFOEXW{ sizeof(STARTUPINFOEXW) };
+                auto buffer = std::vector<byte>{};
+                auto h_prof = os::invalid_fd;
+                if (nt::session(token) == 0) // Load user profile in case of non-interactive session.
+                {
+                    auto buflen = SIZE_T{ 0 };
+                    auto [rc, username, domain, sid] = nt::user(token);
+                    auto profile_info = PROFILEINFOW{ .dwSize = sizeof(PROFILEINFOW) };
+                    profile_info.lpUserName = username.data();
+                    profile_info.lpServerName = domain.data();
+                    rc = rc && ::LoadUserProfileW(token, &profile_info);
+                    h_prof = nt::console::handle(profile_info.hProfile); // Make handle inheritable.
+                    os::close(profile_info.hProfile);
+                    rc && ::InitializeProcThreadAttributeList(nullptr, 1, 0, &buflen);
+                    buffer.resize(buflen);
+                    upinfo.lpAttributeList = rc ? reinterpret_cast<LPPROC_THREAD_ATTRIBUTE_LIST>(buffer.data()) : nullptr;
+                    rc = rc && ::InitializeProcThreadAttributeList(upinfo.lpAttributeList, 1, 0, &buflen);
+                    rc = rc && ::UpdateProcThreadAttribute(upinfo.lpAttributeList,
+                                                           0,
+                                                           PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
+                                                           &h_prof,
+                                                           sizeof(h_prof),
+                                                           nullptr,
+                                                           nullptr);
+                }
+                auto result = ::CreateProcessAsUserW(token,
+                                                     nullptr,                      // lpApplicationName
+                                                     cmdarg.data(),                // lpCommandLine
+                                                     nullptr,                      // lpProcessAttributes
+                                                     nullptr,                      // lpThreadAttributes
+                                                     TRUE,                         // bInheritHandles
+                                                     DETACHED_PROCESS |            // dwCreationFlags
+                                                     EXTENDED_STARTUPINFO_PRESENT |// override startupInfo type
+                                                     CREATE_BREAKAWAY_FROM_JOB,    // disassociate with the job
+                                                     nullptr,                      // lpEnvironment
+                                                     nullptr,                      // lpCurrentDirectory
+                                                     &upinfo.StartupInfo,          // lpStartupInfo
+                                                     &proinf);                     // lpProcessInformation
+                if (h_prof != os::invalid_fd)
+                {
+                    os::close(h_prof);
+                }
+                if (result) // Close unused process handles.
+                {
+                    os::close(proinf.hProcess);
+                    os::close(proinf.hThread);
+                }
+                return result;
+            }
+            auto runas(auto&& cmdarg)
+            {
+                auto token = os::invalid_fd;
+                ::OpenProcessToken(::GetCurrentProcess(), TOKEN_ALL_ACCESS, &token);
+                auto result = nt::runas(token, cmdarg);
+                os::close(token);
+                return result;
+            }
+            auto user()
+            {
+                auto token = os::invalid_fd;
+                ::OpenProcessToken(::GetCurrentProcess(), TOKEN_ALL_ACCESS, &token);
+                auto [rc, name, domain, sid] = nt::user(token);
+                os::close(token);
+                if (rc && name.size())
+                {
+                    auto user_name = utf::to_low(utf::to_utf(name + L'@' + domain));
+                    auto user_id = sid.empty() ? "unknown"s : sid;
+                    return std::pair{ user_name, user_id };
+                }
+                else return std::pair{ "unknown"s, "unknown"s };
+            }
+            auto session()
+            {
+                auto proc_token = os::invalid_fd;;
+                ::OpenProcessToken(::GetCurrentProcess(), TOKEN_ALL_ACCESS, &proc_token);
+                auto session_id = nt::session(proc_token);
+                os::close(proc_token);
+                return session_id;
+            }
+            auto connect(auto&& ipcname, auto type, auto& link)
+            {
+                link = ::CreateFileW(ipcname.data(),
+                                     type,            // data access type
+                                     0,               // no sharing
+                                     NULL,            // default security attributes
+                                     OPEN_EXISTING,   // opens existing pipe
+                                     0,               // default attributes
+                                     NULL);           // no template file
+                return link != os::invalid_fd;
+            }
         }
+
+        auto operator ""_acl(char const* sddl, size_t size) { return nt::acl{ view{ sddl, size } }; }
 
     #else
 
@@ -1212,6 +1364,7 @@ namespace netxs::os
             static auto queue = std::vector<sigt>{}; // Control event queue.
             static auto cache = std::vector<sigt>{};
             static auto alarm = fire{};
+            static auto leave = flag{};
             static auto fetch = []() -> auto&
             {
                 auto sync = std::lock_guard{ mutex };
@@ -1231,8 +1384,9 @@ namespace netxs::os
             {
                 static auto handler = [](sigt what) // Queue console control events.
                 {
+                    os::signals::leave.exchange(what > os::signals::ctrl_break);
                     place(what);
-                    if (what > os::signals::ctrl_break) // Waiting for process cleanup.
+                    if (os::signals::leave) // Waiting for process cleanup.
                     {
                         os::finalized.wait(faux);
                     }
@@ -1323,6 +1477,7 @@ namespace netxs::os
     namespace service
     {
         static auto name = "vtm"sv;
+        static auto desc = "Text-based desktop environment."sv;
 
         #if defined(_WIN32)
 
@@ -1364,7 +1519,7 @@ namespace netxs::os
                     }
                 };
 
-        		set_status(SERVICE_RUNNING);
+                set_status(SERVICE_RUNNING);
                 auto deleter = [](auto*)
                 {
                     set_status(SERVICE_STOPPED);
@@ -1695,22 +1850,16 @@ namespace netxs::os
         {
             #if defined(_WIN32)
 
-                auto buffer = wide{};
-                auto length = DWORD{};
-                ::GetUserNameW(buffer.data(), &length);
-                buffer.resize(length);
-                if(ok(::GetUserNameW(buffer.data(), &length), "::GetUserNameW()", os::unexpected))
-                {
-                    if (length && buffer.back() == 0) buffer.pop_back();
-                    return utf::to_utf(buffer);
-                }
-                else return text{};
+                return os::nt::user();
 
             #else
 
                 uid_t id;
                 id = ::geteuid();
-                return utf::concat(id);
+                //todo user + id
+                auto user_name = utf::concat(id);
+                auto user_id = user_name;
+                return std::pair{ user_name, user_id };
 
             #endif
         }
@@ -1722,6 +1871,7 @@ namespace netxs::os
             static const auto pipe_ns = "\\\\.\\pipe\\";
             auto wr_pipe(text name) { return pipe_ns + name + "_w"; }
             auto rd_pipe(text name) { return pipe_ns + name + "_r"; }
+            auto ipcname = utf::to_utf(utf::concat(pipe_ns, os::service::name, "_svclink"));
         #endif
         // os::path: OS settings path.
         static const auto etc = []
@@ -1986,18 +2136,19 @@ namespace netxs::os
             return result;
         }();
 
+        auto started(text prefix)
+        {
+            return "Global\\" + prefix + "_started";
+        }
+
         namespace memory
         {
-            auto ref(text prefix)
-            {
-                return (process::elevated ? "Global\\" : "Local\\") + prefix + "_config";
-            }
-            auto get(text ospath)
+            auto get(text cfpath)
             {
                 auto utf8 = text{};
                 #if defined(_WIN32)
 
-                    if (auto handle = ::OpenFileMappingA(FILE_MAP_READ, FALSE, ospath.c_str()))
+                    if (auto handle = ::OpenFileMappingA(FILE_MAP_READ, FALSE, cfpath.c_str()))
                     {
                         if (auto data = ::MapViewOfFile(handle, FILE_MAP_READ, 0, 0, 0))
                         {
@@ -2010,12 +2161,12 @@ namespace netxs::os
                 #endif
                 return utf8;
             }
-            auto set(text ospath, view data)
+            auto set(text cfpath, view data)
             {
                 #if defined(_WIN32)
 
                     auto source = view{ data.data(), data.size() + 1/*trailing null*/ };
-                    auto handle = ::CreateFileMappingA(os::invalid_fd, nullptr, PAGE_READWRITE, 0, (DWORD)source.size(), ospath.c_str()); ok(handle, "::CreateFileMappingA()", os::unexpected);
+                    auto handle = ::CreateFileMappingA(os::invalid_fd, nullptr, PAGE_READWRITE, 0, (DWORD)source.size(), cfpath.c_str()); ok(handle, "::CreateFileMappingA()", os::unexpected);
                     auto buffer = ::MapViewOfFile(handle, FILE_MAP_WRITE, 0, 0, 0);                                                          ok(buffer, "::MapViewOfFile()", os::unexpected);
                     std::copy(std::begin(source), std::end(source), (char*)buffer);
                     ok(::UnmapViewOfFile(buffer), "::UnmapViewOfFile()", os::unexpected);
@@ -2116,8 +2267,8 @@ namespace netxs::os
             template<class ...Args>
             auto next()
             {
-                return iter != data.end() ? view{ *iter++ }
-                                          : view{};
+                return iter != data.end() ? qiew{ *iter++ }
+                                          : qiew{};
             }
             // args: Return the rest of the command line arguments.
             auto rest()
@@ -2216,7 +2367,7 @@ namespace netxs::os
             #endif
             if (result.empty())
             {
-                os::fail("Can't get current module file path, fallback to '", process::arg0, "`");
+                os::fail("Can't get current module file path, fallback to '%arg0%`", process::arg0);
                 result = process::arg0;
             }
             if constexpr (NameOnly)
@@ -2305,91 +2456,38 @@ namespace netxs::os
 
             #endif
         }
-        //todo deprecated
-        template<bool Logs = true, bool Daemon = faux>
-        auto exec(text cmd, text env)
-        {
-            if constexpr (Logs) log(prompt::exec, "'", cmd, "'");
-            #if defined(_WIN32)
-                
-                auto shadow = view{ cmd };
-                auto binary = utf::to_utf(utf::get_token(shadow));
-                auto params = utf::to_utf(shadow);
-                auto ShExecInfo = ::SHELLEXECUTEINFOW{};
-                ShExecInfo.cbSize = sizeof(::SHELLEXECUTEINFOW);
-                ShExecInfo.fMask = SEE_MASK_NOCLOSEPROCESS;
-                ShExecInfo.hwnd = NULL;
-                ShExecInfo.lpVerb = NULL;
-                ShExecInfo.lpFile = binary.c_str();
-                ShExecInfo.lpParameters = params.c_str();
-                ShExecInfo.lpDirectory = NULL;
-                ShExecInfo.nShow = 0;
-                ShExecInfo.hInstApp = NULL;
-                if (::ShellExecuteExW(&ShExecInfo)) return true;
-
-            #else
-
-                auto p_id = os::process::sysfork();
-                if (p_id == 0) // Child branch.
-                {
-                    if constexpr (Daemon)
-                    {
-                        //::umask(0); // Set the file mode creation mask for child process.
-                        os::close(os::stdin_fd );
-                        os::close(os::stdout_fd);
-                        os::close(os::stderr_fd);
-                    }
-                    os::process::execvpe(cmd, env);
-                    auto errcode = errno;
-                    if constexpr (Logs) os::fail(prompt::exec, "Failed to spawn '", cmd, "'");
-                    os::process::exit<true>(errcode);
-                }
-                else if (p_id > 0) // Parent branch.
-                {
-                    auto stat = int{};
-                    ::waitpid(p_id, &stat, 0); // Wait for the child to avoid zombies.
-                    if (WIFEXITED(stat) && WEXITSTATUS(stat) == 0)
-                    {
-                        return true; // Child forked and exited successfully.
-                    }
-                }
-
-            #endif
-            if constexpr (Logs) os::fail(prompt::exec, "Failed to spawn '", cmd, "'");
-            return faux;
-        }
         auto fork(text prefix, view config)
         {
+            auto msg = [](auto& success)
+            {
+                if (success) log(prompt::os, "Process forked");
+                else         os::fail("Failed to fork process");
+            };
+
             #if defined(_WIN32)
 
-                auto ospath = process::memory::ref(prefix);
-                auto handle = process::memory::set(ospath, config);
-                auto cmdarg = utf::to_utf(utf::concat(os::process::binary(), " --onlylog", " -p ", prefix, " -c :", ospath, " -s"));
-                auto proinf = PROCESS_INFORMATION{};
-                auto upinfo = STARTUPINFOEXW{ sizeof(STARTUPINFOEXW) };
-                auto ptoken = os::invalid_fd;
-                auto slzero = DWORD{ 0 };
-                auto rc = ::OpenProcessToken(::GetCurrentProcess(), TOKEN_ALL_ACCESS, &ptoken);
-                rc = rc && ::CreateProcessAsUserW(ptoken,
-                                                  nullptr,                      // lpApplicationName
-                                                  cmdarg.data(),                // lpCommandLine
-                                                  nullptr,                      // lpProcessAttributes
-                                                  nullptr,                      // lpThreadAttributes
-                                                  TRUE,                         // bInheritHandles
-                                                  DETACHED_PROCESS |            // dwCreationFlags
-                                                  EXTENDED_STARTUPINFO_PRESENT, // override startupInfo type
-                                                  nullptr,                      // lpEnvironment
-                                                  nullptr,                      // lpCurrentDirectory
-                                                  &upinfo.StartupInfo,          // lpStartupInfo
-                                                  &proinf);                     // lpProcessInformation
-                os::close(ptoken);
-                auto success = std::unique_ptr<std::remove_pointer<fd_t>::type, decltype(&::CloseHandle)>(handle, &::CloseHandle); // Do not close until confirmation from the child process is received.
-                if (rc) // Success. The fork concept is not supported on Windows.
+                auto success = std::unique_ptr<std::remove_pointer<fd_t>::type, decltype(&::CloseHandle)>(nullptr, &::CloseHandle);
+                auto svclink = os::invalid_fd;
+                if (nt::session() && nt::connect(os::path::ipcname, FILE_WRITE_DATA, svclink)) // Try vtm service to run server in Session 0.
                 {
-                    os::close(proinf.hProcess);
-                    os::close(proinf.hThread);
+                    auto size = (ui32)(prefix.size() + config.size() + 1);
+                    auto data = utf::concat(view{ (char*)&size, sizeof(size) }, prefix, '\0', config);
+                    io::send(svclink, data);
+                    success.reset(svclink); // Do not close until confirmation from the server process is received.
                 }
-                else success.reset();
+                else
+                {
+                    auto cfpath = utf::concat(prefix, "_config");
+                    auto handle = process::memory::set(cfpath, config);
+                    auto cmdarg = utf::to_utf(utf::concat(os::process::binary(), " -s --onlylog -p ", prefix, " -c :", cfpath));
+                    if (os::nt::runas(cmdarg))
+                    {
+                        success.reset(handle); // Do not close until confirmation from the server process is received.
+                    }
+                    else os::close(handle);
+                }
+                msg(success);
+                return std::pair{ std::move(success), faux }; // Parent branch.
 
             #else
 
@@ -2415,13 +2513,123 @@ namespace netxs::os
                     ::waitpid(p_id, &stat, 0);
                     success = WIFEXITED(stat) && WEXITSTATUS(stat) == 0;
                 }
+                msg(success);
+                return std::pair{ success, faux }; // Parent branch.
 
             #endif
+        }
+        auto dispatch()
+        {
+            #if defined(_WIN32)
 
-            if (success) log(prompt::os, "Process forked");
-            else         os::fail("Failed to fork process");
+                static auto svcsync = std::mutex{};
+                static auto running = flag{ true };
+                static auto svcname = utf::to_utf(os::service::name);
+                static auto newpipe = [](auto first){ return ::CreateNamedPipeW(os::path::ipcname.data(),                  // lpName
+                                                        PIPE_ACCESS_INBOUND | (first ? FILE_FLAG_FIRST_PIPE_INSTANCE : 0), // dwOpenMode
+                                                        PIPE_TYPE_BYTE | PIPE_REJECT_REMOTE_CLIENTS,                       // dwPipeMode
+                                                        PIPE_UNLIMITED_INSTANCES,                                          // nMaxInstances
+                                                        os::pipebuf,                                                       // nOutBufferSize
+                                                        os::pipebuf,                                                       // nInBufferSize
+                                                        0,                                                                 // nDefaultTimeOut
+                                                        "D:(A;;GRFW;;;WD)(A;;FA;;;CO)(A;;FA;;;SY)(A;;FA;;;BA)"_acl); };    // lpSecurityAttributes
+                static auto svcpipe = newpipe(true);
+                static auto starter = [](auto... args)
+                {
+                    auto svcstat = SERVICE_STATUS
+                    {
+                        .dwServiceType = SERVICE_WIN32_OWN_PROCESS,
+                        .dwControlsAccepted = SERVICE_ACCEPT_STOP | SERVICE_ACCEPT_PRESHUTDOWN
+                    };
+                    auto handler = [](DWORD dwControl, DWORD dwEventType, LPVOID lpEventData, LPVOID lpContext)
+                    {
+                        switch (dwControl)
+                        {
+                            case SERVICE_CONTROL_STOP:
+                            case SERVICE_CONTROL_SHUTDOWN:
+                            case SERVICE_CONTROL_PRESHUTDOWN:
+                                if (svcpipe != os::invalid_fd)
+                                {
+                                    auto sync = std::lock_guard{ svcsync };
+                                    running.exchange(faux);
+                                    ::DeleteFileW(os::path::ipcname.data()); // Interrupt ::ConnectNamedPipe().
+                                }
+                                break;
+                            default: break;
+                        }
+                        return DWORD{ NO_ERROR };
+                    };
+                    auto manager = ::RegisterServiceCtrlHandlerExW(svcname.data(), handler, nullptr);
+                    manager && ::SetServiceStatus(manager, (svcstat.dwCurrentState = SERVICE_RUNNING, &svcstat));
+                    auto threads = netxs::generics::pool{};
+                    while (true)
+                    {
+                        auto connected = ::ConnectNamedPipe(svcpipe, NULL) || os::error() == ERROR_PIPE_CONNECTED;
+                        auto lockguard = std::lock_guard{ svcsync };
+                        if (!running || !connected) break;
+                        threads.run([link = svcpipe](auto task_id)
+                        {
+                            auto size = ui32{};
+                            auto process_id = DWORD{};
+                            ::GetNamedPipeClientProcessId(link, &process_id);
+                            if (process_id
+                             && io::recv(link, &size, sizeof(size))
+                             && size < ui16max * 16 /*1MB*/)
+                            {
+                                auto data = text(size, '\0');
+                                auto iter = data.data();
+                                while (size)
+                                {
+                                    if (auto crop = io::recv(link, iter, size))
+                                    {
+                                        auto s = (ui32)crop.size();
+                                        size -= s;
+                                        iter += s;
+                                    }
+                                    else break;
+                                }
+                                if (size == 0)
+                                if (auto blocks = utf::divide(data, '\0'); blocks.size() == 2)
+                                {
+                                    auto prefix = blocks[0];
+                                    auto config = blocks[1];
+                                    auto cfpath = utf::concat(prefix, "_config");
+                                    auto handle = process::memory::set(cfpath, config);
+                                    auto cmdarg = utf::to_utf(utf::concat(os::process::binary(), " -s --onlylog -p ", prefix, " -c :", cfpath));
+                                    // Run server process.
+                                    auto ostoken = fd_t{};
+                                    auto mytoken = fd_t{};
+                                    auto session = DWORD{};
+                                    auto process = ::OpenProcess(PROCESS_ALL_ACCESS, TRUE, process_id);
+                                    process && ::OpenProcessToken(process, TOKEN_ALL_ACCESS, &ostoken);
+                                    ostoken && ::DuplicateTokenEx(ostoken, MAXIMUM_ALLOWED, nullptr, SECURITY_IMPERSONATION_LEVEL::SecurityIdentification, TOKEN_TYPE::TokenPrimary, &mytoken);
+                                    mytoken && ::SetTokenInformation(mytoken, TOKEN_INFORMATION_CLASS::TokenSessionId, &session, sizeof(session));
+                                    mytoken && os::nt::runas(mytoken, cmdarg);
+                                    os::close(mytoken);
+                                    os::close(ostoken);
+                                    os::close(process);
+                                    // Wait for the client side to close for synchronization.
+                                    io::recv(link, data);
+                                    os::close(handle);
+                                }
+                            }
+                            os::close(link);
+                        });
+                        svcpipe = newpipe(faux);
+                    }
+                    threads.stop();
+                    manager && ::SetServiceStatus(manager, (svcstat.dwCurrentState = SERVICE_STOPPED, &svcstat));
+                };
+                static auto service = std::to_array<SERVICE_TABLE_ENTRYW>({{ .lpServiceName = svcname.data(), .lpServiceProc = starter }, {/*empty terminator*/}});
+                auto ok = !!::StartServiceCtrlDispatcherW(service.data());
+                os::close(svcpipe);
+                return ok;
 
-            return std::pair{ std::move(success), faux }; // Parent branch.
+            #else
+
+                return true;
+
+            #endif
         }
         void spawn(text cmd, text cwd, text env)
         {
@@ -2442,6 +2650,164 @@ namespace netxs::os
                 os::process::exit<true>(err_code);
 
             #endif
+        }
+        auto getpaths(auto& file, auto& dest, bool check_arch = true)
+        {
+            if (!os::process::elevated)
+            {
+                log("System-wide operations require elevated privileges.");
+            }
+            #if defined(_WIN32)
+            else if (check_arch && os::nt::is_wow64())
+            {
+                log("The executable architecture doesn't match the system platform architecture.");
+            }
+            #endif
+            else
+            {
+                file = fs::path{ os::process::binary() };
+                if (file.empty())
+                {
+                    log("Failed to get the process image path.");
+                    return faux;
+                }
+
+                #if defined(_WIN32)
+                auto dest_path = os::env::get("SystemRoot");
+                #else
+                auto dest_path = "/usr/local/bin";
+                #endif
+
+                dest = dest_path / file.filename();
+                return true;
+            }
+            return faux;
+        }
+        auto removefile(auto dest)
+        {
+            auto code = std::error_code{};
+            auto remove = [&]
+            {
+                #if defined(_WIN32)
+
+                    // Delete service.
+                    auto svcname = utf::to_utf(os::service::name);
+                    auto manager = ::OpenSCManagerW(NULL, NULL, SC_MANAGER_ALL_ACCESS);
+                    auto service = ::OpenServiceW(manager, svcname.data(), SERVICE_ALL_ACCESS);
+                    // Stop service.
+                    auto svcstat = SERVICE_STATUS_PROCESS{};
+                    auto bufflen = DWORD{};
+                    if (service && ::QueryServiceStatusEx(service, SC_STATUS_PROCESS_INFO, (LPBYTE)&svcstat, sizeof(SERVICE_STATUS_PROCESS), &bufflen))
+                    {
+                        if (svcstat.dwCurrentState != SERVICE_STOPPED)
+                        {
+                            if (svcstat.dwCurrentState != SERVICE_STOP_PENDING)
+                            {
+                                if (!::ControlService(service, SERVICE_CONTROL_STOP, (LPSERVICE_STATUS)&svcstat))
+                                {
+                                    os::fail("Failed to stop service");
+                                }
+                            }
+                            if (auto process = ::OpenProcess(SYNCHRONIZE, FALSE, svcstat.dwProcessId))
+                            {
+                                if (::WaitForSingleObject(process, 10000) != WAIT_OBJECT_0)
+                                {
+                                    //os::kill_process(svcstat.dwProcessId);
+                                }
+                                os::close(process);
+                            }
+                            else os::fail("Failed to get process handle");
+                        }
+                    }
+
+                    // Delete service.
+                    ::DeleteService(service);
+                    ::CloseServiceHandle(service);
+                    ::CloseServiceHandle(manager);
+
+                #endif
+
+                if (!fs::exists(dest, code)) return true;
+                auto done = fs::remove(dest, code);
+                if (done) log("File '%file%' has been removed.", dest.string());
+                return done;
+            };
+            auto rename = [&] // Rename and mark to delete on next reboot.
+            {
+                auto file = dest;
+                auto temp = file.filename().string() + '_' + utf::to_hex(datetime::round<ui64, std::chrono::nanoseconds>(datetime::now()));
+                dest.replace_filename(temp);
+                fs::rename(file, dest, code);
+                auto done = !code;
+                #if defined(_WIN32)
+                    auto rc = ::MoveFileExW(dest.wstring().c_str(), nullptr, MOVEFILE_DELAY_UNTIL_REBOOT); // Schedule to delete dest on next reboot.
+                    if (rc) log("File '%file%' has been renamed to '%dest%' and is scheduled to be removed on the next system start.", file.string(), dest.string());
+                    else    log("Failed to schedule '%dest%' to be removed on next system start.", dest.string());
+                #else
+                    log("Something went wrong. The file '%file%' has been renamed to '%dest%' and must be deleted manually.", file, dest);
+                #endif
+                return done;
+            };
+            auto done = remove() || rename();
+            return done;
+        }
+        auto uninstall()
+        {
+            auto file = fs::path{};
+            auto dest = fs::path{};
+            auto done = getpaths(file, dest, faux) && removefile(dest);
+            return done;
+        }
+        auto install()
+        {
+            auto file = fs::path{};
+            auto dest = fs::path{};
+            auto code = std::error_code{};
+            auto copy = [&]()
+            {
+                auto done = fs::copy_file(file, dest, code);
+                if (done)
+                {
+                    log("Process image has been copied to '%path%'.", dest.string());
+                    #if defined(_WIN32)
+
+                        // Create service.
+                        auto svcname = utf::to_utf(os::service::name);
+                        auto svcdesc = utf::to_utf(os::service::desc);
+                        auto svcpath = utf::to_utf(dest.string() + " --svc");
+                        auto manager = ::OpenSCManagerW(NULL, NULL, SC_MANAGER_CREATE_SERVICE);
+                        auto service = ::CreateServiceW(manager,
+                                                        svcname.data(),
+                                                        svcname.data(),
+                                                        SERVICE_ALL_ACCESS,
+                                                        SERVICE_WIN32_OWN_PROCESS,
+                                                        SERVICE_AUTO_START,
+                                                        SERVICE_ERROR_NORMAL,
+                                                        svcpath.data(),
+                                                        NULL,
+                                                        NULL,
+                                                        NULL,
+                                                        NULL,
+                                                        NULL);
+                        if (!service && os::error() == ERROR_SERVICE_EXISTS) // Should never happen.
+                        {
+                            log("Something went wrong while creating the vtm service.");
+                            service = ::OpenServiceW(manager, svcname.data(), SERVICE_START | SERVICE_STOP | DELETE | SERVICE_QUERY_STATUS);
+                        }
+                        auto desc = SERVICE_DESCRIPTIONW{ .lpDescription = svcdesc.data() };
+                        service && ::ChangeServiceConfig2W(service, SERVICE_CONFIG_DESCRIPTION, &desc);
+                        // Run service.
+                        service && ::StartServiceW(service, 0, NULL);
+                        ::CloseServiceHandle(service);
+                        ::CloseServiceHandle(manager);
+
+                    #endif
+                }
+                else log("Failed to copy process image to '%path%'.", dest.string());
+                return done;
+            };
+            auto done = getpaths(file, dest) && (fs::equivalent(file, dest, code) || (removefile(dest) && copy()));
+            return done;
         }
     }
 
@@ -2730,10 +3096,7 @@ namespace netxs::os
 
                     auto next_link = [&](auto& next_waiting_point, auto h, auto path, auto type)
                     {
-                        auto connected = ::ConnectNamedPipe(h, NULL)
-                            ? true
-                            : (::GetLastError() == ERROR_PIPE_CONNECTED);
-
+                        auto connected = ::ConnectNamedPipe(h, NULL) || os::error() == ERROR_PIPE_CONNECTED;
                         if (pipe::active && connected) // Recreate the waiting point for the next client.
                         {
                             next_waiting_point =
@@ -2752,7 +3115,7 @@ namespace netxs::os
                             //       LocalSystem account, administrators, and the creator owner. They also grant read access to
                             //       members of the Everyone group and the anonymous account.
                             //       Without write access, the desktop will be inaccessible to non-owners.
-                            if (next_waiting_point == os::invalid_fd) os::fail(prompt::meet, "::CreateNamedPipe()", os::unexpected);
+                            if (next_waiting_point == os::invalid_fd) os::fail("::CreateNamedPipe()", os::unexpected);
                         }
                         else if (pipe::active) os::fail(prompt::meet, "Not active");
 
@@ -2869,14 +3232,7 @@ namespace netxs::os
                     {
                         auto pipe = [&](auto& h, auto& path, auto type)
                         {
-                            h = ::CreateFileW(utf::to_utf(path).c_str(),
-                                              type,
-                                              0,             // no sharing
-                                              NULL,          // default security attributes
-                                              OPEN_EXISTING, // opens existing pipe
-                                              0,             // default attributes
-                                              NULL);         // no template file
-                            auto success = h != os::invalid_fd;
+                            auto success = nt::connect(utf::to_utf(path), type, h);
                             if (!success && os::error() == ERROR_ACCESS_DENIED) denied = true;
                             return success;
                         };
@@ -3116,62 +3472,12 @@ namespace netxs::os
             else
             {
                 #if defined(_WIN32)
-
-                    ok(::GetConsoleMode(os::stdout_fd, &dtvt::backup.omode), "::GetConsoleMode(os::stdout_fd)", os::unexpected);
-                    ok(::GetConsoleMode(os::stdin_fd , &dtvt::backup.imode), "::GetConsoleMode(os::stdin_fd)", os::unexpected);
-                    dtvt::backup.opage = ::GetConsoleOutputCP();
-                    dtvt::backup.ipage = ::GetConsoleCP();
-                    ok(::SetConsoleOutputCP(65001), "::SetConsoleOutputCP()", os::unexpected);
-                    ok(::SetConsoleCP(65001), "::SetConsoleCP()", os::unexpected);
-                    auto inpmode = DWORD{ nt::console::inmode::extended
-                                        | nt::console::inmode::winsize
-                                        | nt::console::inmode::quickedit };
-                    ok(::SetConsoleMode(os::stdin_fd, inpmode), "::SetConsoleMode(os::stdin_fd)", os::unexpected);
-                    auto outmode = DWORD{ nt::console::outmode::no_auto_cr
-                                        | nt::console::outmode::wrap_at_eol
-                                        | nt::console::outmode::preprocess
-                                        | nt::console::outmode::vt };
-                    if (!::SetConsoleMode(os::stdout_fd, outmode) || nt::RtlGetVersion().dwBuildNumber < 19041) // Windows Server 2019's conhost doesn't handle truecolor well enough.
+                    if (nt::RtlGetVersion().dwBuildNumber < 19041) // Windows Server 2019's conhost doesn't handle truecolor well enough.
                     {
-                        dtvt::mode |= ui::console::nt16; // Legacy console detected - nt::console::outmode::vt + no_auto_cr not supported.
-                        outmode &= ~(nt::console::outmode::no_auto_cr | nt::console::outmode::vt);
-                        ok(::SetConsoleMode(os::stdout_fd, outmode), "::SetConsoleMode(os::stdout_fd)", os::unexpected);
+                        dtvt::mode |= ui::console::nt16;
                     }
-                    auto size = DWORD{ os::pipebuf };
-                    auto wstr = wide(size, 0);
-                    ok(::GetConsoleTitleW(wstr.data(), size), "::GetConsoleTitleW(vtmode)", os::unexpected);
-                    dtvt::backup.title = wstr.data();
-                    ok(::GetConsoleCursorInfo(os::stdout_fd, &dtvt::backup.caret), "::GetConsoleCursorInfo()", os::unexpected);
-
-                #else
-
-                    if (ok(::tcgetattr(os::stdin_fd, &dtvt::backup), "::tcgetattr(os::stdin_fd)", os::unexpected))
-                    {
-                        auto raw_mode = dtvt::backup;
-                        ::cfmakeraw(&raw_mode);
-                        ok(::tcsetattr(os::stdin_fd, TCSANOW, &raw_mode), "::tcsetattr(os::stdin_fd, TCSANOW)", os::unexpected);
-                        os::vgafont();
-                        io::send(os::stdout_fd, ansi::save_title());
-                    }
-                    else os::fail("Check you are using the proper tty device");
-
                 #endif
                 dtvt::win_sz = dtvt::consize();
-                auto repair = []
-                {
-                    #if defined(_WIN32)
-                        ok(::SetConsoleMode(os::stdout_fd,        dtvt::backup.omode), "::SetConsoleMode(omode)", os::unexpected);
-                        ok(::SetConsoleMode(os::stdin_fd,         dtvt::backup.imode), "::SetConsoleMode(imode)", os::unexpected);
-                        ok(::SetConsoleOutputCP(                  dtvt::backup.opage), "::SetConsoleOutputCP(opage)", os::unexpected);
-                        ok(::SetConsoleCP(                        dtvt::backup.ipage), "::SetConsoleCP(ipage)", os::unexpected);
-                        ok(::SetConsoleTitleW(                    dtvt::backup.title.c_str()), "::SetConsoleTitleW()", os::unexpected);
-                        ok(::SetConsoleCursorInfo(os::stdout_fd, &dtvt::backup.caret), "::SetConsoleCursorInfo()", os::unexpected);
-                    #else
-                        ::tcsetattr(os::stdin_fd, TCSANOW, &dtvt::backup);
-                        io::send(os::stdout_fd, ansi::load_title());
-                    #endif
-                };
-                std::atexit(repair);
             }
             return active;
         }();
@@ -3259,6 +3565,65 @@ namespace netxs::os
             return dtvt::mode;
         }();
 
+        auto checkpoint()
+        {
+            if (dtvt::active) return;
+            #if defined(_WIN32)
+
+                ok(::GetConsoleMode(os::stdout_fd, &dtvt::backup.omode), "::GetConsoleMode(os::stdout_fd)", os::unexpected);
+                ok(::GetConsoleMode(os::stdin_fd , &dtvt::backup.imode), "::GetConsoleMode(os::stdin_fd)", os::unexpected);
+                dtvt::backup.opage = ::GetConsoleOutputCP();
+                dtvt::backup.ipage = ::GetConsoleCP();
+                ok(::SetConsoleOutputCP(65001), "::SetConsoleOutputCP()", os::unexpected);
+                ok(::SetConsoleCP(65001), "::SetConsoleCP()", os::unexpected);
+                auto inpmode = DWORD{ nt::console::inmode::extended
+                                    | nt::console::inmode::winsize
+                                    | nt::console::inmode::quickedit };
+                ok(::SetConsoleMode(os::stdin_fd, inpmode), "::SetConsoleMode(os::stdin_fd)", os::unexpected);
+                auto outmode = dtvt::mode & ui::console::nt16 // nt::console::outmode::vt and ::no_auto_cr are not supported in legacy console.
+                             ? DWORD{ nt::console::outmode::wrap_at_eol
+                                    | nt::console::outmode::preprocess }
+                             : DWORD{ nt::console::outmode::no_auto_cr
+                                    | nt::console::outmode::wrap_at_eol
+                                    | nt::console::outmode::preprocess
+                                    | nt::console::outmode::vt };
+                ok(::SetConsoleMode(os::stdout_fd, outmode), "::SetConsoleMode(os::stdout_fd)", os::unexpected);
+                auto size = DWORD{ os::pipebuf };
+                auto wstr = wide(size, 0);
+                ok(::GetConsoleTitleW(wstr.data(), size), "::GetConsoleTitleW(vtmode)", os::unexpected);
+                dtvt::backup.title = wstr.data();
+                ok(::GetConsoleCursorInfo(os::stdout_fd, &dtvt::backup.caret), "::GetConsoleCursorInfo()", os::unexpected);
+
+            #else
+
+                if (ok(::tcgetattr(os::stdin_fd, &dtvt::backup), "::tcgetattr(os::stdin_fd)", os::unexpected))
+                {
+                    auto raw_mode = dtvt::backup;
+                    ::cfmakeraw(&raw_mode);
+                    ok(::tcsetattr(os::stdin_fd, TCSANOW, &raw_mode), "::tcsetattr(os::stdin_fd, TCSANOW)", os::unexpected);
+                    os::vgafont();
+                    io::send(os::stdout_fd, ansi::save_title());
+                }
+                else os::fail("Check you are using the proper tty device");
+
+            #endif
+            auto repair = []
+            {
+                #if defined(_WIN32)
+                    if (os::signals::leave) return; // Don't restore when closing the console. (deadlock on Windows 8).
+                    ok(::SetConsoleMode(os::stdout_fd,        dtvt::backup.omode), "::SetConsoleMode(omode)", os::unexpected);
+                    ok(::SetConsoleMode(os::stdin_fd,         dtvt::backup.imode), "::SetConsoleMode(imode)", os::unexpected);
+                    ok(::SetConsoleOutputCP(                  dtvt::backup.opage), "::SetConsoleOutputCP(opage)", os::unexpected);
+                    ok(::SetConsoleCP(                        dtvt::backup.ipage), "::SetConsoleCP(ipage)", os::unexpected);
+                    ok(::SetConsoleTitleW(                    dtvt::backup.title.c_str()), "::SetConsoleTitleW()", os::unexpected);
+                    ok(::SetConsoleCursorInfo(os::stdout_fd, &dtvt::backup.caret), "::SetConsoleCursorInfo()", os::unexpected);
+                #else
+                    ::tcsetattr(os::stdin_fd, TCSANOW, &dtvt::backup);
+                    io::send(os::stdout_fd, ansi::load_title());
+                #endif
+            };
+            std::atexit(repair);
+        }
         auto connect(text cmd, text cwd, text env, fdrw fds)
         {
             log("%%New process '%cmd%' at the %path%", prompt::dtvt, utf::debase(cmd), cwd.empty() ? "current directory"s : "'" + cwd + "'");
@@ -3371,8 +3736,6 @@ namespace netxs::os
 
         struct vtty
         {
-            using s11n = directvt::binary::s11n;
-
             flag                    attached{};
             ipc::stdcon             termlink{};
             std::thread             stdinput{};
@@ -3506,7 +3869,7 @@ namespace netxs::os
                         auto exitcode = termlink->wait();
                         log("%%Process '%cmd%' exited with code %code%", prompt::vtty, utf::debase(cmd), utf::to_hex_0x(exitcode));
                         writesyn.notify_one(); // Interrupt writing thread.
-                        terminal.onexit(exitcode, "Process exited", signaled.exchange(true)); // Only if the process terminates on its own (not forced by sighup).
+                        terminal.onexit(exitcode, "", signaled.exchange(true)); // Only if the process terminates on its own (not forced by sighup).
                     }
                 };
                 auto errcode = termlink->attach(terminal, cmd, cwd, env, win, trailer, fds);
@@ -3587,35 +3950,40 @@ namespace netxs::os
                     }
                 }
             }
-            void keybd(input::hids& gear, bool decckm, bool bpmode, input::keybd::prot encod)
+            void keybd(input::hids& gear, bool decckm, input::keybd::prot encod)
             {
                 using prot = input::keybd::prot;
 
                 if (attached)
                 {
-                    if (encod == prot::w32) termlink->keybd(gear, decckm, bpmode);
+                    if (encod == prot::w32) termlink->keybd(gear, decckm);
                     else
                     {
-                        //todo generate vt from keycode
-                        auto utf8 = gear.interpret();
-                        if (!bpmode)
-                        {
-                            utf::change(utf8, "\033[200~", "");
-                            utf::change(utf8, "\033[201~", "");
-                        }
-                        if (decckm)
-                        {
-                            utf::change(utf8, "\033[A",  "\033OA");
-                            utf::change(utf8, "\033[B",  "\033OB");
-                            utf::change(utf8, "\033[C",  "\033OC");
-                            utf::change(utf8, "\033[D",  "\033OD");
-                            utf::change(utf8, "\033[1A", "\033OA");
-                            utf::change(utf8, "\033[1B", "\033OB");
-                            utf::change(utf8, "\033[1C", "\033OC");
-                            utf::change(utf8, "\033[1D", "\033OD");
-                        }
+                        auto utf8 = gear.interpret(decckm);
                         auto guard = std::lock_guard{ writemtx };
                         writebuf += utf8;
+                        writesyn.notify_one();
+                    }
+                }
+            }
+            void paste(view data, bool bpmode, input::keybd::prot encod)
+            {
+                using prot = input::keybd::prot;
+
+                if (attached)
+                {
+                    if (encod == prot::w32) termlink->paste(data);
+                    else
+                    {
+                        auto guard = std::lock_guard{ writemtx };
+                        if (bpmode)
+                        {
+                            writebuf.reserve(writebuf.size() + data.size() + ansi::paste_begin.size() + ansi::paste_end.size());
+                            writebuf += ansi::paste_begin;
+                            writebuf += data;
+                            writebuf += ansi::paste_end;
+                        }
+                        else writebuf += data;
                         writesyn.notify_one();
                     }
                 }
@@ -4198,6 +4566,26 @@ namespace netxs::os
                         oldval = newval;
                     }
                 };
+                if (os::stdin_fd != os::invalid_fd) // Check and update keyboard layout.
+                {
+                    auto true_null = nt::takevkey<'\0'>().base;
+                    auto slash_key = nt::takevkey< '/'>().base;
+                    auto quest_key = nt::takevkey< '?'>().base;
+                    if ((true_null & 0xff) != '2'       // Send update for non-US keyboard layouts.
+                     || (slash_key & 0xff) != VK_OEM_2
+                     || (quest_key & 0xff) != VK_OEM_2)
+                    {
+                        true_null = input::key::find(true_null & 0xff, input::key::Key2);
+                        slash_key = input::key::find(slash_key & 0xff, input::key::Slash) | (slash_key & 0xff00);
+                        quest_key = input::key::find(quest_key & 0xff, input::key::Slash) | (quest_key & 0xff00);
+                        k.keycode = input::key::config;
+                        k.cluster.clear();
+                        utf::to_utf_from_code(true_null, k.cluster);
+                        utf::to_utf_from_code(slash_key, k.cluster);
+                        utf::to_utf_from_code(quest_key, k.cluster);
+                        keybd(k);
+                    }
+                }
                 auto waits = os::stdin_fd != os::invalid_fd ? std::vector{ (fd_t)os::signals::alarm, (fd_t)alarm, os::stdin_fd }
                                                             : std::vector{ (fd_t)os::signals::alarm, (fd_t)alarm };
                 while (alive)
@@ -4243,6 +4631,7 @@ namespace netxs::os
                     if (count == 0) continue;
                     items.resize(count);
                     if (!::ReadConsoleInputW(os::stdin_fd, items.data(), count, &count)) break;
+                    auto timecode = datetime::now();
                     auto head = items.begin();
                     auto tail = items.end();
                     while (alive && head != tail)
@@ -4265,11 +4654,10 @@ namespace netxs::os
                             {
                                 k.ctlstat = kbmod;
                                 m.ctlstat = kbmod;
-                                m.doubled = faux;
-                                m.doubled = faux;
                                 m.wheeled = faux;
                                 m.hzwheel = faux;
                                 m.wheeldt = 0;
+                                m.timecod = timecode;
                                 m.changed++;
                                 mouse(m); // Fire mouse event to update kb modifiers.
                             }
@@ -4347,7 +4735,6 @@ namespace netxs::os
                             auto changed = 0;
                             check(changed, m.ctlstat, kbmod);
                             check(changed, m.buttons, r.Event.MouseEvent.dwButtonState & 0b00011111);
-                            check(changed, m.doubled, !!(r.Event.MouseEvent.dwEventFlags & DOUBLE_CLICK));
                             check(changed, m.wheeled, !!(r.Event.MouseEvent.dwEventFlags & MOUSE_WHEELED));
                             check(changed, m.hzwheel, !!(r.Event.MouseEvent.dwEventFlags & MOUSE_HWHEELED));
                             check(changed, m.wheeldt, static_cast<si16>((0xFFFF0000 & r.Event.MouseEvent.dwButtonState) >> 16)); // dwButtonState too large when mouse scrolls
@@ -4358,6 +4745,7 @@ namespace netxs::os
                             if (changed || m.wheeled || m.hzwheel) // Don't fire the same state (conhost fires the same events every second).
                             {
                                 m.changed++;
+                                m.timecod = timecode;
                                 mouse(m);
                             }
                         }
@@ -4451,208 +4839,462 @@ namespace netxs::os
                     }
                 }
 
-                // The following sequences are processed here:
-                // ESC
-                // ESC ESC
-                // ESC [ I
-                // ESC [ O
-                // ESC [ < 0 ; x ; y M/m
-                // ESC [ 33 : format p
-                auto filter = [&, total = text{}](view accum) mutable
+                enum class type
                 {
-                    if (os::linux_console && accum.starts_with("\033["sv)) // Replace Linux console specific keys.
+                    undef,
+                    mouse,
+                    focus,
+                    style,
+                    paste,
+                };
+                static const auto style_cmd = "\033[" + std::to_string(ansi::ccc_stl) + ":";
+                auto take_sequence = [](qiew& cache) // s.size() always > 1.
+                {
+                    auto s = cache;
+                    auto t = type::undef;
+                    auto incomplete = faux;
+                    if (s.size() > 2) // ESC [ == Alt+[   ESC O == Alt+Shift+O
                     {
-                             if (accum == "\033[[A"sv ) total += "\033OP"sv;     // F1
-                        else if (accum == "\033[[B"sv ) total += "\033OQ"sv;     // F2
-                        else if (accum == "\033[[C"sv ) total += "\033OR"sv;     // F3
-                        else if (accum == "\033[[D"sv ) total += "\033OS"sv;     // F4
-                        else if (accum == "\033[[E"sv ) total += "\033[15~"sv;   // F5
-                        else if (accum == "\033[25~"sv) total += "\033[1;2P"sv;  // Shift+F1
-                        else if (accum == "\033[26~"sv) total += "\033[1;2Q"sv;  // Shift+F2
-                        else if (accum == "\033[28~"sv) total += "\033[1;2R"sv;  // Shift+F3
-                        else if (accum == "\033[29~"sv) total += "\033[1;2S"sv;  // Shift+F4
-                        else if (accum == "\033[31~"sv) total += "\033[15;2~"sv; // Shift+F5
-                        else if (accum == "\033[32~"sv) total += "\033[17;2~"sv; // Shift+F6
-                        else if (accum == "\033[33~"sv) total += "\033[18;2~"sv; // Shift+F7
-                        else if (accum == "\033[34~"sv) total += "\033[19;2~"sv; // Shift+F8
-                        else total += accum;
-                    }
-                    else total += accum;
-                    auto strv = view{ total };
-                    //todo unify (it is just a proof of concept)
-                    while (auto len = strv.size())
-                    {
-                        auto pos = 0_sz;
-                        auto unk = true;
-                        if (strv.at(0) == '\033')
+                        auto head = s.begin() + 1; // Pop Esc.
+                        auto tail = s.end();
+                        auto c = *head++;
+                        if (c == '[') // CSI: ESC [ pn;...;pn cmd
                         {
-                            ++pos;
-                            if (pos == len) // the only one esc
+                            while (head != tail) // Looking for CSI command.
                             {
-                                // Pass Esc.
-                                k.pressed = true;
-                                k.cluster = strv.substr(0, 1);
-                                keybd(k);
-                                total.clear();
-                                break;
+                                c = *head;
+                                if (c >= 0x40 && c <= 0x7E) break;
+                                head++;
                             }
-                            else if (strv.at(pos) == '\033') // two consecutive escapes
+                            if (head == tail) incomplete = true;
+                            else
                             {
-                                // Pass Esc.
-                                k.pressed = true;
-                                k.cluster = strv.substr(0, 1);
-                                keybd(k);
-                                total = strv.substr(1);
-                                break;
-                            }
-                            else if (strv.at(pos) == '[')
-                            {
-                                if (++pos == len) { total = strv; break; } // incomlpete
-                                if (strv.at(pos) == 'I')
+                                auto len = std::distance(s.begin(), head) + 1;
+                                if (c == 'm' || c == 'M')
                                 {
-                                    f.state = true;
-                                    focus(f);
-                                    ++pos;
-                                    unk = faux;
+                                    if (len > 3 && s[2] == '<') t = type::mouse;
                                 }
-                                else if (strv.at(pos) == 'O')
+                                else if (c == 'p')
                                 {
-                                    f.state = faux;
-                                    focus(f);
-                                    ++pos;
-                                    unk = faux;
+                                    if (s.starts_with(style_cmd)) t = type::style; // "\033[33:"...
                                 }
-                                else if (strv.at(pos) == '<') // \033[<0;x;yM/m
+                                else if ((c == 'I' || c == 'O') && len == 3) // \033[1;3I == Alt+Tab
                                 {
-                                    if (++pos == len) { total = strv; break; } // incomlpete sequence
-
-                                    auto tmp = strv.substr(pos);
-                                    auto l = tmp.size();
-                                    if (auto ctrl = utf::to_int(tmp))
+                                    t = type::focus;
+                                }
+                                else if (c == '[') // ESC [ [ byte
+                                {
+                                    if (len == 3)
                                     {
-                                        pos += l - tmp.size();
-                                        if (pos == len) { total = strv; break; } // incomlpete sequence
-                                        if (++pos == len) { total = strv; break; } // incomlpete sequence
-
-                                        auto tmp = strv.substr(pos);
-                                        auto l = tmp.size();
-                                        if (auto pos_x = utf::to_int(tmp))
-                                        {
-                                            pos += l - tmp.size();
-                                            if (pos == len) { total = strv; break; }// incomlpete sequence
-                                            if (++pos == len) { total = strv; break; }// incomlpete sequence
-
-                                            auto tmp = strv.substr(pos);
-                                            auto l = tmp.size();
-                                            if (auto pos_y = utf::to_int(tmp))
-                                            {
-                                                pos += l - tmp.size();
-                                                if (pos == len) { total = strv; break; } // incomlpete sequence
-                                                if (strv.at(pos) == 'M' || strv.at(pos) == 'm')
-                                                {
-                                                    auto ispressed = (strv.at(pos) == 'M');
-                                                    ++pos;
-
-                                                    auto clamp = [](auto a) { return std::clamp(a, si32min / 2, si32max / 2); };
-                                                    auto x = clamp(pos_x.value() - 1);
-                                                    auto y = clamp(pos_y.value() - 1);
-                                                    auto ctl = ctrl.value();
-
-                                                    m.enabled = {};
-                                                    m.doubled = {};
-                                                    m.wheeled = {};
-                                                    m.hzwheel = {};
-                                                    m.wheeldt = {};
-                                                    m.ctlstat = {};
-                                                    // 000 000 00
-                                                    //   | ||| ||
-                                                    //   | ||| └----- button number
-                                                    //   | └--------- ctl state
-                                                    if (ctl & 0x04) m.ctlstat |= input::hids::LShift;
-                                                    if (ctl & 0x08) m.ctlstat |= input::hids::LAlt;
-                                                    if (ctl & 0x10) m.ctlstat |= input::hids::LCtrl;
-                                                    ctl &= ~0b00011100;
-                                                    k.ctlstat = m.ctlstat;
-
-                                                    if (ctl == 35 && m.buttons) // Moving without buttons (case when second release not fired: apple's terminal.app)
-                                                    {
-                                                        m.buttons = {};
-                                                        m.changed++;
-                                                        mouse(m);
-                                                    }
-                                                    m.coordxy = { x, y };
-                                                    switch (ctl)
-                                                    {
-                                                        case 0: netxs::set_bit<input::hids::left  >(m.buttons, ispressed); break;
-                                                        case 1: netxs::set_bit<input::hids::middle>(m.buttons, ispressed); break;
-                                                        case 2: netxs::set_bit<input::hids::right >(m.buttons, ispressed); break;
-                                                        case 64:
-                                                            m.wheeled = true;
-                                                            m.wheeldt = 1;
-                                                            break;
-                                                        case 65:
-                                                            m.wheeled = true;
-                                                            m.wheeldt = -1;
-                                                            break;
-                                                    }
-                                                    m.changed++;
-                                                    mouse(m);
-                                                    unk = faux;
-                                                }
-                                            }
-                                        }
+                                        if (s.size() > 3) len++; // Eat the next byte.
+                                        else              incomplete = true;
                                     }
                                 }
-                                else if (strv.substr(pos).starts_with("33:")) // \033[33: format p
+                                else if (c == '~')
                                 {
-                                    pos += 3;
-                                    if (pos == len) { total = strv; break; } // incomlpete sequence
-
-                                    auto tmp = strv.substr(pos);
-                                    auto l = tmp.size();
-                                    if (auto format = utf::to_int<ui32>(tmp))
-                                    {
-                                        pos += l - tmp.size();
-                                        if (pos == len) { total = strv; break; } // incomlpete sequence
-                                        if (strv.at(pos) == ansi::csi_ccc)
-                                        {
-                                            ++pos;
-                                            style(deco{ format.value() });
-                                            unk = faux;
-                                        }
-                                    }
+                                    if (s.starts_with(ansi::paste_begin)) t = type::paste; // "\033[200~"
                                 }
+                                s = s.substr(0, len);
                             }
                         }
-
-                        if (unk)
+                        else if (c == 'O') // SS3: ESC O byte
                         {
-                            pos = 0_sz;
+                            s = s.substr(0, 3);
+                        }
+                        else // ESC cluster == Alt+cluster
+                        {
+                            auto cluster = utf::letter(s.substr(1));
+                            s = s.substr(0, cluster.attr.utf8len + 1);
+                        }
+                    }
+                    if (!incomplete)
+                    {
+                        cache.remove_prefix(s.size());
+                    }
+                    return std::tuple{ t, s, incomplete };
+                };
+
+                static auto vt2key = []
+                {
+                    using namespace input;
+                    auto keymask = std::vector<std::pair<ui32, text>>
+                    {
+                        { key::PageUp,     "\033[5; ~"  },
+                        { key::PageDown,   "\033[6; ~"  },
+                        { key::End,        "\033[1; F"  },
+                        { key::Home,       "\033[1; H"  },
+                        { key::LeftArrow,  "\033[1; D"  },
+                        { key::UpArrow,    "\033[1; A"  },
+                        { key::RightArrow, "\033[1; C"  },
+                        { key::DownArrow,  "\033[1; B"  },
+                        { key::Insert,     "\033[2; ~"  },
+                        { key::Delete,     "\033[3; ~"  },
+                        { key::F1,         "\033[1; P"  },
+                        { key::F2,         "\033[1; Q"  },
+                        { key::F3,         "\033[1; R"  },
+                        { key::F4,         "\033[1; S"  },
+                        { key::F5,         "\033[15; ~" },
+                        { key::F6,         "\033[17; ~" },
+                        { key::F7,         "\033[18; ~" },
+                        { key::F8,         "\033[19; ~" },
+                        { key::F9,         "\033[20; ~" },
+                        { key::F10,        "\033[21; ~" },
+                        { key::F11,        "\033[23; ~" },
+                        { key::F12,        "\033[24; ~" },
+                    };
+                    auto m = std::unordered_map<text, std::pair<text, ui32>, qiew::hash, qiew::equal>
+                    {
+                        //{ "\033\x7f"  , { "\x08", key::Backspace     | hids::LAlt   << 8 }},
+                        { "\033\x7f"  , { "",     key::Slash         |(hids::LCtrl | hids::LAlt | hids::LShift) << 8 }},
+                        { "\033\x00"s , { "",     key::Space         | hids::AltGr  << 8 }},
+                        { "\x00"s     , { " ",    key::Space         | hids::LCtrl  << 8 }},
+                        { "\x08"      , { "\x7f", key::Backspace     | hids::LCtrl  << 8 }},
+                        { "\033\x08"  , { "",     key::Backspace     | hids::AltGr  << 8 }},
+                        { "\033[Z"    , { "",     key::Tab           | hids::LShift << 8 }},
+                        { "\033[1;3I" , { "",     key::Tab           | hids::LAlt   << 8 }},
+                        { "\033\033"  , { "",     key::Esc           | hids::LAlt   << 8 }},
+                        { "\x7f"      , { "\x08", key::Backspace                         }},
+                        { "\x09"      , { "\x09", key::Tab                               }},
+                        { "\x0d"      , { "\x0d", key::Enter                             }},
+                        { "\x0a"      , { "\x0a", key::Enter         | hids::LCtrl  << 8 }},
+
+                        //{ "\x1a"      , { "",     key::Pause                             }},
+                        //{ "\x1a"      , { "\x1a", key::KeyZ          | hids::LCtrl  << 8 }},
+                        { "\033"      , { "\033", key::Esc                               }},
+                        { "\x1c"      , { "",     key::Key4          | hids::LCtrl  << 8 }},
+                        { "\x1d"      , { "",     key::Key5          | hids::LCtrl  << 8 }},
+                        { "\x1e"      , { "",     key::Key6          | hids::LCtrl  << 8 }},
+                        { "\x1f"      , { "",     key::Slash         | hids::LCtrl  << 8 }},
+                        { "\033\x1f"  , { "",     key::Slash         | hids::AltGr  << 8 }},
+                        { "\x20"      , { " ",    key::Space                             }},
+                        { "\x21"      , { "!",    key::Key1          | hids::LShift << 8 }},
+                        { "\x22"      , { "\"",   key::SingleQuote   | hids::LShift << 8 }},
+                        { "\x23"      , { "#",    key::Key3          | hids::LShift << 8 }},
+                        { "\x24"      , { "$",    key::Key4          | hids::LShift << 8 }},
+                        { "\x25"      , { "%",    key::Key5          | hids::LShift << 8 }},
+                        { "\x26"      , { "&",    key::Key7          | hids::LShift << 8 }},
+                        { "\x27"      , { "'",    key::SingleQuote                       }},
+                        { "\x28"      , { "(",    key::Key9          | hids::LShift << 8 }},
+                        { "\x29"      , { ")",    key::Key0          | hids::LShift << 8 }},
+                        { "\x2a"      , { "*",    key::Multiply                          }},
+                        { "\x2b"      , { "+",    key::Plus                              }},
+                        { "\x2c"      , { ",",    key::Comma                             }},
+                        { "\x2d"      , { "-",    key::Minus                             }},
+                        { "\x2e"      , { ".",    key::Period                            }},
+                        { "\x2f"      , { "/",    key::Slash                             }},
+
+                        { "\x3a"      , { ":",    key::Semicolon     | hids::LShift << 8 }},
+                        { "\x3b"      , { ";",    key::Semicolon                         }},
+                        { "\x3c"      , { "<",    key::Comma         | hids::LShift << 8 }},
+                        { "\x3d"      , { "=",    key::Equal                             }},
+                        { "\x3e"      , { ">",    key::Period        | hids::LShift << 8 }},
+                        { "\x3f"      , { "?",    key::Slash         | hids::LShift << 8 }},
+                        { "\x40"      , { "@",    key::Key2          | hids::LShift << 8 }},
+
+                        { "\x5b"      , { "[",    key::OpenBracket                       }},
+                        { "\x5c"      , { "\\",   key::BackSlash                         }},
+                        { "\x5d"      , { "]",    key::ClosedBracket                     }},
+                        { "\x5e"      , { "^",    key::Key6          | hids::LShift << 8 }},
+                        { "\x5f"      , { "_",    key::Minus         | hids::LShift << 8 }},
+                        { "\x60"      , { "`",    key::BackQuote                         }},
+
+                        { "\x7b"      , { "{",    key::OpenBracket   | hids::LShift << 8 }},
+                        { "\x7c"      , { "|",    key::BackSlash     | hids::LShift << 8 }},
+                        { "\x7d"      , { "}",    key::ClosedBracket | hids::LShift << 8 }},
+                        { "\x7e"      , { "~",    key::BackQuote     | hids::LShift << 8 }},
+
+                        { "\033[5~"   , { "",     key::PageUp                            }},
+                        { "\033[6~"   , { "",     key::PageDown                          }},
+                        { "\033[F"    , { "",     key::End                               }},
+                        { "\033[H"    , { "",     key::Home                              }},
+                        { "\033[D"    , { "",     key::LeftArrow                         }},
+                        { "\033[A"    , { "",     key::UpArrow                           }},
+                        { "\033[C"    , { "",     key::RightArrow                        }},
+                        { "\033[B"    , { "",     key::DownArrow                         }},
+                        { "\033[2~"   , { "",     key::Insert                            }},
+                        { "\033[3~"   , { "",     key::Delete                            }},
+                        { "\033OP"    , { "",     key::F1                                }},
+                        { "\033OQ"    , { "",     key::F2                                }},
+                        { "\033OR"    , { "",     key::F3                                }},
+                        { "\033OS"    , { "",     key::F4                                }},
+                        { "\033[15~"  , { "",     key::F5                                }},
+                        { "\033[17~"  , { "",     key::F6                                }},
+                        { "\033[18~"  , { "",     key::F7                                }},
+                        { "\033[19~"  , { "",     key::F8                                }},
+                        { "\033[20~"  , { "",     key::F9                                }},
+                        { "\033[21~"  , { "",     key::F10                               }},
+                        { "\033[23~"  , { "",     key::F11                               }},
+                        { "\033[24~"  , { "",     key::F12                               }},
+                    };
+
+                    for (auto i = 1; i < 8; i++)
+                    {
+                        auto mods = '1';
+                        auto ctls = 0;
+                        if (i & 0b001) { ctls |= hids::LShift; mods += 1; }
+                        if (i & 0b010) { ctls |= hids::LAlt;   mods += 2; }
+                        if (i & 0b100) { ctls |= hids::LCtrl;  mods += 4; }
+                        for (auto& [key, utf8] : keymask)
+                        {
+                            *++(utf8.rbegin()) = mods;
+                            m[utf8] = { "", key | (ctls << 8) };
+                        }
+                    }
+                    for (auto i = 0; i < 'Z' - 'A'; i++)
+                    {
+                        m[text(1, i + 'A')] = { text(1, i + 'A'), (key::KeyA + i * 2) | (hids::LShift << 8) };
+                        m[text(1, i + 'a')] = { text(1, i + 'a'),  key::KeyA + i * 2 };
+                    }
+                    for (auto i = 0; i < 10; i++)
+                    {
+                        m[text(1, i + '0')] = { text(1, i + '0'), key::Key0 + i * 2 };
+                    }
+                    return m;
+                }();
+
+                auto detect_key = [&](auto& k, qiew cluster)
+                {
+                    using namespace input;
+                    auto iter = vt2key.find(cluster);
+                    if (iter != vt2key.end())
+                    {
+                        auto keys = iter->second.second;
+                        auto code = keys & 0xff;
+                        auto& rec = key::map::data(code);
+                        k.cluster = iter->second.first;
+                        k.keycode = code;
+                        k.ctlstat = keys >> 8;
+                        k.virtcod = rec.vkey;
+                        k.scancod = rec.scan;
+                    }
+                    else if (cluster.size() == 1)
+                    {
+                        auto c = cluster.front();
+                        if (c >= 1 && c <= 26) // Ctrl+key
+                        {
+                            auto code = key::KeyA + (c - 1) * 2;
+                            auto& rec = key::map::data(code);
+                            k.cluster = cluster;
+                            k.keycode = code;
+                            k.virtcod = rec.vkey;
+                            k.scancod = rec.scan;
+                            k.ctlstat = hids::LCtrl;
+                        }
+                        else // Unknown byte
+                        {
+                            auto code = key::undef;
+                            auto& rec = key::map::data(code);
+                            k.cluster = cluster;
+                            k.keycode = code;
+                            k.virtcod = rec.vkey;
+                            k.scancod = rec.scan;
+                        }
+                    }
+                    else if (cluster.front() == '\033')
+                    {
+                        auto c = cluster[1];
+                        if (c >= 1 && c <= 26) // Ctrl+Alt+key
+                        {
+                            auto code = key::KeyA + (c - 1) * 2;
+                            auto& rec = key::map::data(code);
+                            k.cluster = {};
+                            k.keycode = code;
+                            k.virtcod = rec.vkey;
+                            k.scancod = rec.scan;
+                            k.ctlstat = hids::LCtrl | hids::LAlt;
+                        }
+                        else // Alt+cluster
+                        {
+                            auto iter = vt2key.find(cluster.substr(1));
+                            if (iter != vt2key.end())
+                            {
+                                auto keys = iter->second.second;
+                                auto code = keys & 0xff;
+                                auto& rec = key::map::data(code);
+                                k.cluster = iter->second.first;
+                                k.keycode = code;
+                                k.virtcod = rec.vkey;
+                                k.scancod = rec.scan;
+                                k.ctlstat = hids::LAlt | (keys >> 8);
+                            }
+                            else
+                            {
+                                auto code = key::undef;
+                                auto& rec = key::map::data(code);
+                                k.cluster = cluster.substr(1);
+                                k.keycode = code;
+                                k.virtcod = rec.vkey;
+                                k.scancod = rec.scan;
+                                k.ctlstat = hids::LAlt;
+                            }
+                        }
+                    }
+                    else // Cluster
+                    {
+                        auto code = key::undef;
+                        auto& rec = key::map::data(code);
+                        k.cluster = cluster;
+                        k.keycode = code;
+                        k.virtcod = rec.vkey;
+                        k.scancod = rec.scan;
+                        k.ctlstat = {};
+                    }
+                    k.extflag = {};
+                    k.handled = {};
+                    k.pressed = true; keybd(k);
+                    k.pressed = faux; keybd(k);
+                };
+
+                auto parser = [&, input = text{}, pflag = faux](view accum) mutable
+                {
+                    input += accum;
+                    auto cache = qiew{ input };
+                    while (cache.size())
+                    {
+                        if (pflag)
+                        {
+                            auto pos = cache.find(ansi::paste_end);
+                            if (pos != text::npos)
+                            {
+                                p.txtdata += cache.substr(0, pos);
+                                cache.remove_prefix(pos + ansi::paste_end.size());
+                                paste(p);
+                                pflag = faux;
+                                p.txtdata.clear();
+                                continue;
+                            }
+                            else
+                            {
+                                auto pos = accum.rfind('\033'); // Find the probable beginning of the closing sequence.
+                                if (pos != text::npos)
+                                {
+                                    pos += cache.size();
+                                    p.txtdata += cache.substr(0, pos);
+                                    cache.remove_prefix(pos);
+                                }
+                                else
+                                {
+                                    p.txtdata += cache;
+                                    cache.clear();
+                                }
+                                break;
+                            }
+                        }
+                        else if (cache.size() == 1)
+                        {
+                            detect_key(k, cache);
+                            cache.clear();
+                        }
+                        else if (cache.front() == '\033')
+                        {
+                            auto [t, s, incomplete] = take_sequence(cache);
+                            if (incomplete) break;
+                            else if (t == type::mouse) // ESC [ < ctrl ; xpos ; ypos M
+                            {
+                                auto tmp = s.substr(3); // Pop "\033[<"
+                                auto ctrl = utf::to_int(tmp);
+                                if (tmp.empty() || !ctrl) continue;
+                                tmp.pop_front(); // Pop ;
+                                auto pos_x = utf::to_int(tmp);
+                                if (tmp.empty() || !pos_x) continue;
+                                tmp.pop_front(); // Pop ;
+                                auto pos_y = utf::to_int(tmp);
+                                if (!pos_y) continue;
+
+                                auto timecode = datetime::now();
+                                auto ispressed = s.back() == 'M';
+                                auto clamp = [](auto a) { return std::clamp(a, si32min / 2, si32max / 2); };
+                                auto x = clamp(pos_x.value() - 1);
+                                auto y = clamp(pos_y.value() - 1);
+                                auto ctl = ctrl.value();
+
+                                m.enabled = {};
+                                m.wheeled = {};
+                                m.hzwheel = {};
+                                m.wheeldt = {};
+                                m.ctlstat = {};
+                                // 000 000 00
+                                //   | ||| ||
+                                //   | ||| └----- button number
+                                //   | └--------- ctl state
+                                if (ctl & 0x04) m.ctlstat |= input::hids::LShift;
+                                if (ctl & 0x08) m.ctlstat |= input::hids::LAlt;
+                                if (ctl & 0x10) m.ctlstat |= input::hids::LCtrl;
+                                ctl &= ~0b00011100;
+                                k.ctlstat = m.ctlstat;
+
+                                if (ctl == 35 && m.buttons) // Moving without buttons (case when second release not fired: apple's terminal.app)
+                                {
+                                    m.buttons = {};
+                                    m.changed++;
+                                    m.timecod = timecode;
+                                    mouse(m);
+                                }
+                                m.coordxy = { x, y };
+                                switch (ctl)
+                                {
+                                    case 0: netxs::set_bit<input::hids::left  >(m.buttons, ispressed); break;
+                                    case 1: netxs::set_bit<input::hids::middle>(m.buttons, ispressed); break;
+                                    case 2: netxs::set_bit<input::hids::right >(m.buttons, ispressed); break;
+                                    case 64:
+                                        m.wheeled = true;
+                                        m.wheeldt = 1;
+                                        break;
+                                    case 65:
+                                        m.wheeled = true;
+                                        m.wheeldt = -1;
+                                        break;
+                                }
+                                m.changed++;
+                                m.timecod = timecode;
+                                mouse(m);
+                            }
+                            else if (t == type::focus)
+                            {
+                                f.state = s.back() == 'I';
+                                focus(f);
+                            }
+                            else if (t == type::style)
+                            {
+                                auto tmp = s.substr(style_cmd.size());
+                                if (auto format = utf::to_int<ui32>(tmp))
+                                {
+                                    style(deco{ format.value() });
+                                }
+                            }
+                            else if (t == type::paste)
+                            {
+                                auto pos = cache.find(ansi::paste_end);
+                                if (pos != text::npos)
+                                {
+                                    p.txtdata = cache.substr(0, pos);
+                                    cache.remove_prefix(pos + ansi::paste_end.size());
+                                    paste(p);
+                                    p.txtdata.clear();
+                                }
+                                else
+                                {
+                                    auto pos = cache.rfind('\033'); // Find the probable beginning of the closing sequence.
+                                    p.txtdata = cache.substr(0, pos);
+                                    if (pos != text::npos) cache.remove_prefix(pos);
+                                    else                   cache.clear();
+                                    pflag = true;
+                                    break;
+                                }
+                            }
+                            else // t == type::undef
+                            {
+                                detect_key(k, s);
+                            }
                         }
                         else
                         {
-                            total = strv.substr(pos);
-                            strv = total;
-                        }
-
-                        if (auto size = strv.size())
-                        {
-                            auto i = unk ? 1_sz : 0_sz;
-                            while (i != size && (strv.at(i) != '\033'))
-                            {
-                                i++;
-                            }
-
-                            if (i)
-                            {
-                                k.pressed = true;
-                                k.cluster = strv.substr(0, i);
-                                keybd(k);
-                                total = strv.substr(i);
-                                strv = total;
-                            }
+                            auto cluster = utf::letter(cache);
+                            detect_key(k, cluster.text);
+                            cache.remove_prefix(cluster.attr.utf8len);
                         }
                     }
+                    input = cache;
                 };
                 auto h_proc = [&]
                 {
@@ -4665,16 +5307,15 @@ namespace netxs::os
                             {
                                 k.ctlstat = kbmod;
                                 m.ctlstat = kbmod;
-                                m.doubled = faux;
-                                m.doubled = faux;
                                 m.wheeled = faux;
                                 m.hzwheel = faux;
                                 m.wheeldt = 0;
+                                m.timecod = datetime::now();
                                 m.changed++;
                                 mouse(m); // Fire mouse event to update kb modifiers.
                             }
                         }
-                        filter(data);
+                        parser(data);
                     }
                     else alive = faux;
                 };
@@ -4702,6 +5343,7 @@ namespace netxs::os
                             m.coordxy = { mcoord / scale };
                             m.buttons = bttns;
                             m.ctlstat = k.ctlstat;
+                            m.timecod = datetime::now();
                             m.changed++;
                             mouse(m);
                         }
@@ -4961,6 +5603,7 @@ namespace netxs::os
             //test: os::sleep(2000ms); // Uncomment to test for delayed input events.
 
             #if defined(_WIN32)
+                if (os::signals::leave) return; // Don't restore when closing the console. (deadlock on Windows 8).
                 io::send(os::stdout_fd, ansi::altbuf(faux).cursor(true).bpmode(faux));
                 if (dtvt::vtmode & ui::console::nt16) // Restore pelette.
                 {
@@ -5091,6 +5734,7 @@ namespace netxs::os
                                     print(true);
                                 }
                                 break;
+                            case '\n':
                             case '\r': // Enter
                             {
                                 auto line = block + '\n';

@@ -198,6 +198,7 @@ namespace netxs::ui
             void handle(s11n::xs::syspaste    lock)
             {
                 auto& paste = lock.thing;
+                //log("syspaste: ", ansi::hi(paste.txtdata));
                 notify(e2::conio::paste, paste);
             }
             void handle(s11n::xs::sysmouse    lock)
@@ -292,9 +293,11 @@ namespace netxs::ui
                     image.set(winid, coord, cache, abort, debug.delta);
                     if (debug.delta)
                     {
+                        guard.unlock(); // Allow to abort.
                         canal.isbusy = true; // It's okay if someone resets the busy flag before sending.
                         image.sendby(canal);
                         canal.isbusy.wait(true); // Successive frames must be discarded until the current frame is delivered (to prevent unlimited buffer growth).
+                        guard.lock();
                     }
                     debug.watch = datetime::now() - start;
                 }
@@ -375,6 +378,8 @@ namespace netxs::ui
                     canal.isbusy.notify_all();
                     std::this_thread::yield();
                 }
+                canal.isbusy = faux;
+                canal.isbusy.notify_all();
                 paint.join();
                 if constexpr (debugmode) log(prompt::diff, "Rendering thread joined", ' ', utf::to_hex_0x(id));
             }
@@ -406,6 +411,7 @@ namespace netxs::ui
             bool show_regions; // conf: Highlight region ownership.
             bool simple; // conf: .
             svga vtmode; // conf: .
+            si32 clip_prtscrn_mime; // conf: Print-screen copy encoding format.
 
             void read(xmls& config)
             {
@@ -416,6 +422,7 @@ namespace netxs::ui
                 clip_preview_glow = config.take("clipboard/preview/shadow" , 7);
                 clip_preview_show = config.take("clipboard/preview/enabled", true);
                 clip_preview_size = config.take("clipboard/preview/size"   , twod{ 80,25 });
+                clip_prtscrn_mime = config.take("clipboard/format"         , mime::htmltext, xml::options::format);
                 dblclick_timeout  = config.take("mouse/dblclick"           , span{ 500ms });
                 tooltip_colors    = config.take("tooltips"                 , cell{}.bgc(0xFFffffff).fgc(0xFF000000));
                 tooltip_timeout   = config.take("tooltips/timeout"         , span{ 2000ms });
@@ -503,7 +510,10 @@ namespace netxs::ui
                     data.s11n(xmap, gear.slot);
                     if (data.length())
                     {
-                        gear.set_clipboard(gear.slot.size, data, mime::ansitext);
+                        if (boss.props.clip_prtscrn_mime != mime::disabled)
+                        {
+                            gear.set_clipboard(gear.slot.size, data, boss.props.clip_prtscrn_mime);
+                        }
                     }
                 };
                 boss.LISTEN(tier::release, e2::form::prop::filler, filler, memo)
@@ -1034,13 +1044,22 @@ namespace netxs::ui
                 }
                 oneoff_focus.reset();
             };
-            LISTEN(tier::preview, hids::events::keybd::data::post, gear, tokens) // Start of kb event propagation.
+            LISTEN(tier::preview, hids::events::keybd::key::post, gear, tokens) // Start of kb event propagation.
             {
                 if (gear)
                 //if (auto target = local ? applet : base::parent())
                 if (auto target = nexthop.lock())
                 {
-                    target->SIGNAL(tier::preview, hids::events::keybd::data::post, gear);
+                    target->SIGNAL(tier::preview, hids::events::keybd::key::post, gear);
+                }
+            };
+            LISTEN(tier::preview, hids::events::paste, gear, tokens) // Start of paste event propagation.
+            {
+                if (gear)
+                //if (auto target = local ? applet : base::parent())
+                if (auto target = nexthop.lock())
+                {
+                    target->SIGNAL(tier::preview, hids::events::paste, gear);
                 }
             };
             if (!direct)
@@ -1123,7 +1142,7 @@ namespace netxs::ui
             };
             if (direct) // Forward unhandled events outside.
             {
-                LISTEN(tier::release, hids::events::keybd::data::any, gear) // Return back unhandled keybd events.
+                LISTEN(tier::release, hids::events::keybd::key::any, gear) // Return back unhandled keybd events.
                 {
                     if (gear)
                     {
@@ -1171,10 +1190,10 @@ namespace netxs::ui
                 //todo hids
                 //proc(input.gear);
             };
-            LISTEN(tier::preview, hids::events::keybd::data::any, gear, tokens)
+            LISTEN(tier::preview, hids::events::keybd::key::any, gear, tokens)
             {
                 //todo unify
-                if (gear.keystrokes == props.debug_toggle)
+                if (gear.keybd::cluster == props.debug_toggle)
                 {
                     debug ? debug.stop()
                           : debug.start();
@@ -1383,6 +1402,10 @@ namespace netxs::ui
                     auto [ext_gear_id, gear_ptr] = input.get_foreign_gear_id(gear.id);
                     if (gear_ptr) conio.maximize.send(canal, ext_gear_id);
                 };
+            }
+            if (direct)
+            {
+                conio.sysstart.send(canal);
             }
         }
         // gate: .
