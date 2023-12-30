@@ -95,7 +95,7 @@ int main(int argc, char* argv[])
         }
         else if (getopt.match("-?", "-h", "--help"))
         {
-            errmsg = ansi::nil().add("Show help message");
+            errmsg = ansi::nil().add("Print command-line options");
             break;
         }
         else if (getopt.match("-v", "--version"))
@@ -126,7 +126,7 @@ int main(int argc, char* argv[])
     auto direct = os::dtvt::active;
     auto syslog = os::tty::logger();
     auto userid = os::env::user();
-    auto prefix = vtpipe.length() ? vtpipe : utf::concat(app::shared::ipc_prefix, os::process::elevated ? "!_" : "_", userid.second);;
+    auto prefix = vtpipe.length() ? vtpipe : utf::concat(app::shared::ipc_prefix, os::process::elevated ? "!-" : "-", userid.second);;
     auto prefix_log = prefix + app::shared::log_suffix;
     auto failed = [&](auto cause)
     {
@@ -144,7 +144,7 @@ int main(int argc, char* argv[])
     if (errmsg.size())
     {
         failed(code::errormsg);
-        log("\nVirtual terminal multiplexer."
+        log("\nText Mode Desktop " + text{ app::shared::version } +
             "\n"
             "\n  Syntax:"
             "\n"
@@ -152,38 +152,36 @@ int main(int argc, char* argv[])
             "\n"
             "\n  Options:"
             "\n"
-            "\n    No arguments       Run client, auto start server if it is not running."
-            "\n    -c, --config <..>  Load specified settings file."
-            "\n    -p, --pipe   <..>  Set the pipe to connect to."
+            "\n    No arguments       Connect to the desktop (autostart new if not running)."
+            "\n    -c, --config <..>  Load the specified settings file."
+            "\n    -p, --pipe   <..>  Specify the desktop session connection point."
             "\n    -q, --quiet        Disable logging."
-            "\n    -l, --listconfig   Show configuration and exit."
-            "\n    -m, --monitor      Monitor server log."
-            "\n    -d, --daemon       Run server in background."
-            "\n    -s, --server       Run server in interactive mode."
-            "\n    -r, --runapp <..>  Run built-in application."
+            "\n    -l, --listconfig   Print configuration."
+            "\n    -m, --monitor      Desktop session log."
+            "\n    -d, --daemon       Run desktop server in background."
+            "\n    -s, --server       Run desktop server in interactive mode."
+            "\n    -r, --runapp <..>  Run the specified application in standalone mode."
             "\n    -i, --install      System-wide installation."
             "\n    -u, --uninstall    System-wide deinstallation."
-            "\n    -v, --version      Show version and exit."
-            "\n    -?, -h, --help     Show usage message."
-            "\n    --onlylog          Disable interactive user input."
+            "\n    -v, --version      Print version."
+            "\n    -?, -h, --help     Print command-line options."
+            "\n    --onlylog          Disable interactive user input for desktop server."
             "\n"
-            "\n  Settings loading and merging order:"
+            "\n  Settings loading order:"
             "\n"
             "\n    - Initialize hardcoded settings"
             "\n    - Merge with explicitly specified settings from --config <file>"
             "\n    - If the --config option is not used or <file> cannot be loaded:"
             "\n        - Merge with system-wide settings from " + os::path::expand(app::shared::sys_config).second +
             "\n        - Merge with user-wise settings from "   + os::path::expand(app::shared::usr_config).second +
-            "\n        - Merge with DirectVT packet received from the parent process (dtvt-mode only)"
+            "\n        - Merge with DirectVT packet received from the parent process (dtvt-mode)"
             "\n"
             "\n  Built-in applications:"
             "\n"
-            "\n    Term  Terminal emulator (default)"
-            "\n    DTVT  DirectVT Proxy Console"
-            "\n    XLVT  DTVT with controlling terminal onboard (for OpenSSH interactivity)"
-            "\n    Text  (Demo) Text editor"
-            "\n    Calc  (Demo) Spreadsheet calculator"
-            "\n    Gems  (Demo) Application distribution hub"
+            "\n    Term      Terminal emulator (default)"
+            "\n    Headless  Terminal emulator without UI"
+            "\n    DTVT      DirectVT Proxy Console"
+            "\n    XLVT      DTVT with controlling terminal (for OpenSSH interactivity)"
             "\n"
             );
     }
@@ -234,15 +232,17 @@ int main(int argc, char* argv[])
              if (shadow.starts_with(app::term::id))      { aclass = app::term::id;      apname = app::term::desc;      }
         else if (shadow.starts_with(app::dtvt::id))      { aclass = app::dtvt::id;      apname = app::dtvt::desc;      }
         else if (shadow.starts_with(app::xlvt::id))      { aclass = app::xlvt::id;      apname = app::xlvt::desc;      }
+        else if (shadow.starts_with(app::xlinkvt::id))   { aclass = app::xlinkvt::id;   apname = app::xlinkvt::desc;   }
+        else if (shadow.starts_with(app::directvt::id))  { aclass = app::directvt::id;  apname = app::directvt::desc;  }
+        else if (shadow.starts_with(app::headless::id))  { aclass = app::headless::id;  apname = app::headless::desc;  }
+        #if defined(DEBUG)
         else if (shadow.starts_with(app::calc::id))      { aclass = app::calc::id;      apname = app::calc::desc;      }
         else if (shadow.starts_with(app::shop::id))      { aclass = app::shop::id;      apname = app::shop::desc;      }
         else if (shadow.starts_with(app::test::id))      { aclass = app::test::id;      apname = app::test::desc;      }
-        else if (shadow.starts_with(app::xlinkvt::id))   { aclass = app::xlinkvt::id;   apname = app::xlinkvt::desc;   }
-        else if (shadow.starts_with(app::directvt::id))  { aclass = app::directvt::id;  apname = app::directvt::desc;  }
         else if (shadow.starts_with(app::textancy::id))  { aclass = app::textancy::id;  apname = app::textancy::desc;  }
-        else if (shadow.starts_with(app::headless::id))  { aclass = app::headless::id;  apname = app::headless::desc;  }
         else if (shadow.starts_with(app::settings::id))  { aclass = app::settings::id;  apname = app::settings::desc;  }
         else if (shadow.starts_with(app::truecolor::id)) { aclass = app::truecolor::id; apname = app::truecolor::desc; }
+        #endif
         else if (shadow.starts_with(app::ssh::id))
         {
             params = " "s + params;
@@ -314,6 +314,7 @@ int main(int argc, char* argv[])
             }
         }
         
+        os::ipc::prefix = prefix;
         auto server = os::ipc::socket::open<os::role::server>(prefix, denied);
         if (!server)
         {
@@ -352,11 +353,13 @@ int main(int argc, char* argv[])
                     auto writer = netxs::logger::attach([&](auto utf8) { monitor->send(utf8); });
                     domain->LISTEN(tier::general, e2::conio::quit, deal, tokens) { monitor->shut(); };
                     //todo send/receive dtvt events and signals
+                    os::ipc::monitors++;
                     while (auto line = monitor->recv())
                     {
                         domain->SIGNAL(tier::release, e2::conio::readline, line);
                     }
                     log("%%Monitor [%id%] disconnected", prompt::logs, id);
+                    os::ipc::monitors--;
                 });
             }
         }};

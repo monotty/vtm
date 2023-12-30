@@ -279,7 +279,7 @@ namespace netxs::app::desk
                 auto block = apps->attach(ui::list::ctor())
                     ->shader(cell::shaders::xlight, e2::form::state::hover, head_fork)
                     ->setpad({ 0, 0, 0, 0 }, { 0, 0, -tall, 0 });
-                if (!state) block->depend_on_collection(inst_ptr_list); // Remove not pinned apps, like Info/About.
+                if (!state) block->depend_on_collection(inst_ptr_list); // Remove not pinned apps, like Info.
                 block->attach(head_fork)
                     ->active()
                     ->template plugin<pro::notes>(obj_note.empty() ? def_note : obj_note)
@@ -400,7 +400,7 @@ namespace netxs::app::desk
             }
             return apps;
         };
-        auto background = [](text param)
+        auto background = [](auto appid, auto label, auto title)
         {
             auto highlight_color = skin::color(tone::highlight);
             auto c8 = cell{}.bgc(0x00).fgc(highlight_color.bgc());
@@ -411,14 +411,10 @@ namespace netxs::app::desk
                 ->alignment({ snap::tail, snap::tail });
             return ui::cake::ctor()
                 ->branch(ver_label)
-                ->plugin<pro::notes>(" About ")
+                ->template plugin<pro::notes>(" Info ")
                 ->invoke([&](auto& boss)
                 {
-                    auto data = utf::divide(param, ";");
-                    auto aptype = text{ data.size() > 0 ? data[0] : view{} };
-                    auto menuid = text{ data.size() > 1 ? data[1] : view{} };
-                    auto params = text{ data.size() > 2 ? data[2] : view{} };
-                    boss.LISTEN(tier::release, hids::events::mouse::button::click::left, gear, -, (aptype, menuid, params))
+                    boss.LISTEN(tier::release, hids::events::mouse::button::click::left, gear, -, (appid, label, title))
                     {
                         static auto offset = dot_00;
                         auto& gate = gear.owner;
@@ -433,6 +429,7 @@ namespace netxs::app::desk
                         auto& menu_list = *menu_list_ptr;
                         auto& conf_list = *conf_list_ptr;
 
+                        auto menuid = label;
                         if (conf_list.contains(menuid) && !conf_list[menuid].hidden) // Check for id availability.
                         {
                             auto i = 1;
@@ -442,10 +439,10 @@ namespace netxs::app::desk
                             std::swap(testid, menuid);
                         }
                         auto& m = conf_list[menuid];
-                        m.type = aptype;
-                        m.label = menuid;
-                        m.title = menuid; // Use the same title as the menu label.
-                        m.param = params;
+                        m.type = appid;
+                        m.label = label;
+                        m.title = title;
+                        m.param = {};
                         m.hidden = true;
                         menu_list[menuid];
 
@@ -522,7 +519,7 @@ namespace netxs::app::desk
                 auto active_color    = skin::globals().active;
                 auto cE = active_color;
                 auto c3 = highlight_color;
-                auto user = ui::item::ctor(escx(" &").nil().add(" ")
+                auto user = ui::item::ctor(escx(" &").nil().add(" ").wrp(wrap::off)
                         .fgx(data_src->id == my_id ? cE.fgc() : rgba{}).add(utf8).nil())
                     ->flexible()
                     ->setpad({ 1, 0, tall, tall }, { 0, 0, -tall, 0 })
@@ -550,7 +547,10 @@ namespace netxs::app::desk
 
             window->invoke([&, menu_selected](auto& boss) mutable
             {
-                auto ground = background("gems;Demo;"); // It can't be a child - it has exclusive rendering (first of all).
+                auto appid = "info"s;
+                auto label = "Info"s;
+                auto title = ansi::jet(bias::right).add(label);
+                auto ground = background(appid, label, title); // It can't be a child - it has exclusive rendering (first of all).
                 boss.LISTEN(tier::release, e2::form::upon::vtree::attached, parent_ptr, -, (size_config_ptr/*owns ptr*/, ground, current_default = text{}, previous_default = text{}, selected = text{ menu_selected }))
                 {
                     if (!parent_ptr) return;

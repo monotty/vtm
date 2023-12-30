@@ -1,4 +1,4 @@
-# Architecture
+# Text Mode Desktop Architecture
 
 ## Process Model
 
@@ -12,7 +12,7 @@ graph TB
         subgraph OU1[Output]
             TC1[scrollback\nbuffer]
         end
-        subgraph CS1[Client 1]
+        subgraph CS1[Desktop Client 1]
             VTM1[vtm\nprocess 1]
         end
         C1 --> CS1
@@ -27,35 +27,69 @@ graph TB
         subgraph OU2[Output]
             TC2[scrollback\nbuffer]
         end
-        subgraph CS2[Client 2]
+        subgraph CS2[Desktop Client 2]
             VTM2[vtm\nprocess 2]
         end
         C2 --> CS2
         TC2 --- CS2
     end
 
-    subgraph SS[Server Session]
-        VTMs[vtm\nprocess 0]
+    subgraph IE30[Text Console 3]
+        subgraph IE3[Input]
+            direction LR
+            C3[keybd, mouse, focus\nwinsize, clipboard,\nos signals]
+        end
+        subgraph OU3[Output]
+            TC3[scrollback\nbuffer]
+        end
+        subgraph CS3[DirectVT Proxy]
+            VTM3[vtm\nprocess 3]
+        end
+        C3 --> CS3
+        TC3 --- CS3
+    end
+    subgraph APP0x[Standalone DirectVT Application]
+        APP01[DirectVT App4\napp: process 9]
+    end
+    CS3 <-->|DirectVT I/O\nsend: Events\nrecv: Render| APP01
+
+    subgraph NP[Connection Point]
+        TS["system-wide\nnamed pipe"]
     end
 
-    CS1 <-->|DirectVT I/O\nsend: Events\nrecv: Render| SS
-    CS2 <-->|DirectVT I/O\nsend: Events\nrecv: Render| SS
+    subgraph SS[Desktop Server]
+        VTMs[vtm\nprocess 0]
+        subgraph SE[Desktop Session]
+            DS1["DirectVT Application Manager"]
+            subgraph APPx[Running Applications]
+                APP1[DirectVT App1\napp: process 4]
+                APP2["App2 (Terminal+App2)\nvtm: process 5\napp: process 6"]
+                APP3["App3 (Terminal+App3)\nvtm: process 7\napp: process 8"]
+            end
+        end
+        VTMs === SE
+   end
+
+    CS1 <-->|DirectVT I/O\nsend: Events\nrecv: Render| TS
+    CS2 <-->|DirectVT I/O\nsend: Events\nrecv: Render| TS
+    TS === VTMs
 ```
 
-- At startup, vtm connects to an existing server session or creates a new one.
-- The new session is hosted in a forked and detached vtm process.
-- The session is tied to an operating system's named pipe coined from the creator's name (if no explicitly specified pipe name).
+- At startup vtm creates a new or connects to an existing desktop session.
+- The desktop session is hosted in a forked and detached vtm process (desktop server).
+- The session is tied to an operating system's named pipe (desktop session connection point).
+- The connection point unique name is coined from the creator's UID or specified explicitly.
 - Only the session creator can access the session (for non-elevated users).
-- The regular user and the elevated user are different independent users creating different server sessions.
+- The regular user and the elevated user are different independent users despite having the same username.
 - The session allows multiple access in real time.
-- The user can disconnect from the session and reconnect later.
-- Sessions with different names can coexist independently.
-- Console applications are launched/terminated by the user within the current server session.
-- Non-DirectVT console application runs a pair of operating system processes: terminal process + application process.
-- The terminal process is a fork of the vtm server session process, running as standalone terminal. Terminating this process will automatically close the application window.
+- Users can disconnect from the session and reconnect later.
+- Sessions with different connection points can coexist independently.
+- Applications are launched/terminated by the user within the current desktop session.
+- Non-DirectVT application runs a pair of operating system processes: terminal process + application process.
+- The terminal process is a fork of the original desktop server process, running as standalone terminal in DirectVT mode. Terminating this process will automatically close the application.
 - The session exists until it is explicitly shutted down.
 
-## Inter-Process Communication
+## Interprocess Communication
 
 Interprocess communication relies on the DirectVT binary protocol, multiplexing the following primary channels:
 - Keyboard event channel
@@ -66,13 +100,15 @@ Interprocess communication relies on the DirectVT binary protocol, multiplexing 
 - Render output channel
 - Shutdown event channel
 
-The vtm client side can operate in two modes, either in ANSI/VT mode (common terminal environment with plain text I/O), or in DirectVT/dtvt mode (vtm environment with binary I/O).
+The vtm client side (desktop client) can operate in two modes, either in ANSI/VT mode (common terminal environment with plain text I/O), or in DirectVT/dtvt mode (vtm environment with binary I/O).
 
-The vtm server side is always operate in DirectVT mode.
+The vtm server side (desktop server) is always operate in DirectVT mode.
+
+The DirectVT client-server channel can be wrapped in any transport layer protocol suitable for stdin/stdout transfer, such as SSH.
 
 ## DirectVT mode
 
-In DirectVT mode, the client side receives the event stream and renders directly in binary form (with platform endianness correction), avoiding any parsing and cross-platform issues. The exception is the synchronization of grapheme clusters larger than 7 bytes in UTF-8 format. Large clusters are synchronized between processes by request.
+In DirectVT mode, the client side receives the event stream and renders directly in binary form (with platform endianness correction), avoiding any expensive parsing and cross-platform issues.
 
 ## ANSI/VT mode
 
@@ -83,7 +119,7 @@ In ANSI/VT mode, the client side parses input from multiple standard sources, an
 #### Unix input sources
 
 - STDIN
-    - Bracketed paste marks `\x1b[200~`/`\x1b[201~` are treated as the boundaries of a binary immutable block pasted from the clipboard. This immutable block is handled independently of keyboard input.
+    - Bracketed paste marks `\x1b[200~`/`\x1b[201~` are treated as the boundaries of a binary immutable block pasted from the clipboard. This immutable block is handled independently of keyboard input and forwarded to the clipboard event channel.
     - SGR mouse reporting sequences `\x1b[<s;x;yM/m` are redirected to the mouse event channel.
     - Terminal window focus reporting sequences `\x1b[I`/`\x1b[O` are redirected to the focus event channel.
     - Line style reporting sequences `\x1b[33:STYLEp` are redirected to the style event channel (current/selected line wrapping on/off, left/right/center alignment).
@@ -106,8 +142,8 @@ In ANSI/VT mode, the client side parses input from multiple standard sources, an
     - The WINDOW_BUFFER_SIZE_EVENT stream is forwarded to the window size event channel.
     - The MENU_EVENT stream is interpreted using the Event.MenuEvent.dwCommandId value:
         - 0x8000: The subsequent MENU_EVENT record is forwarded to the style event channel.
-        - 0x8001: Clipboard immutable block start (INPUT_RECORD begin mark). Subsequent KEY_EVENT records are read until the INPUT_RECORD end mark appears, and then forwarded to the clipboard paste event channel.
-        - 0x8002: Clipboard immutable block end (INPUT_RECORD end mark).
+        - 0x8001: Clipboard-paste block start (INPUT_RECORD begin mark). Subsequent KEY_EVENT records are read until the INPUT_RECORD end mark appears, and then a whole block of chars is forwarded to the clipboard event channel.
+        - 0x8002: Clipboard-paste block end (INPUT_RECORD end mark).
 - Window system-defined messages
     - WM_CREATE: Event is forwarded to the clipboard event channel.
     - WM_CLIPBOARDUPDATE: Event is forwarded to the clipboard event channel.
@@ -178,17 +214,17 @@ vtm renders itself at a constant frame rate into internal buffers and outputs to
 
 ## Remote Access
 
-In general, the server and client platforms may be different.
+In general, the local and remote platforms may be different.
 
 When DirectVT mode is enabled, all keyboard, mouse and other input events are transmitted between hosts in binary form.
 
-The following examples assume that the vtm is installed on both the server and client side (or vtm is accessible via PATH).
+The following examples assume that vtm is installed on both the local and remote sides.
 
 ### Running a standalone console application remotely via SSH
 
-- Server:
-    - Install SSH-server
-- Client:
+- Remote side
+    - Running SSH-server
+- Local side
     - Run command
     ```bash
     vtm -r xlvt ssh user@server vtm -r term /path/to/console/app
@@ -203,9 +239,9 @@ The following examples assume that the vtm is installed on both the server and c
 
 ### Running vtm in DirectVT mode remotely via SSH
 
-- Server:
-    - Install SSH-server
-- Client:
+- Remote side
+    - Running SSH-server
+- Local side
     - Run command
     ```bash
     vtm -r xlvt ssh user@server vtm
@@ -220,9 +256,9 @@ The following examples assume that the vtm is installed on both the server and c
 
 ### Running vtm in ANSI/VT mode remotely via SSH
 
-- Server:
-    - Install SSH-server.
-- Client:
+- Remote side
+    - Running SSH-server
+- Local side
     - Run commands
     ```bash
     ssh user@server
@@ -236,53 +272,53 @@ The following examples assume that the vtm is installed on both the server and c
 
 ### Running vtm in DirectVT mode remotely via `netcat` (POSIX only, unencrypted, for private use only)
 
-- Server:
+- Remote side
     - Run command
     ```bash
-    ncat -l server_port -k -e vtm
-    # `-l server_port`: specify tcp port to listen.
+    ncat -l tcp_port -k -e vtm
+    # `-l tcp_port`: specify tcp port to listen.
     # `-k`: order to keep connection open for multiple clients.
     # `-e`: order to run vtm for every connected client.
     ```
-- Client:
+- Local side
     - Run command
     ```bash
-    vtm -r dtvt ncat server_ip server_port
+    vtm -r dtvt ncat remote_ip remote_tcp_port
     # The `vtm -r dtvt` option means to run DirectVT proxy (not required inside vtm environment).
     # Note: Make sure `ncat` is installed.
     ```
 
 ### Running vtm in DirectVT mode remotely using `inetd` (POSIX only, unencrypted, for private use only)
 
-- Server:
+- Remote side
     - Install `inetd`
     - Add the following line to the `/etc/inetd.conf`:
         ```bash
-        server_port stream tcp nowait user_name /server/side/path/to/vtm  vtm
-        # `server_port`: tcp port to listen.
+        tcp_port stream tcp nowait user_name /remote/side/path/to/vtm  vtm
+        # `tcp_port`: tcp port to listen.
         # `user_name`: user login name.
         ```
     - Launch `inetd`
         ```
         inetd
         ```
-- Client
+- Local side
     - Run command
     ```bash
-    vtm -r dtvt ncat server_ip server_port
+    vtm -r dtvt ncat remote_ip remote_tcp_port
     # The `vtm -r dtvt` option means to run DirectVT proxy (not required inside vtm desktop environment).
     # Note: Make sure `ncat` is installed.
     ```
 
 ### Local Standard I/O Redirection (POSIX only)
 
-- Server
+- Host side
     - Run commands
     ```bash
     mkfifo in && mkfifo out
     vtm >out <in
     ```
-- Client:
+- User side
     - Run command
     ```bash
     vtm -r dtvt socat open:out\!\!open:in stdin\!\!stdout
@@ -292,7 +328,7 @@ The following examples assume that the vtm is installed on both the server and c
 
 ## More Tips
 
-## vtm Desktop Taskbar Menu Customization
+## Desktop Taskbar Menu Customization
 
 The taskbar menu can be configured using a settings file `~/.config/vtm/settings.xml` (`%USERPROFILE%\\.config\\vtm\\settings.xml`):
 ```xml

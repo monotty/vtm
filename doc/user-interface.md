@@ -1,4 +1,4 @@
-# User Interface
+# Text Mode Desktop User Interface
 
 <table>
 <thead>
