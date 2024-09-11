@@ -1,4 +1,4 @@
-// Copyright (c) NetXS Group.
+// Copyright (c) Dmitry Sapozhnikov
 // Licensed under the MIT license.
 
 #pragma once
@@ -106,123 +106,24 @@ namespace netxs::ui
             };
         };
 
-        // pro: Resizing by dragging support.
+        // pro: Resizer.
         class sizer
             : public skill
         {
-            struct sock
-            {
-                using test = testy<twod>;
-
-                twod origin; // sock: Grab's initial coord info.
-                twod dtcoor; // sock: The form coor parameter change factor while resizing.
-                twod sector; // sock: Active quadrant, x,y = {-1|+1}. Border widths.
-                rect hzgrip; // sock: Horizontal grip.
-                rect vtgrip; // sock: Vertical grip.
-                twod widths; // sock: Grip's widths.
-                bool inside; // sock: Is active.
-                bool seized; // sock: Is seized.
-                test lastxy; // sock: Change tracker.
-                rect zoomsz; // sock: Captured area for zooming.
-                dent zoomdt; // sock: Zoom step.
-                bool zoomon; // sock: Zoom in progress.
-                twod zoomat; // sock: Zoom pivot.
-
-                sock()
-                    : inside{ faux },
-                      seized{ faux },
-                      zoomon{ faux }
-                { }
-
-                operator bool () { return inside || seized; }
-                auto corner(twod length)
-                {
-                    return dtcoor.less(dot_11, length, dot_00);
-                }
-                auto grab(base const& master, twod curpos, dent outer)
-                {
-                    if (inside)
-                    {
-                        origin = curpos - corner(master.base::size() + outer);
-                        seized = true;
-                    }
-                    return seized;
-                }
-                auto calc(base const& master, twod curpos, dent outer, dent inner, dent border)
-                {
-                    auto area = rect{ dot_00, master.base::size() };
-                    auto inner_rect = area + inner;
-                    auto outer_rect = area + outer;
-                    inside = !inner_rect.hittest(curpos)
-                           && outer_rect.hittest(curpos);
-                    auto& length = outer_rect.size;
-                    curpos += outer.corner();
-                    auto center = std::max(length / 2, dot_11);
-                    if (!seized)
-                    {
-                        dtcoor = curpos.less(center + (length & 1), dot_11, dot_00);
-                        sector = dtcoor.less(dot_11, -dot_11, dot_11);
-                        widths = sector.less(dot_00, twod{-border.r,-border.b },
-                                                     twod{ border.l, border.t });
-                    }
-                    auto l = sector * (curpos - corner(length));
-                    auto a = center * l / center;
-                    auto b = center *~l /~center;
-                    auto s = sector * std::max(a - b + center, dot_00);
-
-                    hzgrip.coor.x = widths.x;
-                    hzgrip.coor.y = 0;
-                    hzgrip.size.y = widths.y;
-                    hzgrip.size.x = s.x;
-
-                    vtgrip.coor = dot_00;
-                    vtgrip.size = widths;
-                    vtgrip.size.y += s.y;
-                    return lastxy(curpos);
-                }
-                auto drag(base& master, twod curpos, dent outer, bool zoom)
-                {
-                    if (seized)
-                    {
-                        auto width = master.base::size() + outer;
-                        auto delta = (corner(width) + origin - curpos) * sector;
-                        if (zoom) delta *= 2;
-
-                        auto preview_step = zoom ? -delta / 2 : -delta * dtcoor;
-                        auto preview_area = rect{ master.base::coor() + preview_step, master.base::size() + delta };
-                        master.SIGNAL(tier::preview, e2::area, preview_area);
-
-                        if (auto dxdy = master.base::sizeby(delta))
-                        {
-                            auto step = zoom ? -dxdy / 2 : -dxdy * dtcoor;
-                            master.base::moveby(step);
-                            master.SIGNAL(tier::preview, e2::form::upon::changed, dxdy);
-                        }
-                    }
-                    return seized;
-                }
-                void drop()
-                {
-                    seized = faux;
-                }
-            };
-
-            using list = socks<sock>;
+            using list = socks<netxs::misc::szgrips>;
             using skill::boss,
                   skill::memo;
 
             list items;
             dent outer;
             dent inner;
-            dent width;
             bool alive; // pro::sizer: The sizer state.
 
         public:
-            void props(dent outer_rect = {2,2,1,1}, dent inner_rect = {})
+            void props(dent outer_rect = { 2, 2, 1, 1 }, dent inner_rect = {})
             {
                 outer = outer_rect;
                 inner = inner_rect;
-                width = outer - inner;
             }
             auto get_props()
             {
@@ -230,44 +131,45 @@ namespace netxs::ui
             }
 
             sizer(base&&) = delete;
-            sizer(base& boss, dent outer_rect = {2,2,1,1}, dent inner_rect = {})
+            sizer(base& boss, dent outer_rect = { 2, 2, 1, 1 }, dent inner_rect = {})
                 : skill{ boss          },
                   items{ boss          },
                   outer{ outer_rect    },
                   inner{ inner_rect    },
-                  width{ outer - inner },
                   alive{ true          }
             {
-                boss.LISTEN(tier::release, hids::events::mouse::scroll::any, gear, memo)
-                {
-                    if (gear.meta(hids::anyCtrl))
-                    {
-                        auto& g = items.take(gear);
-                        if (!g.zoomon)// && g.inside)
-                        {
-                            g.zoomdt = {};
-                            g.zoomon = true;
-                            g.zoomsz = boss.base::area();
-                            g.zoomat = gear.coord;
-                            gear.capture(boss.id);
-                        }
-                        static constexpr auto warp = dent{ 2,2,1,1 } * 2;
-                        //todo respect pivot
-                        auto prev = g.zoomdt;
-                        auto coor = boss.coor();
-                        auto deed = boss.bell::protos<tier::release>();
-                        if (deed == hids::events::mouse::scroll::down.id) g.zoomdt -= warp;
-                        else                                              g.zoomdt += warp;
-                        gear.owner.SIGNAL(tier::request, e2::form::prop::viewport, viewport, ());
-                        auto next = (g.zoomsz + g.zoomdt).clip(viewport);
-                        auto step = boss.base::extend(next);
-                        if (!step.size) // Undo if can't zoom.
-                        {
-                            g.zoomdt = prev;
-                            boss.base::moveto(coor);
-                        }
-                    }
-                };
+                // Drop it in favor of changing the cell size in GUI mode.
+                //boss.LISTEN(tier::release, hids::events::mouse::scroll::act, gear, memo)
+                //{
+                //    if (gear.meta(hids::anyCtrl) && !gear.meta(hids::ScrlLock) && gear.whlsi)
+                //    {
+                //        auto& g = items.take(gear);
+                //        if (!g.zoomon)// && g.inside)
+                //        {
+                //            g.zoomdt = {};
+                //            g.zoomon = true;
+                //            g.zoomsz = boss.base::area();
+                //            g.zoomat = gear.coord;
+                //            gear.capture(boss.id);
+                //        }
+                //        static constexpr auto warp = dent{ 2, 2, 1, 1 } * 2;
+                //        //todo respect pivot
+                //        auto prev = g.zoomdt;
+                //        auto coor = boss.base::coor();
+                //        auto deed = boss.bell::protos<tier::release>();
+                //        g.zoomdt += warp * gear.whlsi;
+                //        gear.owner.SIGNAL(tier::request, e2::form::prop::viewport, viewport, ());
+                //        auto next = g.zoomsz + g.zoomdt;
+                //        next.size = std::max(dot_00, next.size);
+                //        next.trimby(viewport);
+                //        auto step = boss.base::extend(next);
+                //        if (!step.size) // Undo if can't zoom.
+                //        {
+                //            g.zoomdt = prev;
+                //            boss.base::moveto(coor);
+                //        }
+                //    }
+                //};
                 boss.LISTEN(tier::release, e2::config::plugins::sizer::alive, state, memo)
                 {
                     alive = state;
@@ -276,34 +178,26 @@ namespace netxs::ui
                 {
                     if (!alive) return;
                     auto area = canvas.full() + outer;
-                    auto fuse = [&](cell& c){ c.xlight(); };
-                    canvas.cage(area, width, [&](cell& c){ c.link(boss.id); });
-                    items.foreach([&](sock& item)
+                    auto bord = outer - inner;
+                    canvas.cage(area, bord, [&](cell& c){ c.link(boss.id); });
+                    items.foreach([&](auto& item)
                     {
-                        auto corner = item.corner(area.size);
-                        auto side_x = item.hzgrip.shift(corner).normalize_itself()
-                                                 .shift_itself(area.coor).clip(area);
-                        auto side_y = item.vtgrip.shift(corner).normalize_itself()
-                                                 .shift_itself(area.coor).clip(area);
-                        canvas.fill(side_x, fuse);
-                        canvas.fill(side_y, fuse);
+                        item.draw(canvas, area, cell::shaders::xlight);
                     });
                 };
                 boss.LISTEN(tier::preview, e2::form::layout::swarp, warp, memo)
                 {
                     auto area = boss.base::area();
                     auto next = area + warp;
-                    auto step = boss.extend(next);
+                    boss.extend(next);
                 };
                 boss.LISTEN(tier::release, e2::config::plugins::sizer::outer, outer_rect, memo)
                 {
                     outer = outer_rect;
-                    width = outer - inner;
                 };
                 boss.LISTEN(tier::release, e2::config::plugins::sizer::inner, inner_rect, memo)
                 {
                     inner = inner_rect;
-                    width = outer - inner;
                 };
                 boss.LISTEN(tier::request, e2::config::plugins::sizer::inner, inner_rect, memo)
                 {
@@ -321,7 +215,9 @@ namespace netxs::ui
                         g.zoomon = faux;
                         gear.setfree();
                     }
-                    if (g.calc(boss, gear.coord, outer, inner, width))
+                    auto area = boss.base::area();
+                    auto coor = area.coor + gear.coord;
+                    if (g.calc(area, coor, outer, inner))
                     {
                         boss.base::deface(); // Deface only if mouse moved.
                     }
@@ -336,7 +232,9 @@ namespace netxs::ui
                 boss.SIGNAL(tier::release, e2::form::draggable::_<Button>, true);
                 boss.LISTEN(tier::release, e2::form::drag::start::_<Button>, gear, memo)
                 {
-                    if (items.take(gear).grab(boss, gear.coord, outer))
+                    auto area = boss.base::area();
+                    auto coor = area.coor + gear.coord;
+                    if (items.take(gear).grab(area, coor, outer))
                     {
                         gear.dismiss();
                         boss.bell::expire<tier::release>(); // To prevent d_n_d triggering.
@@ -344,8 +242,20 @@ namespace netxs::ui
                 };
                 boss.LISTEN(tier::release, e2::form::drag::pull::_<Button>, gear, memo)
                 {
-                    if (items.take(gear).drag(boss, gear.coord, outer, gear.meta(hids::anyCtrl)))
+                    auto& g = items.take(gear);
+                    if (g.seized)
                     {
+                        auto zoom = gear.meta(hids::anyCtrl);
+                        auto area = boss.base::area();
+                        auto coor = area.coor + gear.coord;
+                        auto [preview_area, size_delta] = g.drag(area, coor, outer, zoom);
+                        boss.SIGNAL(tier::preview, e2::area, preview_area);
+                        if (auto dxdy = boss.sizeby(size_delta))
+                        {
+                            auto step = g.move(dxdy, zoom);
+                            boss.moveby(step);
+                            boss.SIGNAL(tier::preview, e2::form::upon::changed, dxdy);
+                        }
                         gear.dismiss();
                     }
                 };
@@ -367,18 +277,24 @@ namespace netxs::ui
         {
             struct sock
             {
-                twod origin; // sock: Grab's initial coord info.
-                void grab(base const& master, twod curpos)
+                fp2d drag_origin; // sock: Drag origin.
+                twod drag_center; // sock: Master center.
+                void grab(base const& master, fp2d coord)
                 {
-                    auto center = master.base::size() / 2;
-                    origin = curpos - center;
+                    drag_center = master.base::size() / 2;
+                    drag_origin = coord - drag_center;
                 }
-                void drag(base& master, twod coord)
+                auto drag(base& master, fp2d coord)
                 {
-                    auto delta = coord - origin;
                     auto center = master.base::size() / 2;
-                    delta -= center;
-                    master.base::moveby(delta);
+                    auto delta = twod{ coord } - twod{ drag_origin } - center;
+                    if (delta)
+                    {
+                        drag_origin += center - drag_center; // Keep origin tied to the master center.
+                        drag_center = center;
+                        master.base::moveby(delta);
+                    }
+                    return delta;
                 }
             };
 
@@ -419,9 +335,10 @@ namespace netxs::ui
                 {
                     if (dest_object)
                     {
-                        items.take(gear).drag(*dest_object, gear.coord);
-                        auto delta = gear.delta.get();
-                        dest_object->SIGNAL(tier::preview, e2::form::upon::changed, delta);
+                        if (auto delta = items.take(gear).drag(*dest_object, gear.coord))
+                        {
+                            dest_object->SIGNAL(tier::preview, e2::form::upon::changed, delta);
+                        }
                         gear.dismiss();
                     }
                 };
@@ -445,7 +362,7 @@ namespace netxs::ui
             }
         };
 
-        // pro: Keybd/Mouse highlighter.
+        // pro: Mouse cursor glow.
         class track
             : public skill
         {
@@ -463,15 +380,15 @@ namespace netxs::ui
                 }
             };
 
-            using pool = std::list<id_t>;
+            //using pool = std::list<id_t>;
             using list = socks<sock>;
             using skill::boss,
                   skill::memo;
 
-            pool focus; // track: Is keybd focused.
+            //pool focus; // track: Is keybd focused.
             list items; // track: .
             bool alive; // track: Is active.
-
+/*
             void add_keybd(id_t gear_id)
             {
                 if (gear_id != id_t{})
@@ -498,67 +415,60 @@ namespace netxs::ui
                     }
                 }
             }
+*/
+            static auto& glow_overlay()
+            {
+                static auto bitmap = []
+                {
+                    auto r = 5;
+                    auto blob = core{};
+                    auto area = rect{ dot_00, dot_21 * (r * 2 + 1) };
+                    auto func = netxs::spline01{ 0.65f };
+                    blob.core::area(area, cell{}.bgc(0xFFffffff));
+                    auto iter = blob.begin();
+                    for (auto y = 0; y < area.size.y; y++)
+                    {
+                        auto y0 = (y - area.size.y / 2) / (area.size.y - 2 -     1.6f);
+                        y0 *= y0;
+                        for (auto x = 0; x < area.size.x; x++)
+                        {
+                            auto& c = iter++->bgc();
+                            auto x0 = (x - area.size.x / 2) / (area.size.x - 4 - 2 * 1.6f);
+                            auto dr = std::sqrt(x0 * x0 + y0);
+                            if (dr > 1) c.chan.a = 0;
+                            else
+                            {
+                                auto a = std::round(255.0 * func(1.0f - dr));
+                                c.chan.a = (byte)std::clamp((si32)(a * 0.16f), 0, 255);
+                            }
+                        }
+                    }
+                    return blob;
+                }();
+                return bitmap;
+            }
 
         public:
             track(base&&) = delete;
-            track(base& boss, bool keybd_only = faux)
+            track(base& boss)
                 : skill{ boss },
                   items{ boss },
                   alive{ true }
             {
                 // Keybd focus.
-                boss.LISTEN(tier::release, hids::events::keybd::focus::bus::on, seed, memo)
-                {
-                    add_keybd(seed.id);
-                };
-                boss.LISTEN(tier::release, hids::events::keybd::focus::bus::off, seed, memo)
-                {
-                    del_keybd(seed.id);
-                };
-                boss.LISTEN(tier::release, hids::events::die, gear, memo) // Gen by pro::focus.
-                {
-                    del_keybd(gear.id);
-                };
-                boss.LISTEN(tier::release, e2::render::background::prerender, parent_canvas, memo)
-                {
-                    if (focus.empty() || !alive) return;
-                    static constexpr auto title_fg_color = rgba{ 0xFFffffff };
-                    //todo revise, too many fillings (mold's artifacts)
-                    auto normal = boss.base::color();
-                    auto bright = skin::color(tone::brighter);
-                    auto shadow = skin::color(tone::shadower);
-                    //todo unify, make it more contrast
-                    shadow.alpha(0x80);
-                    bright.fgc(title_fg_color);
-                    shadow.fgc(title_fg_color);
-                    auto fillup = [&](auto bright, auto shadow)
-                    {
-                        parent_canvas.fill(shadow);
-                    };
-                    if (normal.bgc().alpha())
-                    {
-                        auto fuse_bright = [&](cell& c) { c.fuse(normal); c.fuse(bright); };
-                        auto fuse_shadow = [&](cell& c) { c.fuse(normal); c.fuse(shadow); };
-                        fillup(fuse_shadow, fuse_bright);
-                    }
-                    else
-                    {
-                        auto only_bright = [&](cell& c) { c.fuse(bright); };
-                        auto only_shadow = [&](cell& c) { c.fuse(shadow); };
-                        fillup(only_shadow, only_bright);
-                    }
-                    // Draw the border around
-                    auto area = parent_canvas.full();
-                    auto mark = skin::color(tone::kb_focus);
-                    mark.fgc(title_fg_color); //todo unify, make it more contrast
-                    auto fill = [&](cell& c) { c.fuse(mark); };
-                    parent_canvas.cage(area, dot_21, fill);
-                };
-                boss.LISTEN(tier::anycast, e2::form::prop::lucidity, lucidity, memo)
-                {
-                    if (lucidity != -1) alive = lucidity == 0xFF;
-                };
-                if (keybd_only || !skin::globals().tracking) return;
+                //boss.LISTEN(tier::release, hids::events::keybd::focus::bus::on, seed, memo)
+                //{
+                //    add_keybd(seed.id);
+                //};
+                //boss.LISTEN(tier::release, hids::events::keybd::focus::bus::off, seed, memo)
+                //{
+                //    del_keybd(seed.id);
+                //};
+                //boss.LISTEN(tier::release, hids::events::die, gear, memo) // Gen by pro::focus.
+                //{
+                //    del_keybd(gear.id);
+                //};
+                if (!skin::globals().tracking) return;
                 // Mouse focus.
                 boss.LISTEN(tier::release, hids::events::mouse::move, gear, memo)
                 {
@@ -567,15 +477,14 @@ namespace netxs::ui
                 boss.LISTEN(tier::release, e2::render::background::prerender, parent_canvas, memo)
                 {
                     if (!alive) return;
-                    auto full = parent_canvas.full();
-                    auto view = parent_canvas.view();
-                    auto mark = cell{}.bgc(0xFFffffff);
-                    auto fill = [&](cell& c) { c.fuse(mark); };
+                    auto& glow = glow_overlay();
+                    auto  coor = parent_canvas.coor();
+                    auto  full = parent_canvas.full();
+                    auto  base = full.coor - coor - glow.size() / 2;
                     items.foreach([&](sock& item)
                     {
-                        auto area = rect{ item.cursor, dot_00 } + dent{ 6,6,3,3 };
-                        area.coor += full.coor;
-                        parent_canvas.fill(area.clip(full), fill);
+                        glow.move(base + item.cursor);
+                        parent_canvas.plot(glow, cell::shaders::blend);
                     });
                 };
             }
@@ -710,7 +619,7 @@ namespace netxs::ui
             }
         };
 
-        // pro: The text caret controller.
+        // pro: Text cursor.
         class caret
             : public skill
         {
@@ -718,50 +627,54 @@ namespace netxs::ui
                   skill::memo;
 
             subs conf; // caret: Configuration subscriptions.
-            bool live; // caret: Should the caret be drawn.
-            bool done; // caret: Is the caret already drawn.
-            bool down; // caret: Is the caret suppressed (lost focus).
-            bool form; // caret: Caret style.
-            rect body; // caret: Caret position.
+            bool live; // caret: Should the cursor be drawn.
+            bool done; // caret: Is the cursor already drawn.
+            bool unfocused; // caret: Is the cursor suppressed (lost focus).
+            rect body; // caret: Cursor position.
+            si32 form; // caret: Cursor style (netxs::text_cursor).
+            si32 original_form; // caret: Original cursor form.
             span step; // caret: Blink interval. span::zero() if steady.
             time next; // caret: Time of next blinking.
+            cell mark; // caret: Cursor brush.
 
         public:
             caret(base&&) = delete;
-            caret(base& boss, bool visible = faux, bool abox = faux, twod position = dot_00, span freq = skin::globals().blink_period)
+            caret(base& boss, bool visible = faux, si32 cursor_style = text_cursor::I_bar, twod position = dot_00, span freq = skin::globals().blink_period, cell default_color = cell{})
                 : skill{ boss },
                    live{ faux },
                    done{ faux },
-                   down{ true },
-                   form{ abox },
-                   body{ position, dot_11 }, // Caret is always one cell size (see the term::scrollback definition).
-                   step{ freq }
+                   unfocused{ true },
+                   body{ position, dot_11 }, // Cursor is always one cell size (see the term::scrollback definition).
+                   form{ cursor_style },
+                   original_form{ cursor_style },
+                   step{ freq },
+                   mark{ default_color }
             {
                 boss.LISTEN(tier::release, e2::form::state::keybd::focus::count, count, conf)
                 {
-                    down = !count;
+                    unfocused = !count;
                 };
-                boss.LISTEN(tier::request, e2::config::caret::blink, req_step, conf)
+                boss.LISTEN(tier::request, e2::config::cursor::blink, req_step, conf)
                 {
                     req_step = step;
                 };
-                boss.LISTEN(tier::request, e2::config::caret::style, req_style, conf)
+                boss.LISTEN(tier::request, e2::config::cursor::style, req_style, conf)
                 {
-                    req_style = form ? 1 : 0;
+                    req_style = form;
                 };
-                boss.LISTEN(tier::general, e2::config::caret::blink, new_step, conf)
-                {
-                    blink_period(new_step);
-                };
-                boss.LISTEN(tier::preview, e2::config::caret::blink, new_step, conf)
+                boss.LISTEN(tier::general, e2::config::cursor::blink, new_step, conf)
                 {
                     blink_period(new_step);
                 };
-                boss.LISTEN(tier::general, e2::config::caret::style, new_style, conf)
+                boss.LISTEN(tier::preview, e2::config::cursor::blink, new_step, conf)
+                {
+                    blink_period(new_step);
+                };
+                boss.LISTEN(tier::general, e2::config::cursor::style, new_style, conf)
                 {
                     style(new_style);
                 };
-                boss.LISTEN(tier::preview, e2::config::caret::style, new_style, conf)
+                boss.LISTEN(tier::preview, e2::config::cursor::style, new_style, conf)
                 {
                     style(new_style);
                 };
@@ -770,8 +683,28 @@ namespace netxs::ui
 
             operator bool () const { return memo.count(); }
 
-            // pro::caret: Set caret style.
-            void style(bool new_form)
+            // pro::caret: Set cursor background color.
+            void bgc(argb c)
+            {
+                if (mark.bgc() != c)
+                {
+                    hide();
+                    mark.bgc(c);
+                    show();
+                }
+            }
+            // pro::caret: Set cursor color.
+            void color(cell c)
+            {
+                if (mark != c)
+                {
+                    hide();
+                    mark = c;
+                    show();
+                }
+            }
+            // pro::caret: Set cursor style.
+            void style(si32 new_form)
             {
                 if (form != new_form)
                 {
@@ -791,34 +724,34 @@ namespace netxs::ui
                     show();
                 }
             }
-            void style(si32 mode)
+            void decscusr(si32 mode)
             {
                 switch (mode)
                 {
-                    case 0: // n = 0  blinking box
                     case 1: // n = 1  blinking box (default)
                         blink_period();
-                        style(true);
+                        style(text_cursor::block);
                         break;
                     case 2: // n = 2  steady box
                         blink_period(span::zero());
-                        style(true);
+                        style(text_cursor::block);
                         break;
                     case 3: // n = 3  blinking underline
                         blink_period();
-                        style(faux);
+                        style(text_cursor::underline);
                         break;
                     case 4: // n = 4  steady underline
                         blink_period(span::zero());
-                        style(faux);
+                        style(text_cursor::underline);
                         break;
+                    case 0: // n = 0  blinking I-bar
                     case 5: // n = 5  blinking I-bar
                         blink_period();
-                        style(true);
+                        style(text_cursor::I_bar);
                         break;
                     case 6: // n = 6  steady I-bar
                         blink_period(span::zero());
-                        style(true);
+                        style(text_cursor::I_bar);
                         break;
                     default:
                         log(prompt::term, "Unsupported cursor style requested, ", mode);
@@ -827,10 +760,11 @@ namespace netxs::ui
             }
             void toggle()
             {
-                style(!form);
+                if (original_form == text_cursor::underline) style(form != text_cursor::block ? text_cursor::block : text_cursor::underline);
+                else                                         style(form != text_cursor::block ? text_cursor::block : text_cursor::I_bar);
                 reset();
             }
-            // pro::caret: Set caret position.
+            // pro::caret: Set cursor position.
             void coor(twod coor)
             {
                 if (body.coor != coor)
@@ -839,17 +773,17 @@ namespace netxs::ui
                     body.coor = coor;
                 }
             }
-            // pro::caret: Get caret position.
+            // pro::caret: Get cursor position.
             auto& coor() const
             {
                 return body.coor;
             }
-            // pro::caret: Get caret style.
+            // pro::caret: Get cursor style.
             auto style() const
             {
                 return std::pair{ form, !!(*this) };
             }
-            // pro::caret: Force to redraw caret.
+            // pro::caret: Force to redraw cursor.
             void reset()
             {
                 if (step != span::zero())
@@ -858,15 +792,16 @@ namespace netxs::ui
                     next = {};
                 }
             }
-            // pro::caret: Enable caret.
+            // pro::caret: Enable cursor.
             void show()
             {
                 if (!*this)
                 {
                     done = faux;
-                    live = step == span::zero();
-                    if (!live)
+                    auto blinking = step != span::zero();
+                    if (blinking)
                     {
+                        live = faux;
                         boss.LISTEN(tier::general, e2::timer::tick, timestamp, memo)
                         {
                             if (timestamp > next)
@@ -877,65 +812,79 @@ namespace netxs::ui
                             }
                         };
                     }
+                    else
+                    {
+                        live = true;
+                    }
                     boss.LISTEN(tier::release, e2::postrender, canvas, memo)
                     {
-                        done = live;
-                        auto state = down ? (step == span::zero() ? faux : true)
-                                          : live;
-                        if (state)
+                        done = true;
+                        auto blinking = step != span::zero();
+                        auto visible = (unfocused == blinking) || (blinking && live);
+                        auto clip = canvas.core::clip();
+                        auto area = clip.trim(body);
+                        if (area && form != text_cursor::I_bar)
                         {
-                            auto view = canvas.core::view();
-                            if (auto area = view.clip(body))
+                            auto& test = canvas.peek(body.coor);
+                            //todo >2x1 matrix support
+                            auto [w, h, x, y] = test.whxy();
+                            if (w == 2 && x == 1) // Extend cursor to adjacent halves.
                             {
-                                auto& test = canvas.peek(body.coor);
-                                if (test.wdt() == 2) // Extend cursor to adjacent halves.
+                                if (clip.hittest(body.coor + dot_10))
                                 {
-                                    if (view.hittest(body.coor + dot_10))
+                                    auto& next = canvas.peek(body.coor + dot_10);
+                                    auto [nw, nh, nx, ny] = next.whxy();
+                                    if (nw == 2 && nx == 2 && test.same_txt(next))
                                     {
-                                        auto& next = canvas.peek(body.coor + dot_10);
-                                        if (next.wdt() == 3 && test.same_txt(next))
-                                        {
-                                            area.size.x++;
-                                        }
+                                        area.size.x++;
                                     }
                                 }
-                                else if (test.wdt() == 3)
+                            }
+                            else if (w == 2 && x == 2)
+                            {
+                                if (clip.hittest(body.coor - dot_10))
                                 {
-                                    if (view.hittest(body.coor - dot_10))
+                                    auto& prev = canvas.peek(body.coor - dot_10);
+                                    auto [pw, ph, px, py] = prev.whxy();
+                                    if (pw == 2 && px == 1 && test.same_txt(prev))
                                     {
-                                        auto& prev = canvas.peek(body.coor - dot_10);
-                                        if (prev.wdt() == 2 && test.same_txt(prev))
-                                        {
-                                            area.size.x++;
-                                            area.coor.x--;
-                                        }
+                                        area.size.x++;
+                                        area.coor.x--;
                                     }
                                 }
-
-                                if (form)
-                                {
-                                    canvas.fill(area, [](cell& c)
-                                    {
-                                        auto b = c.bgc();
-                                        auto f = c.fgc();
-                                        if (c.inv()) c.bgc(f).fgc(cell::shaders::contrast.invert(f));
-                                        else         c.fgc(b).bgc(cell::shaders::contrast.invert(b));
-                                    });
-                                }
-                                else canvas.fill(area, [](cell& c) { c.und() ? c.und(0) : c.und(1); });
+                            }
+                        }
+                        if (visible)
+                        {
+                            if (area)
+                            {
+                                canvas.fill(area, [&](auto& c){ c.set_cursor(form, mark); });
                             }
                             else if (area.size.y)
                             {
                                 auto chr = area.coor.x ? '>' : '<';
                                 area.coor.x -= area.coor.x ? 1 : 0;
                                 area.size.x = 1;
-                                canvas.fill(area, [&](auto& c){ c.txt(chr).fgc(cell::shaders::contrast.invert(c.bgc())); });
+                                canvas.fill(area, [&](auto& c){ c.txt(chr).fgc(cell::shaders::contrast.invert(c.bgc())).cur(text_cursor::none); });
+                            }
+                        }
+                        else
+                        {
+                            if (area)
+                            {
+                                canvas.fill(area, [&](auto& c){ c.cur(text_cursor::none); });
+                            }
+                            else if (area.size.y)
+                            {
+                                area.size.x = 1;
+                                area.coor.x -= area.coor.x ? 1 : 0;
+                                canvas.fill(area, [&](auto& c){ c.cur(text_cursor::none); });
                             }
                         }
                     };
                 }
             }
-            // pro::caret: Disable caret.
+            // pro::caret: Disable cursor.
             void hide()
             {
                 if (*this)
@@ -978,6 +927,7 @@ namespace netxs::ui
 
             bool live = true; // title: Title visibility.
 
+            //todo use face::calc_page_height
             auto recalc(page& object, twod& size)
             {
                 auto cp = dot_00;
@@ -1044,9 +994,9 @@ namespace netxs::ui
                                                                 bool on_header = true,
                                                                 bool on_footer = true)
                 : skill{ boss },
-                  live{ visible },
                   head_live{ on_header },
-                  foot_live{ on_footer }
+                  foot_live{ on_footer },
+                  live{ visible }
             {
                 head_text = title;
                 foot_text = foots;
@@ -1088,10 +1038,10 @@ namespace netxs::ui
                     if (!gear_id) return;
                     auto iter = std::find_if(user_icon.begin(), user_icon.end(), [&](auto& a){ return a.gear_id == gear_id; });
                     if (iter == user_icon.end())
-                    if (auto gear_ptr = bell::getref<hids>(gear_id))
+                    if (auto gear_ptr = boss.bell::getref<hids>(gear_id))
                     {
                         auto index = gear_ptr->user_index;
-                        auto color = rgba::vt256[4 + index % (256 - 4)];
+                        auto color = argb::vt256[4 + index % (256 - 4)];
                         auto image = ansi::fgc(color).add("\0▀"sv);
                         user_icon.push_front({ gear_id, image });
                         rebuild();
@@ -1208,19 +1158,16 @@ namespace netxs::ui
             }
         };
 
-        // pro: Keyboard focus support.
+        // pro: Text input focus tree.
         class focus
             : public skill
         {
-            using skill::boss,
-                  skill::memo;
-
-            struct config
+            struct chain
             {
-                bool active{}; // focus: The chain is under the focus.
-                bool focused{}; // focus: Focused endpoint.
-                hook token; // focus: Cleanup token.
-                std::list<wptr> next; // focus: Focus event next hop.
+                bool            active{};  // focus: The chain is under the focus.
+                bool            focused{}; // focus: The endpoint is focused .
+                hook            token;     // focus: Cleanup token.
+                std::list<wptr> next;      // focus: Focus branch next hop list.
 
                 template<class P>
                 auto foreach(P proc)
@@ -1236,11 +1183,14 @@ namespace netxs::ui
                 }
             };
 
+            using umap = std::unordered_map<id_t, chain>; // Each gear has its own focus tree.
+            using skill::boss,
+                  skill::memo;
+
             //todo kb navigation type: transit, cyclic, plain, disabled, closed
             bool focusable; // focus: Boss could be a focus endpoint.
-            bool scope; // focus: Cutoff threshold for the focus branch.
-            //todo std::list<config>??? std::unordered_map is too expensive
-            std::unordered_map<id_t, config> gears;
+            bool scope; // focus: Cutoff threshold for focus branch.
+            umap gears; // focus: Registered gears.
 
             void signal_state()
             {
@@ -1251,7 +1201,7 @@ namespace netxs::ui
                 }
                 boss.SIGNAL(tier::release, e2::form::state::keybd::focus::count, count);
             }
-            auto add_route(id_t gear_id, config cfg = { .active = faux, .focused = faux })
+            auto add_route(id_t gear_id, chain cfg = { .active = faux, .focused = faux })
             {
                 auto iter = gears.emplace(gear_id, std::move(cfg)).first;
                 if (gear_id != id_t{})
@@ -1265,7 +1215,7 @@ namespace netxs::ui
                             //if constexpr (debugmode) log(prompt::foci, "Gears cleanup boss:", boss.id, " hid:", gear.id);
                             auto& route = iter->second;
                             auto  token = std::move(route.token);
-                            if (route.active) // Keep only the active branch.
+                            if (route.active) // Make the active branch the default.
                             {
                                 route.active = faux;
                                 gears[id_t{}] = std::move(route);
@@ -1350,32 +1300,8 @@ namespace netxs::ui
                 item.RISEUP(tier::request, e2::form::state::keybd::find, gear_test, (gear.id, 0));
                 return gear_test.second;
             }
-            template<auto KeyEvent>
-            void forward()
-            {
-                boss.LISTEN(tier::preview, KeyEvent, gear, memo) // preview: Run after any.
-                {
-                    //if constexpr (debugmode) log(prompt::foci, "KeyEvent: gear:", gear.id, " hub:", boss.id, " gears.size:", gears.size());
-                    if (!gear) return;
-                    auto& route = get_route(gear.id);
-                    if (route.active)
-                    {
-                        auto alive = gear.alive;
-                        auto accum = alive;
-                        route.foreach([&](auto& nexthop)
-                        {
-                            nexthop->SIGNAL(tier::preview, KeyEvent, gear);
-                            accum &= gear.alive;
-                            gear.alive = alive;
-                        });
-                        gear.alive = accum;
-                        if (accum) boss.SIGNAL(tier::release, KeyEvent, gear);
-                    }
-                };
-            }
 
             focus(base&&) = delete;
-            //todo drop visible
             focus(base& boss, mode m = mode::hub, bool cut_scope = faux)
                 : skill{ boss },
                   focusable{ m != mode::hub && m != mode::active },
@@ -1404,8 +1330,26 @@ namespace netxs::ui
                     else                          pro::focus::set(boss.This(), gear.id, solo::on,  flip::off);
                     gear.dismiss();
                 };
-                forward<hids::events::keybd::key::post>(); // Subscribe on keybd events.
-                forward<hids::events::paste>(); // Subscribe on paste events.
+                // Subscribe on keybd events.
+                boss.LISTEN(tier::preview, hids::events::keybd::key::post, gear, memo) // preview: Run after any.
+                {
+                    //if constexpr (debugmode) log(prompt::foci, "KeyEvent: gear:", gear.id, " hub:", boss.id, " gears.size:", gears.size());
+                    if (!gear) return;
+                    auto& route = get_route(gear.id);
+                    if (route.active)
+                    {
+                        auto alive = gear.alive;
+                        auto accum = alive;
+                        route.foreach([&](auto& nexthop)
+                        {
+                            nexthop->SIGNAL(tier::preview, hids::events::keybd::key::post, gear);
+                            accum &= gear.alive;
+                            gear.alive = alive;
+                        });
+                        gear.alive = accum;
+                        if (accum) boss.SIGNAL(tier::release, hids::events::keybd::key::post, gear);
+                    }
+                };
                 // Subscribe on focus chain events.
                 boss.LISTEN(tier::release, hids::events::keybd::focus::bus::any, seed, memo) // Forward the bus event up.
                 {
@@ -1459,7 +1403,7 @@ namespace netxs::ui
                     {
                         auto def_route = gears.find(id_t{}); // Check if the default route is present.
                         if (def_route != gears.end()) add_route(seed.id, def_route->second);
-                        else                          add_route(seed.id, config{});
+                        else                          add_route(seed.id);
                     }
                 };
                 // Replace next hop object "seed.what" with "seed.item".
@@ -1559,6 +1503,7 @@ namespace netxs::ui
                         }
                     }
 
+                    if (seed.id || boss.base::kind() != base::reflow_root) // Cut default focus path on base::reflow_root (hall::window). See pro::focus ctor.
                     if (auto parent = boss.parent())
                     {
                         seed.item = boss.This();
@@ -1621,7 +1566,7 @@ namespace netxs::ui
                         auto& route = iter->second;
                         if (route.active)
                         {
-                            route.foreach([&](auto& nexthop){ gear_test.second++; });
+                            route.foreach([&](auto& /*nexthop*/){ gear_test.second++; });
                         }
                     }
                 };
@@ -1635,10 +1580,21 @@ namespace netxs::ui
                         }
                     }
                 };
+                boss.LISTEN(tier::general, ui::e2::command::request::inputfields, inputfield_request, memo)
+                {
+                    if (auto iter = gears.find(inputfield_request.gear_id); iter != gears.end())
+                    {
+                        auto& route = iter->second;
+                        if (route.active)
+                        {
+                            boss.SIGNAL(tier::release, ui::e2::command::request::inputfields, inputfield_request);
+                        }
+                    }
+                };
             }
         };
 
-        // pro: Mouse support.
+        // pro: Mouse events.
         class mouse
             : public skill
         {
@@ -1652,11 +1608,11 @@ namespace netxs::ui
                   skill::memo;
 
             sptr soul; // mouse: Boss cannot be removed while it has active gears.
+            list mice; // mouse: List of active mice.
+            bool omni; // mouse: Ability to accept all hover events (true) or only directly over the object (faux).
             si32 rent; // mouse: Active gears count.
             si32 full; // mouse: All gears count. Counting to keep the entire chain of links in the visual tree.
-            bool omni; // mouse: Ability to accept all hover events (true) or only directly over the object (faux).
             si32 drag; // mouse: Bitfield of buttons subscribed to mouse drag.
-            list mice; // mouse: List of active mice.
             std::map<si32, subs> dragmemo; // mouse: Draggable subs.
 
         public:
@@ -1677,7 +1633,7 @@ namespace netxs::ui
                         auto& parent = *parent_ptr;
                         mice.foreach([&](auto& gear)
                         {
-                            if (auto gear_ptr = bell::getref<hids>(gear.id))
+                            if (auto gear_ptr = boss.bell::getref<hids>(gear.id))
                             {
                                 gear_ptr->redirect_mouse_focus(parent);
                             }
@@ -1756,21 +1712,22 @@ namespace netxs::ui
                 };
                 boss.LISTEN(tier::release, e2::form::draggable::any, enabled, memo)
                 {
-                    switch (auto deed = boss.bell::protos<tier::release>())
+                    auto deed = boss.bell::protos<tier::release>();
+                    switch (deed)
                     {
                         default:
                         case e2::form::draggable::left     .id: draggable<hids::buttons::left     >(enabled); break;
                         case e2::form::draggable::right    .id: draggable<hids::buttons::right    >(enabled); break;
                         case e2::form::draggable::middle   .id: draggable<hids::buttons::middle   >(enabled); break;
-                        case e2::form::draggable::wheel    .id: draggable<hids::buttons::wheel    >(enabled); break;
-                        case e2::form::draggable::win      .id: draggable<hids::buttons::win      >(enabled); break;
+                        case e2::form::draggable::xbutton1 .id: draggable<hids::buttons::xbutton1 >(enabled); break;
+                        case e2::form::draggable::xbutton2 .id: draggable<hids::buttons::xbutton2 >(enabled); break;
                         case e2::form::draggable::leftright.id: draggable<hids::buttons::leftright>(enabled); break;
                     }
                 };
             }
             void reset()
             {
-                auto lock = events::sync{};
+                auto lock = boss.bell::sync();
                 if (full)
                 {
                     full = 0;
@@ -1855,13 +1812,11 @@ namespace netxs::ui
                 {
                     auto size = si32{ 5 }; // grade: Vertical gradient size.
                     auto step = si32{ 2 }; // grade: Vertical gradient step.
-                    //cell shadow{ cell{}.vis(cell::highlighter) };
-                    //cell bright{ cell{}.vis(cell::darklighter) };
-                    auto shadow = rgba{0xFF000000};
-                    auto bright = rgba{0xFFffffff};
+                    auto shadow = argb{0xFF000000};
+                    auto bright = argb{0xFFffffff};
 
                     //todo optimize - don't fill the head and foot twice
-                    auto area = parent_canvas.view();
+                    auto area = parent_canvas.clip();
                     auto n = std::clamp(size, 0, area.size.y / 2) + 1;
                     //auto n = std::clamp(size, 0, boss.base::size().y / 2) + 1;
 
@@ -1876,8 +1831,8 @@ namespace netxs::ui
                         bright.alpha(i * step);
                         shadow.alpha(i * step);
 
-                        parent_canvas.core::fill(head, [&](cell& c) { c.bgc().mix(bright); });
-                        parent_canvas.core::fill(foot, [&](cell& c) { c.bgc().mix(shadow); });
+                        parent_canvas.core::fill(head, [&](cell& c){ c.bgc().mix(bright); });
+                        parent_canvas.core::fill(foot, [&](cell& c){ c.bgc().mix(shadow); });
 
                         head.coor.y--;
                         foot.coor.y++;
@@ -1893,19 +1848,19 @@ namespace netxs::ui
             using skill::boss,
                   skill::memo;
 
-            robot  robo;   // fader: .
-            span fade;
-            si32 transit;
-            cell c1;
-            cell c2;
-            cell c2_orig;
-            bool fake = faux;
+            robot robo; // fader: .
+            span  fade;
+            cell  c1;
+            cell  c2;
+            cell  c2_orig;
+            si32  transit;
+            bool  fake = faux;
 
             //todo use lambda
-            void work(si32 transit)
+            void work(si32 balance)
             {
                 auto brush = boss.base::color();
-                brush.avg(c1, c2, transit);
+                brush.avg(c1, c2, balance);
                 fake = true;
                 boss.base::color(brush);
                 fake = faux;
@@ -1916,11 +1871,11 @@ namespace netxs::ui
             fader(base&&) = delete;
             fader(base& boss, cell default_state, cell highlighted_state, span fade_out = 250ms, sptr tracking_object = {})
                 : skill{ boss },
-                robo{ boss },
-                fade{ fade_out },
-                c1 { default_state },
-                c2 { highlighted_state },
-                c2_orig { highlighted_state },
+                   robo{ boss },
+                   fade{ fade_out },
+                     c1{ default_state },
+                     c2{ highlighted_state },
+                c2_orig{ highlighted_state },
                 transit{ 0 }
             {
                 boss.base::color(c1);
@@ -1975,17 +1930,17 @@ namespace netxs::ui
                   skill::memo;
 
             netxs::sptr<face> coreface; //todo revise necessity
-            byte              lucidity; // cacheL .
-            bool              usecache; // cacheL .
             face&             bosscopy; // cache: Boss bitmap cache.
+            bool              usecache; // cacheL .
+            si32              lucidity; // cacheL .
 
         public:
             cache(base&&) = delete;
             cache(base& boss, bool rendered = true)
                 : skill{ boss },
                   bosscopy{*(coreface = ptr::shared<face>())},
-                  lucidity{ 0xFF },
-                  usecache{ true }
+                  usecache{ true },
+                  lucidity{ 0xFF }
             {
                 bosscopy.link(boss.bell::id);
                 bosscopy.size(boss.base::size());
@@ -1995,7 +1950,7 @@ namespace netxs::ui
                 };
                 boss.LISTEN(tier::anycast, e2::form::prop::lucidity, value, memo)
                 {
-                    if (value == -1)
+                    if (value < 0)
                     {
                         value = lucidity;
                     }
@@ -2028,7 +1983,7 @@ namespace netxs::ui
                         }
                         auto full = parent_canvas.full();
                         bosscopy.move(full.coor);
-                        if (lucidity == 0xFF) parent_canvas.fill(bosscopy, cell::shaders::fusefull);
+                        if (lucidity == 0xFF) parent_canvas.fill(bosscopy, cell::shaders::overlay);
                         else                  parent_canvas.fill(bosscopy, cell::shaders::transparent(lucidity));
                         bosscopy.move(dot_00);
                         boss.bell::expire<tier::release>();
@@ -2046,10 +2001,11 @@ namespace netxs::ui
 
             si32 width; // acryl: Blur radius.
             bool alive; // acryl: Is active.
+            vrgb cache; // acryl: Boxblur temp buffer.
 
         public:
             acryl(base&&) = delete;
-            acryl(base& boss, si32 size = 5)
+            acryl(base& boss, si32 size = 3)
                 : skill{ boss },
                   width{ size },
                   alive{ true }
@@ -2065,7 +2021,7 @@ namespace netxs::ui
                 boss.LISTEN(tier::release, e2::render::background::prerender, parent_canvas, memo)
                 {
                     if (!alive || boss.base::filler.bga() == 0xFF) return;
-                    parent_canvas.blur(width, [&](cell& c) { c.alpha(0xFF); });
+                    parent_canvas.blur(width, cache, [&](cell& c){ c.alpha(0xFF); });
                 };
             }
         };
@@ -2079,11 +2035,11 @@ namespace netxs::ui
                   skill::memo;
 
             bool highlighted = faux; // light: .
-            rgba title_fg_color = 0xFFffffff;
+            argb title_fg_color = 0xFFffffff;
 
         public:
             light(base&&) = delete;
-            light(base& boss, bool track_mouse = faux)
+            light(base& boss)
                 : skill{ boss }
             {
                 boss.LISTEN(tier::release, e2::form::state::highlight, state, memo)
@@ -2133,6 +2089,45 @@ namespace netxs::ui
                         parent_canvas.fill(area, fx);
                     }
                 };
+            }
+        };
+
+        // pro: UI-control shadow.
+        class ghost
+            : public skill
+        {
+            using skill::boss,
+                  skill::memo;
+
+            auto draw_shadow(face& canvas)
+            {
+                if (skin::globals().shadow_enabled)
+                {
+                    static auto shadow = netxs::misc::shadow<core>{};
+                    if (!shadow.sync) shadow.generate(skin::globals().shadow_bias,
+                                                      skin::globals().shadow_opacity,
+                                                      skin::globals().shadow_blur * 2,
+                                                      skin::globals().shadow_offset,
+                                                      dot_21,
+                                                      [](cell& c, auto a){ c.alpha(a); });
+                    shadow.render(canvas, canvas.area(), rect{ .size = boss.base::size() }, cell::shaders::blend);
+                }
+            }
+
+        public:
+            ghost(base&&) = delete;
+            ghost(base& boss)
+                : skill{ boss }
+            {
+                boss.LISTEN(tier::release, e2::render::background::prerender, parent_canvas, memo)
+                {
+                    draw_shadow(parent_canvas);
+                };
+                //test
+                //boss.LISTEN(tier::release, hids::events::mouse::scroll::any, gear)
+                //{
+                //    boss.base::deface();
+                //};
             }
         };
 
@@ -2187,6 +2182,12 @@ namespace netxs::ui
         };
     }
 
+    auto& tui_domain()
+    {
+        static auto indexer = netxs::events::auth{};
+        return indexer;
+    }
+
     // controls: base UI element.
     template<class T>
     class form
@@ -2199,17 +2200,15 @@ namespace netxs::ui
         pro::mouse mouse{ *this }; // form: Mouse controller.
         //pro::keybd keybd{ *this }; // form: Keybd controller.
 
-    protected:
         form(size_t nested_count = 0)
-            : base{ nested_count }
+            : base{ ui::tui_domain(), nested_count }
         { }
 
-    public:
         auto This() { return base::This<T>(); }
-        template<class ...Args>
+        template<class TT = T, class ...Args>
         static auto ctor(Args&&... args)
         {
-            auto item = base::create<T>(std::forward<Args>(args)...);
+            auto item = ui::tui_domain().template create<TT>(std::forward<Args>(args)...);
             return item;
         }
         // form: Attach feature and return itself.
@@ -2254,10 +2253,12 @@ namespace netxs::ui
                 if constexpr (is_cell) fx.link(bell::id);
                 LISTEN(tier::release, RenderOrder, parent_canvas, -, (fx))
                 {
+                    static constexpr auto is_func = requires{ fx(parent_canvas, param, *this); };
                     if (param)
                     {
-                        if constexpr (is_cell) parent_canvas.fill(cell::shaders::fuseid(fx));
-                        else                   parent_canvas.fill(fx[param]);
+                             if constexpr (is_func) fx(parent_canvas, param, *this);
+                        else if constexpr (is_cell) parent_canvas.fill(cell::shaders::fuseid(fx));
+                        else                        parent_canvas.fill(fx[param]);
                     }
                 };
             }
@@ -2271,10 +2272,10 @@ namespace netxs::ui
             return This();
         }
         // form: Set control as root.
-        auto isroot(bool master, si32 family = base::client)
+        auto isroot(bool isroot, si32 ofkind = base::client)
         {
-            base::root(master);
-            base::kind(family);
+            base::root(isroot);
+            base::kind(ofkind);
             return This();
         }
         // form: Set the form visible for mouse.
@@ -2318,11 +2319,11 @@ namespace netxs::ui
         // form: UI-control will be detached upon destruction of the master.
         auto depend(sptr master_ptr)
         {
-            auto& master = *master_ptr;
-            master.LISTEN(tier::release, e2::dtor, id, memomap[master.id])
+            auto& master_inst = *master_ptr;
+            master_inst.LISTEN(tier::release, e2::dtor, master_id, memomap[master_inst.id])
             {
                 auto backup = This();
-                memomap.erase(master.id);
+                memomap.erase(master_inst.id);
                 if (memomap.empty()) base::detach();
             };
             return This();
@@ -2401,20 +2402,26 @@ namespace netxs::ui
             };
             return backup;
         }
-        auto limits(twod min_sz = -dot_11, twod max_sz = -dot_11)
+        auto limits(twod new_min_sz = -dot_11, twod new_max_sz = -dot_11)
         {
-            base::limits(min_sz, max_sz);
+            base::limits(new_min_sz, new_max_sz);
             return This();
         }
-        auto alignment(bind atgrow, bind atcrop = { snap::none, snap::none })
+        auto alignment(bind new_atgrow, bind new_atcrop = { snap::none, snap::none })
         {
-            base::alignment(atgrow, atcrop);
+            base::alignment(new_atgrow, new_atcrop);
             return This();
         }
-        auto setpad(dent intpad, dent extpad = {})
+        auto setpad(dent new_intpad, dent new_extpad = {})
         {
-            base::setpad(intpad, extpad);
+            base::setpad(new_intpad, new_extpad);
             return This();
+        }
+        auto nested_context(auto& parent_canvas)
+        {
+            auto basis = rect{ dot_00, base::region.size } - base::intpad;
+            auto context = parent_canvas.change_basis(basis, true);
+            return context;
         }
     };
 
@@ -2450,28 +2457,6 @@ namespace netxs::ui
         }
 
     protected:
-        fork(axis orientation = axis::X, si32 grip_width = 0, si32 s1 = 1, si32 s2 = 1)
-            : form{ 3 },
-              object_1{ base::subset[0] },
-              object_2{ base::subset[1] },
-              splitter{ base::subset[2] },
-              rotation{ },
-              fraction{ },
-              adaptive{ }
-        {
-            _config(orientation, grip_width, s1, s2);
-            LISTEN(tier::preview, e2::form::layout::swarp, warp)
-            {
-                adaptive = true; // Adjust the grip ratio on coming resize.
-                this->bell::expire<tier::preview>(true);
-            };
-            LISTEN(tier::release, e2::render::any, parent_canvas)
-            {
-                if (splitter) splitter->render(parent_canvas);
-                if (object_1) object_1->render(parent_canvas);
-                if (object_2) object_2->render(parent_canvas);
-            };
-        }
         // fork: .
         void deform(rect& new_area) override
         {
@@ -2541,6 +2526,32 @@ namespace netxs::ui
         }
 
     public:
+        fork(axis orientation = axis::X, si32 grip_width = 0, si32 s1 = 1, si32 s2 = 1)
+            : form{ 3 },
+              object_1{ base::subset[0] },
+              object_2{ base::subset[1] },
+              splitter{ base::subset[2] },
+              rotation{ },
+              fraction{ },
+              adaptive{ }
+        {
+            _config(orientation, grip_width, s1, s2);
+            LISTEN(tier::preview, e2::form::layout::swarp, warp)
+            {
+                adaptive = true; // Adjust the grip ratio on coming resize.
+                this->bell::expire<tier::preview>(true);
+            };
+            LISTEN(tier::release, e2::render::any, parent_canvas)
+            {
+                if (auto context = form::nested_context(parent_canvas))
+                {
+                    if (splitter) splitter->render(parent_canvas);
+                    if (object_1) object_1->render(parent_canvas);
+                    if (object_2) object_2->render(parent_canvas);
+                }
+            };
+        }
+
         static constexpr auto min_ratio = si32{ 0           };
         static constexpr auto max_ratio = si32{ 0xFFFF      };
         static constexpr auto mid_ratio = si32{ 0xFFFF >> 1 };
@@ -2642,28 +2653,6 @@ namespace netxs::ui
         sort lineup; // list: Attachment order.
 
     protected:
-        list(axis orientation = axis::Y, sort attach_order = sort::forward)
-            : updown{ orientation == axis::Y },
-              lineup{ attach_order }
-        {
-            LISTEN(tier::release, e2::render::any, parent_canvas)
-            {
-                auto basis = parent_canvas.full();
-                auto frame = parent_canvas.view();
-                auto min_y = frame.coor[updown] - basis.coor[updown];
-                auto max_y = frame.size[updown] + min_y;
-                auto bound = [xy = updown](auto& o){ return o ? o->base::region.coor[xy] + o->base::region.size[xy] : -dot_mx.y; };
-                auto start = std::ranges::lower_bound(base::subset, min_y, {}, bound);
-                while (start != base::subset.end())
-                {
-                    if (auto& object = *start++)
-                    {
-                        object->render(parent_canvas);
-                        if (!object->base::hidden && bound(object) >= max_y) break;
-                    }
-                }
-            };
-        }
         // list: .
         void deform(rect& new_area) override
         {
@@ -2673,7 +2662,6 @@ namespace netxs::ui
             auto& y_size = new_size[updown];
             auto& x_size = new_size[1 - updown];
             auto  x_temp = x_size;
-            auto  y_temp = y_size;
             auto start = height;
             auto meter = [&]
             {
@@ -2722,6 +2710,31 @@ namespace netxs::ui
         }
 
     public:
+        list(axis orientation = axis::Y, sort attach_order = sort::forward)
+            : updown{ orientation == axis::Y },
+              lineup{ attach_order }
+        {
+            LISTEN(tier::release, e2::render::any, parent_canvas)
+            {
+                if (auto context = form::nested_context(parent_canvas))
+                {
+                    auto basis = parent_canvas.full();
+                    auto frame = parent_canvas.clip();
+                    auto min_y = frame.coor[updown] - basis.coor[updown];
+                    auto max_y = frame.size[updown] + min_y;
+                    auto bound = [xy = updown](auto& o){ return o ? o->base::region.coor[xy] + o->base::region.size[xy] : -dot_mx.y; };
+                    auto start = std::ranges::lower_bound(base::subset, min_y, {}, bound);
+                    while (start != base::subset.end())
+                    {
+                        if (auto& object = *start++)
+                        {
+                            object->render(parent_canvas);
+                            if (!object->base::hidden && bound(object) >= max_y) break;
+                        }
+                    }
+                }
+            };
+        }
         // list: .
         void clear()
         {
@@ -2763,16 +2776,6 @@ namespace netxs::ui
         : public form<cake>
     {
     protected: 
-        cake()
-        {
-            LISTEN(tier::release, e2::render::any, parent_canvas)
-            {
-                for (auto& object : subset)
-                {
-                    object->render(parent_canvas);
-                }
-            };
-        }
         // cake: .
         void deform(rect& new_area) override
         {
@@ -2802,6 +2805,19 @@ namespace netxs::ui
         }
 
     public:
+        cake()
+        {
+            LISTEN(tier::release, e2::render::any, parent_canvas)
+            {
+                if (auto context = form::nested_context(parent_canvas))
+                {
+                    for (auto& object : subset)
+                    {
+                        object->render(parent_canvas);
+                    }
+                }
+            };
+        }
         // cake: Remove the last nested object. Return the object refrence.
         auto pop_back()
         {
@@ -2833,17 +2849,6 @@ namespace netxs::ui
         : public form<veer>
     {
     protected:
-        veer()
-        {
-            LISTEN(tier::release, e2::render::any, parent_canvas)
-            {
-                if (subset.size())
-                if (auto object = subset.back())
-                {
-                    object->render(parent_canvas);
-                }
-            };
-        }
         // veer: .
         void deform(rect& new_area) override
         {
@@ -2864,6 +2869,20 @@ namespace netxs::ui
         }
 
     public:
+        veer()
+        {
+            LISTEN(tier::release, e2::render::any, parent_canvas)
+            {
+                if (auto context = form::nested_context(parent_canvas))
+                {
+                    if (subset.size())
+                    if (auto object = subset.back())
+                    {
+                        object->render(parent_canvas);
+                    }
+                }
+            };
+        }
         // veer: Return the last object or empty sptr.
         auto back()
         {
@@ -2937,19 +2956,6 @@ namespace netxs::ui
         bool recent; // post: Paragraphs are not aligned.
 
     protected:
-        postfx(bool scroll_beyond = faux)
-            :   flow{ square        },
-              beyond{ scroll_beyond },
-              recent{               }
-        {
-            LISTEN(tier::release, e2::render::any, parent_canvas)
-            {
-                output(parent_canvas);
-                //auto mark = rect{ base::anchor + base::coor(), {10,5} };
-                //mark.coor += parent_canvas.view().coor; // Set client's basis
-                //parent_canvas.fill(mark, [](cell& c) { c.alpha(0x80).bgc().chan.r = 0xff; });
-            };
-        }
         // post: .
         void deform(rect& new_area) override
         {
@@ -2993,13 +2999,26 @@ namespace netxs::ui
         {
             if (square.x != new_area.size.x)
             {
-            	deform(new_area);
+                deform(new_area);
             }
         }
 
     public:
         page topic; // post: Text content.
 
+        postfx(bool scroll_beyond = faux)
+            :   flow{ square        },
+              beyond{ scroll_beyond },
+              recent{               }
+        {
+            LISTEN(tier::release, e2::render::any, parent_canvas)
+            {
+                output(parent_canvas);
+                //auto mark = rect{ base::anchor + base::coor(), {10,5} };
+                //mark.coor += parent_canvas.clip().coor; // Set client's basis
+                //parent_canvas.fill(mark, [](cell& c){ c.alpha(0x80).bgc().chan.r = 0xff; });
+            };
+        }
         // post: .
         auto& lyric(si32 paraid) { return *topic[paraid].lyric; }
         // post: .
@@ -3030,7 +3049,7 @@ namespace netxs::ui
             flow::reset(canvas, base::intpad.corner());
             auto publish = [&](auto const& combo)
             {
-                flow::print(combo, canvas, fx);
+                flow::print2(combo, canvas, fx);
             };
             topic.stream(publish);
         }
@@ -3046,14 +3065,15 @@ namespace netxs::ui
 
         using upon = e2::form::upon;
 
-        twod strict; // rail: Don't allow overscroll.
-        twod manual; // rail: Manual scrolling (no auto align).
         twod permit; // rail: Allowed axes to scroll.
         twod siezed; // rail: Allowed axes to capture.
         twod oversc; // rail: Allow overscroll with auto correct.
+        twod strict; // rail: Don't allow overscroll.
+        twod manual; // rail: Manual scrolling (no auto align).
+        bool animat; // rail: Smooth scrolling.
         subs fasten; // rail: Subscriptions on masters to follow they state.
         rack scinfo; // rail: Scroll info.
-        bool animat; // rail: Smooth scrolling.
+        fp2d drag_origin; // rail: Drag origin.
 
         si32 spd       = skin::globals().spd;
         si32 pls       = skin::globals().pls;
@@ -3063,7 +3083,6 @@ namespace netxs::ui
         si32 spd_max   = skin::globals().spd_max;
         si32 ccl_max   = skin::globals().ccl_max;
         si32 switching = skin::globals().switching;
-        si32 wheel_dt  = skin::globals().wheel_dt;
 
         si32 speed{ spd  }; // rail: Text auto-scroll initial speed component ΔR.
         si32 pulse{ pls  }; // rail: Text auto-scroll initial speed component ΔT.
@@ -3082,7 +3101,23 @@ namespace netxs::ui
         }
 
     protected:
-        rail(axes allow_to_scroll = axes::all, axes allow_to_capture = axes::all, axes allow_overscroll = axes::all, bool smooth_scrolling = true)
+        // rail: Resize nested object with scroll bounds checking.
+        void inform(rect new_area) override
+        {
+            if (empty()) return;
+            auto& item = *base::subset.back();
+            item.base::anchor = base::anchor - item.base::region.coor;
+            auto block = item.base::resize(new_area.size - item.base::extpad, faux);
+            auto frame = new_area.size;
+            auto delta = dot_00;
+            revise(item, block, frame, delta);
+            block += item.base::extpad;
+            item.base::socket = block;
+            item.base::accept(block);
+        }
+
+    public:
+        rail(axes allow_to_scroll = axes::all, axes allow_to_capture = axes::all, axes allow_overscroll = axes::all, bool smooth_scrolling = faux)
             : permit{ xy(allow_to_scroll)  },
               siezed{ xy(allow_to_capture) },
               oversc{ xy(allow_overscroll) },
@@ -3123,14 +3158,16 @@ namespace netxs::ui
             };
 
             using button = hids::events::mouse::button;
-            LISTEN(tier::release, hids::events::mouse::scroll::any, gear)
+            LISTEN(tier::release, hids::events::mouse::scroll::act, gear)
             {
                 if (gear.meta(hids::anyCtrl)) return; // Ctrl+Wheel is reserved for zooming.
-                auto dt = gear.whldt > 0;
-                auto hz = permit == xy(axes::X_only)
-                      || (permit == xy(axes::all) && gear.meta(hids::anyAlt | hids::anyShift));
-                if (hz) wheels<X>(dt);
-                else    wheels<Y>(dt);
+                if (gear.whlsi)
+                {
+                    auto hz = (permit[X] && (gear.hzwhl || gear.meta(hids::anyAlt | hids::anyShift)))
+                           || (permit == xy(axes::X_only));
+                    if (hz) wheels<X>(gear.whlsi);
+                    else    wheels<Y>(gear.whlsi);
+                }
                 gear.dismiss();
             };
             LISTEN(tier::release, button::drag::start::right, gear)
@@ -3145,6 +3182,7 @@ namespace netxs::ui
                 {
                     if (gear.capture(bell::id))
                     {
+                        drag_origin = gear.coord;
                         manual = xy(axes::all);
                         strict = xy(axes::all) - oversc; // !oversc = dot_11 - oversc
                         gear.dismiss();
@@ -3155,9 +3193,12 @@ namespace netxs::ui
             {
                 if (gear.captured(bell::id))
                 {
-                    auto delta = gear.mouse::delta.get();
-                    auto value = permit * delta;
-                    if (value) scroll(value);
+                    if (auto delta = twod{ gear.coord } - twod { drag_origin })
+                    {
+                        drag_origin = gear.coord;
+                        auto value = permit * delta;
+                        if (value) scroll(value);
+                    }
                     gear.dismiss();
                 }
             };
@@ -3206,13 +3247,13 @@ namespace netxs::ui
             {
                 cutoff();
             };
-            LISTEN(tier::release, e2::form::animate::reset, id)
+            LISTEN(tier::release, e2::form::animate::reset, task_id)
             {
                 cutoff();
             };
-            LISTEN(tier::release, e2::form::animate::stop, id)
+            LISTEN(tier::release, e2::form::animate::stop, task_id)
             {
-                switch (id)
+                switch (task_id)
                 {
                     case Y: manual[Y] = true; /*scroll<Y>();*/ break;
                     case X: manual[X] = true; /*scroll<X>();*/ break;
@@ -3223,26 +3264,14 @@ namespace netxs::ui
             LISTEN(tier::release, e2::render::any, parent_canvas)
             {
                 if (empty()) return;
-                auto& item = *base::subset.back();
-                item.render(parent_canvas, faux);
+                if (auto context = form::nested_context(parent_canvas))
+                {
+                    auto& item = *base::subset.back();
+                    item.render(parent_canvas, faux);
+                }
             };
         }
-        // rail: Resize nested object with scroll bounds checking.
-        void inform(rect new_area) override
-        {
-            if (empty()) return;
-            auto& item = *base::subset.back();
-            item.base::anchor = base::anchor - item.base::region.coor;
-            auto block = item.base::resize(new_area.size - item.base::extpad, faux);
-            auto frame = new_area.size;
-            auto delta = dot_00;
-            revise(item, block, frame, delta);
-            block += item.base::extpad;
-            item.base::socket = block;
-            item.base::accept(block);
-        }
 
-    public:
         // rail: .
         auto smooth(bool smooth_scroll = true)
         {
@@ -3281,8 +3310,9 @@ namespace netxs::ui
         }
         // rail: .
         template<axis Axis>
-        void wheels(bool dir)
+        void wheels(si32 step)
         {
+            auto dir = step > 0;
             if (animat)
             {
                 if (robot.active(Axis) && (steer == dir))
@@ -3307,9 +3337,8 @@ namespace netxs::ui
             }
             else
             {
-                auto speed = dir ? wheel_dt : -wheel_dt;
-                auto delta = Axis == X ? twod{ speed * 2, 0 }
-                                       : twod{ 0, speed };
+                auto delta = Axis == X ? twod{ step, 0 }
+                                       : twod{ 0, step };
                 scroll(delta);
             }
         }
@@ -3320,9 +3349,14 @@ namespace netxs::ui
             strict[Axis] = true;
             robot.actify(Axis, std::forward<Fx>(func), [&](auto& p)
             {
-                auto delta = Axis == X ? twod{ p, 0 }
-                                       : twod{ 0, p };
-                scroll(delta);
+                //todo revise
+                //if (auto step = netxs::saturate_cast<twod::type>(p))
+                if (auto step = twod::cast(p))
+                {
+                    auto delta = Axis == X ? twod{ step, 0 }
+                                           : twod{ 0, step };
+                    scroll(delta);
+                }
             });
         }
         // rail: Check overscroll if no auto correction.
@@ -3349,7 +3383,8 @@ namespace netxs::ui
         template<axis Axis, bool Forced = faux>
         void cancel()
         {
-            if (Forced || !inside<Axis>()) lineup<Axis>();
+            auto correct = Forced || !inside<Axis>();
+            if (correct) lineup<Axis>();
         }
         // rail: .
         template<axis Axis>
@@ -3488,9 +3523,9 @@ namespace netxs::ui
             si32  scroll_len = 0; // math: Scrollbar len.
             si32  scroll_pos = 0; // math: Scrollbar grip pos.
             si32  scroll_box = 0; // math: Scrollbar grip len.
-            si32   m         = 0; // math: Master max pos.
-            si32   s         = 0; // math: Scroll max pos.
-            double r         = 1; // math: Scroll/master len ratio.
+            si32  m          = 0; // math: Master max pos.
+            si32  s          = 0; // math: Scroll max pos.
+            fp64  r          = 1; // math: Scroll/master len ratio.
 
             si32  cursor_pos = 0; // math: Mouse cursor position.
 
@@ -3511,7 +3546,7 @@ namespace netxs::ui
             {
                 if (master_box == 0) return;
                 if (master_len == 0) master_len = master_box;
-                r = (double)scroll_len / master_len;
+                r = (fp64)scroll_len / master_len;
                 auto master_middle = master_pos + master_box / 2.0;
                 auto scroll_middle = master_middle * r;
                 scroll_box = std::max(1, (si32)(master_box * r));
@@ -3552,31 +3587,41 @@ namespace netxs::ui
             }
             auto inside(si32 coor)
             {
-                if (coor >= scroll_pos + scroll_box) return 1; // Below the grip.
-                if (coor >= scroll_pos)              return 0; // Inside the grip.
-                                                     return-1; // Above the grip.
+                if (coor >= scroll_pos + scroll_box)
+                {
+                    return -1; // Below the grip.
+                }
+                if (coor >= scroll_pos)
+                {
+                    return 0; // Inside the grip.
+                }
+                else
+                {
+                    return 1; // Above the grip.
+                }
             }
             auto follow()
             {
                 auto dir = scroll_len > 2 ? inside(cursor_pos)
-                                          : cursor_pos > 0 ? 1 // Don't stop to follow over
-                                                           :-1;//    box on small scrollbar.
+                                          : cursor_pos > 0 ?-1 // Don't stop to follow over
+                                                           : 1;//    box on small scrollbar.
                 return dir;
             }
             void setdir(si32 dir)
             {
-                master_dir = -dir;
+                master_dir = dir;
             }
         };
 
         wptr boss; // grip: .
-        hook memo; // grip: .
+        bool wide; // grip: Is the scrollbar active.
         si32 thin; // grip: Scrollbar thickness.
         si32 init; // grip: Handle base width.
-        math calc; // grip: Scrollbar calculator.
-        bool wide; // grip: Is the scrollbar active.
         si32 mult; // grip: Vertical bar width multiplier.
+        hook memo; // grip: .
+        math calc; // grip: Scrollbar calculator.
         bool on_pager = faux; // grip: .
+        fp2d drag_origin; // grip: Drag origin.
 
         template<class Event>
         void send()
@@ -3629,10 +3674,17 @@ namespace netxs::ui
         }
 
     protected:
+        // gripfx: .
+        void inform(rect new_area) override
+        {
+            calc.resize(new_area.size);
+        }
+
+    public:
         gripfx(sptr boss, si32 thickness = 1, si32 multiplier = 2)
             : boss{ boss       },
-              thin{ thickness  },
               wide{ faux       },
+              thin{ thickness  },
               init{ thickness  },
               mult{ multiplier }
         {
@@ -3645,19 +3697,15 @@ namespace netxs::ui
             };
 
             using bttn = hids::events::mouse::button;
-            LISTEN(tier::release, hids::events::mouse::scroll::any, gear)
+            LISTEN(tier::release, hids::events::mouse::scroll::act, gear)
             {
                 if (gear.meta(hids::anyCtrl)) return; // Ctrl+Wheel is reserved for zooming.
-                if (gear.whldt)
-                {
-                    auto dir = gear.whldt < 0 ? 1 : -1;
-                    pager(dir);
-                    gear.dismiss();
-                }
+                if (gear.whlsi) pager(gear.whlsi > 0 ? 1 : -1);
+                gear.dismiss();
             };
             LISTEN(tier::release, hids::events::mouse::move, gear)
             {
-                calc.cursor_pos = gear.mouse::coord[Axis];
+                calc.cursor_pos = twod{ gear.coord }[Axis];
             };
             LISTEN(tier::release, hids::events::mouse::button::dblclick::left, gear)
             {
@@ -3668,7 +3716,7 @@ namespace netxs::ui
                 if (!on_pager)
                 if (this->form::template protos<tier::release>(bttn::down::left)
                  || this->form::template protos<tier::release>(bttn::down::right))
-                if (auto dir = calc.inside(gear.mouse::coord[Axis]))
+                if (auto dir = calc.inside(twod{ gear.coord }[Axis]))
                 {
                     if (gear.capture(bell::id))
                     {
@@ -3676,11 +3724,11 @@ namespace netxs::ui
                         pager_repeat();
                         gear.dismiss();
 
-                        timer.actify(activity::pager_first, skin::globals().repeat_delay, [&](auto p)
+                        timer.actify(activity::pager_first, skin::globals().repeat_delay, [&](auto)
                         {
                             if (pager_repeat())
                             {
-                                timer.actify(activity::pager_next, skin::globals().repeat_rate, [&](auto d)
+                                timer.actify(activity::pager_next, skin::globals().repeat_rate, [&](auto)
                                 {
                                     return pager_repeat(); // Repeat until on_pager.
                                 });
@@ -3724,6 +3772,7 @@ namespace netxs::ui
                 {
                     if (gear.capture(bell::id))
                     {
+                        drag_origin = gear.coord;
                         gear.dismiss();
                     }
                 }
@@ -3738,8 +3787,9 @@ namespace netxs::ui
                 {
                     if (gear.captured(bell::id))
                     {
-                        if (auto delta = gear.mouse::delta.get()[Axis])
+                        if (auto delta = (twod{ gear.coord } - twod{ drag_origin })[Axis])
                         {
+                            drag_origin = gear.coord;
                             calc.stepby(delta);
                             send<upon::scroll::bycoor>();
                             gear.dismiss();
@@ -3780,10 +3830,11 @@ namespace netxs::ui
                 auto apply = [&](auto active)
                 {
                     wide = active;
-                    if (Axis == axis::Y && mult) config(active ? init * mult // Make vertical scrollbar
-                                                               : init);      // wider on hover.
+                    auto resize = Axis == axis::Y && mult;
+                    if (resize) config(active ? init * mult // Make vertical scrollbar
+                                              : init);      // wider on hover.
                     base::reflow();
-                    return faux; // One shot call.
+                    return faux; // One-shot call.
                 };
 
                 timer.pacify(activity::mouse_leave);
@@ -3793,22 +3844,22 @@ namespace netxs::ui
             };
             //LISTEN(tier::release, hids::events::mouse::move, gear)
             //{
-            //	auto apply = [&](auto active)
-            //	{
-            //		wide = active;
-            //		if (Axis == axis::Y) config(active ? init * 2 // Make vertical scrollbar
-            //		                                   : init);   //  wider on hover
-            //		base::reflow();
-            //		return faux; // One shot call
-            //	};
+            //    auto apply = [&](auto active)
+            //    {
+            //        wide = active;
+            //        if (Axis == axis::Y) config(active ? init * 2 // Make vertical scrollbar
+            //                                           : init);   //  wider on hover
+            //        base::reflow();
+            //        return faux; // One shot call
+            //    };
             //
-            //	timer.pacify(activity::mouse_leave);
-            //	apply(activity::mouse_hover);
-            //	timer.template actify<activity::mouse_leave>(skin::globals().active_timeout, apply);
+            //    timer.pacify(activity::mouse_leave);
+            //    apply(activity::mouse_hover);
+            //    timer.template actify<activity::mouse_leave>(skin::globals().active_timeout, apply);
             //};
             LISTEN(tier::release, e2::render::any, parent_canvas)
             {
-                auto region = parent_canvas.view();
+                auto region = parent_canvas.clip();
                 auto object = parent_canvas.full();
                 auto handle = region;
 
@@ -3818,16 +3869,11 @@ namespace netxs::ui
                 auto& region_len = region.size[Axis];
                 auto& object_len = object.size[Axis];
 
-                handle = region.clip(handle);
+                handle.trimby(region);
                 handle_len = std::max(1, handle_len);
 
                 drawfx(*this, parent_canvas, handle, object_len, handle_len, region_len, wide);
             };
-        }
-        // gripfx: .
-        void inform(rect new_area) override
-        {
-            calc.resize(new_area.size);
         }
     };
 
@@ -3844,18 +3890,23 @@ namespace netxs::ui
 
                 if (wide) // Draw full scrollbar on mouse hover
                 {
-                    canvas.fill([&](cell& c) { c.link(boss.bell::id).xlight(); });
+                    canvas.fill([&](cell& c){ c.link(boss.bell::id).xlight(); });
                 }
-                //canvas.fill(handle, [&](cell& c) { c.fusefull(bright); });
-                canvas.fill(handle, [&](cell& c) { c.link(boss.bell::id).xlight(); });
+                //canvas.fill(handle, [&](cell& c){ c.fusefull(bright); });
+                canvas.fill(handle, [&](cell& c){ c.link(boss.bell::id).xlight(); });
             }
         };
-        static constexpr auto underline = [](auto& boss, auto& canvas, auto handle, auto object_len, auto handle_len, auto region_len, auto wide)
+        static constexpr auto underline = [](auto& boss, auto& canvas, auto handle, auto object_len, auto handle_len, auto region_len, auto /*wide*/)
         {
             if (object_len && handle_len != region_len) // Show only if it is oversized.
             {
-                //canvas.fill(handle, [](cell& c) { c.und(!c.und()); });
-                canvas.fill(handle, [](cell& c) { c.und(true); });
+                auto fgc = boss.color().fgc();
+                auto src = boss.base::This();
+                while (!fgc && (src = src->parent())) // Detect scrollbar/underline color.
+                {
+                    fgc = src->color().fgc();
+                }
+                canvas.fill(handle, [&](cell& c){ c.unc(fgc).und(true); });
             }
         };
     }
@@ -3877,24 +3928,6 @@ namespace netxs::ui
         }
 
     protected:
-        pads(dent intpad_value = {}, dent extpad_value = {})
-            : intpad{ intpad_value },
-              extpad{ extpad_value }
-        {
-            LISTEN(tier::release, e2::render::background::prerender, parent_canvas)
-            {
-                auto view = parent_canvas.view();
-                parent_canvas.view(view + extpad);
-                this->SIGNAL(tier::release, e2::render::any, parent_canvas);
-                parent_canvas.view(view);
-                if (!empty())
-                {
-                    auto& item = *base::subset.back();
-                    item.render(parent_canvas);
-                }
-                this->bell::expire<tier::release>();
-            };
-        }
         // pads: .
         void deform(rect& new_area) override
         {
@@ -3914,6 +3947,24 @@ namespace netxs::ui
         }
 
     public:
+        pads(dent intpad_value = {}, dent extpad_value = {})
+            : intpad{ intpad_value },
+              extpad{ extpad_value }
+        {
+            LISTEN(tier::release, e2::render::background::prerender, parent_canvas)
+            {
+                auto clip = parent_canvas.clip();
+                parent_canvas.clip(clip + extpad);
+                this->SIGNAL(tier::release, e2::render::any, parent_canvas);
+                parent_canvas.clip(clip);
+                if (!empty())
+                {
+                    auto& item = *base::subset.back();
+                    item.render(parent_canvas);
+                }
+                this->bell::expire<tier::release>();
+            };
+        }
         // pads: Attach specified object.
         template<class T>
         auto attach(T object)
@@ -3955,9 +4006,17 @@ namespace netxs::ui
         para data{}; // item: Label content.
         bool flex{}; // item: Violate or not the label size.
         bool test{}; // item: Place or not(default) the Two Dot Leader when there is not enough space.
-        bool unln{}; // item: Draw full-width underline.
+        bool ulin{}; // item: Draw full-width underline.
 
     protected:
+        // item: .
+        void deform(rect& new_area) override
+        {
+            new_area.size.x = flex ? new_area.size.x : data.size().x;
+            new_area.size.y = std::max(data.size().y, new_area.size.y);
+        }
+
+    public:
         item(view label = {})
             : data{ label }
         {
@@ -3973,7 +4032,7 @@ namespace netxs::ui
                 parent_canvas.output(data);
                 if (test)
                 {
-                    auto area = parent_canvas.view();
+                    auto area = parent_canvas.clip();
                     auto size = data.size();
                     if (area.size > 0 && size.x > 0)
                     {
@@ -3981,44 +4040,36 @@ namespace netxs::ui
                         {
                             auto coor = area.coor - parent_canvas.coor();
                             coor.y += std::min(area.size.y - 1, base::intpad.t);
-                            parent_canvas.core::data(coor)->txt(dots);
+                            parent_canvas.core::begin(coor)->txt(dots);
                         }
                         if (full.coor.x + base::intpad.l + size.x + base::intpad.r > area.coor.x + area.size.x)
                         {
                             auto coor = area.coor - parent_canvas.coor();
                             coor.x += area.size.x - 1;
                             coor.y += std::min(area.size.y - 1, base::intpad.t);
-                            parent_canvas.core::data(coor)->txt(dots);
+                            parent_canvas.core::begin(coor)->txt(dots);
                         }
                     }
                 }
-                if (unln)
+                if (ulin)
                 {
                     auto area = parent_canvas.full();
                     parent_canvas.fill(area, [](cell& c)
                     {
                         auto u = c.und();
-                        if (u == 1) c.und(2);
-                        else        c.und(1);
+                        if (u == unln::line) c.und(unln::biline);
+                        else                 c.und(unln::line);
                     });
                 }
                 parent_canvas.bump(context);
             };
         }
         // item: .
-        void deform(rect& new_area) override
-        {
-            new_area.size.x = flex ? new_area.size.x : data.size().x;
-            new_area.size.y = std::max(data.size().y, new_area.size.y);
-        }
-
-    public:
-        // item: .
         auto flexible(bool b = true) { flex = b; return This(); }
         // item: .
         auto drawdots(bool b = true) { test = b; return This(); }
         // item: .
-        auto accented(bool b = true) { unln = b; return This(); }
+        auto accented(bool b = true) { ulin = b; return This(); }
         // item: .
         void brush(cell c)
         {
@@ -4040,7 +4091,7 @@ namespace netxs::ui
     {
         page data;
 
-    protected:
+    public:
         edit()
         {
         }
@@ -4059,11 +4110,11 @@ namespace netxs::ui
         page topic; // stem_rate_grip: Text content.
 
         bool enabled;
+        twod box_len;
+        text pin_str;
         text sfx_str;
         si32 sfx_len;
-        text pin_str;
         si32 cur_val;
-        twod box_len;
 
         enum
         {
@@ -4073,7 +4124,7 @@ namespace netxs::ui
 
         void set_pen(byte hilight)
         {
-            auto& pen = canvas.mark().bga(hilight);
+            canvas.mark().bga(hilight);
         }
         void recalc()
         {
@@ -4100,15 +4151,10 @@ namespace netxs::ui
             return box_len;
         }
 
-    protected:
-        // stem_rate_grip: .
-        void deform(rect& new_area) override
-        {
-            new_area.size = box_len; // Suppress resize.
-        }
-
         stem_rate_grip(view sfx_string)
-            : sfx_str{ sfx_string }, canvas{*(coreface = ptr::shared<face>())}
+            : coreface{ ptr::shared<face>() },
+                canvas{ *coreface           },
+               sfx_str{ sfx_string          }
         {
             //todo cache specific
             canvas.link(bell::id);
@@ -4144,6 +4190,13 @@ namespace netxs::ui
                 }
                 parent_canvas.fill(canvas, cell::shaders::fusefull);
             };
+        }
+
+    protected:
+        // stem_rate_grip: .
+        void deform(rect& new_area) override
+        {
+            new_area.size = box_len; // Suppress resize.
         }
     };
 
@@ -4183,6 +4236,7 @@ namespace netxs::ui
         si32 max_val = 0;
         si32 origin = 0;
         si32 deltas = 0;
+        fp2d drag_origin;
 
         //todo unify mint = 1/fps60 = 16ms
         //it seems that 4ms is enough, there is no need to be tied to fps (an open question)
@@ -4248,12 +4302,12 @@ namespace netxs::ui
             }
         }
 
-    protected:
         stem_rate(text const& caption, si32 min_value, si32 max_value, view suffix)
-            : min_val{ min_value },
+            : coreface{ ptr::shared<face>() },
+              canvas{ *coreface },
+              min_val{ min_value },
               max_val{ max_value },
-              grip_suffix{ suffix },
-              canvas{*(coreface = ptr::shared<face>())}
+              grip_suffix{ suffix }
         {
             //todo cache specific
             canvas.link(bell::id);
@@ -4300,13 +4354,14 @@ namespace netxs::ui
             };
             LISTEN(tier::release, e2::form::upon::vtree::attached, parent)
             {
-                grip_ctl = base::create<stem_rate_grip>(grip_suffix);
+                grip_ctl = stem_rate_grip::ctor(grip_suffix);
                 grip_ctl->SIGNAL(tier::release, e2::form::upon::vtree::attached, base::This());
 
                 grip_ctl->LISTEN(tier::release, hids::events::mouse::button::drag::start::left, gear)
                 {
                     if (gear.capture(grip_ctl->id))
                     {
+                        drag_origin = gear.coord;
                         origin = cur_val;
                         gear.dismiss();
                     }
@@ -4315,9 +4370,13 @@ namespace netxs::ui
                 {
                     if (gear.captured(grip_ctl->id))
                     {
-                        deltas += gear.mouse::delta.get().x;
-                        move_grip(next_val(deltas));
-                        gear.dismiss();
+                        if (auto delta = (twod{ gear.coord } - twod{ drag_origin }).x)
+                        {
+                            drag_origin = gear.coord;
+                            deltas += delta;
+                            move_grip(next_val(deltas));
+                            gear.dismiss();
+                        }
                     }
                 };
                 grip_ctl->LISTEN(tier::release, hids::events::mouse::button::drag::cancel::left, gear)
@@ -4342,16 +4401,10 @@ namespace netxs::ui
                         gear.dismiss();
                     }
                 };
-                grip_ctl->LISTEN(tier::release, hids::events::mouse::scroll::up, gear)
+                grip_ctl->LISTEN(tier::release, hids::events::mouse::scroll::act, gear)
                 {
                     if (gear.meta(hids::anyCtrl)) return; // Ctrl+Wheel is reserved for zooming.
-                    move_grip(cur_val - 1);
-                    gear.dismiss();
-                };
-                grip_ctl->LISTEN(tier::release, hids::events::mouse::scroll::down, gear)
-                {
-                    if (gear.meta(hids::anyCtrl)) return; // Ctrl+Wheel is reserved for zooming.
-                    move_grip(cur_val + 1);
+                    if (gear.whlsi) move_grip(cur_val - gear.whlsi);
                     gear.dismiss();
                 };
                 recalc();
@@ -4362,16 +4415,10 @@ namespace netxs::ui
                 base::deface();
                 gear.dismiss();
             };
-            LISTEN(tier::release, hids::events::mouse::scroll::up, gear)
+            LISTEN(tier::release, hids::events::mouse::scroll::act, gear)
             {
                 if (gear.meta(hids::anyCtrl)) return; // Ctrl+Wheel is reserved for zooming.
-                move_grip(cur_val - 10);
-                gear.dismiss();
-            };
-            LISTEN(tier::release, hids::events::mouse::scroll::down, gear)
-            {
-                if (gear.meta(hids::anyCtrl)) return; // Ctrl+Wheel is reserved for zooming.
-                move_grip(cur_val + 10);
+                if (gear.whlsi) move_grip(cur_val - 10 * gear.whlsi);
                 gear.dismiss();
             };
             LISTEN(tier::release, e2::render::any, parent_canvas)

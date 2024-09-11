@@ -1,4 +1,4 @@
-// Copyright (c) NetXS Group.
+// Copyright (c) Dmitry Sapozhnikov
 // Licensed under the MIT license.
 
 #pragma once
@@ -62,11 +62,11 @@ namespace netxs::ui
                     }
                     return seized;
                 }
-                auto calc(base const& boss, twod coord)
+                auto calc(base const& owner, twod coord)
                 {
                     curpos = coord;
-                    auto area = boss.base::size();
-                    area.x += boss.base::oversz.r;
+                    auto area = owner.base::size();
+                    area.x += owner.base::oversz.r;
                     inside = area.inside(curpos);
                 }
                 auto drag(twod coord)
@@ -97,9 +97,9 @@ namespace netxs::ui
                 boss.LISTEN(tier::release, e2::postrender, parent_canvas, memo)
                 {
                     auto full = parent_canvas.full();
-                    auto view = parent_canvas.view();
+                    auto clip = parent_canvas.clip();
                     auto mark = cell{}.bgc(bluelt).bga(0x40);
-                    auto fill = [&](cell& c) { c.fuse(mark); };
+                    auto fill = [&](cell& c){ c.fuse(mark); };
                     auto step = twod{ 5, 1 };
                     auto area = full;
                     area.size.x += boss.base::oversz.r;
@@ -110,13 +110,13 @@ namespace netxs::ui
                             auto region = item.region.normalize();
                             auto pos1 = region.coor / step * step;
                             auto pos2 = (region.coor + region.size + step) / step * step;
-                            auto pick = rect{ full.coor + pos1, pos2 - pos1 }.clip(area).clip(view);
+                            auto pick = rect{ full.coor + pos1, pos2 - pos1 }.trimby(area).trimby(clip);
                             parent_canvas.fill(pick, fill);
                         }
                         if (item.inside)
                         {
                             auto pos1 = item.curpos / step * step;
-                            auto pick = rect{ full.coor + pos1, step }.clip(view);
+                            auto pick = rect{ full.coor + pos1, step }.trimby(clip);
                             parent_canvas.fill(pick, fill);
                         }
                     });
@@ -239,7 +239,7 @@ namespace netxs::ui
 namespace netxs::app::calc
 {
     static constexpr auto id = "calc";
-    static constexpr auto desc = "Spreadsheet calculator (DEMO)";
+    static constexpr auto name = "Spreadsheet calculator (DEMO)";
 
     using events = ::netxs::events::userland::calc;
 
@@ -292,9 +292,9 @@ namespace netxs::app::calc
                     if (!(i % 2))
                     {
                         auto c0 = base;
-                        for (auto i = 0_sz; i < label.length(); i++)
+                        for (auto j = 0_sz; j < label.length(); j++)
                         {
-                            cellatix_rows += ansi::bgc(c0) + label[i];
+                            cellatix_rows += ansi::bgc(c0) + label[j];
                             c0 += step;
                         }
                         cellatix_rows += (i == 99 ? ""s : "\n"s);
@@ -304,9 +304,9 @@ namespace netxs::app::calc
                     else
                     {
                         auto c0 = base + step * (si32)label.length();
-                        for (auto i = 0_sz; i < label.length(); i++)
+                        for (auto j = 0_sz; j < label.length(); j++)
                         {
-                            cellatix_rows += ansi::bgc(c0) + label[i];
+                            cellatix_rows += ansi::bgc(c0) + label[j];
                             c0 -= step;
                         }
                         cellatix_rows += (i == 99 ? ""s : "\n"s);
@@ -317,22 +317,23 @@ namespace netxs::app::calc
             }
             return std::tuple{ cellatix_rows, cellatix_cols, cellatix_text };
         };
-        auto build = [](text env, text cwd, text arg, xmls& config, text patch)
+        auto build = [](eccc /*appcfg*/, xmls& config)
         {
             auto highlight_color = skin::globals().highlight;
             auto label_color     = skin::globals().label;
             auto c3 = highlight_color;
-            auto x3 = cell{ c3 }.alpha(0x00);
+            //auto x3 = cell{ c3 }.alpha(0x00);
             auto c7 = label_color;
 
             auto [cellatix_rows, cellatix_cols, cellatix_text] = get_text();
 
             auto window = ui::cake::ctor();
             window->plugin<pro::focus>(pro::focus::mode::focused)
-                  ->colors(whitelt, 0x601A5f00)
+                  ->colors(whitelt, 0x60'00'5f'1A)
                   ->limits({ 10,7 }, { -1,-1 })
                   ->plugin<pro::track>()
-                  ->plugin<pro::acryl>()
+                  ->shader(c3, e2::form::state::keybd::focus::count)
+                  //->plugin<pro::acryl>()
                   ->plugin<pro::cache>()
                   ->invoke([&](auto& boss)
                   {

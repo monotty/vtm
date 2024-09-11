@@ -19,18 +19,18 @@ jobs:
           - os: windows-latest
             cpu: x86
         include:
-          - os: macos-13
+          - os: macos-latest
             platform: macos
             cpu: universal
             arch: any
             cxx: c++
-            flags: '-DCMAKE_OSX_ARCHITECTURES="arm64;x86_64" -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0 -DCMAKE_CXX_FLAGS_RELEASE="-O2 -DNDEBUG"'
+            flags: '-DCMAKE_OSX_ARCHITECTURES="arm64;x86_64" -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0 -DCMAKE_CXX_FLAGS_RELEASE="-O2 -DNDEBUG -Wall -Wextra -Wno-missing-field-initializers -Werror"'
           - os: windows-latest
             platform: windows
             cpu: Win32
             arch: x86
             cxx: cl
-            flags: '-DCMAKE_CXX_FLAGS_RELEASE="/MT /O2 /DNDEBUG" -A '
+            flags: '-DCMAKE_CXX_FLAGS_RELEASE="/MT /O2 /DNDEBUG /Zc:preprocessor /W4" -A '
           - os: windows-latest
             cxx: cl
           - os: ubuntu-latest
@@ -50,9 +50,9 @@ jobs:
             cxx: /bin/aarch64-linux-gnu-g++
 
           - os: ubuntu-latest
-            flags: '-DCMAKE_CXX_FLAGS_RELEASE="-static -s -O2 -DNDEBUG"'
+            flags: '-DCMAKE_CXX_FLAGS_RELEASE="-static -s -O2 -DNDEBUG -Wall -Wextra -Wno-missing-field-initializers -Wno-psabi -Werror"'
           - os: windows-latest
-            flags: '-DCMAKE_CXX_FLAGS_RELEASE="/MT /O2 /DNDEBUG" -A '
+            flags: '-DCMAKE_CXX_FLAGS_RELEASE="/MT /O2 /DNDEBUG /Zc:preprocessor /W4" -A '
 
           - os: ubuntu-latest
             platform: linux
@@ -69,7 +69,7 @@ jobs:
             arch: arm32
 
     steps:
-    - uses: actions/checkout@v3
+    - uses: actions/checkout@main
 
     - name: Set reusable strings
       id: strings
@@ -115,14 +115,14 @@ jobs:
 
     - name: Upload Artifact (POSIX)
       if: matrix.os != 'windows-latest'
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@main
       with:
         name: vtm_${{ matrix.platform }}_${{ matrix.arch }}
         path: vtm_${{ matrix.platform }}_${{ matrix.arch }}.tar
 
     - name: Upload Artifact (Windows)
       if: matrix.os == 'windows-latest'
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@main
       with:
         name: vtm_${{ matrix.platform }}_${{ matrix.arch }}
         path: ${{ steps.strings.outputs.bin }}/Release/vtm.exe

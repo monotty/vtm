@@ -1,4 +1,4 @@
-// Copyright (c) NetXS Group.
+// Copyright (c) Dmitry Sapozhnikov
 // Licensed under the MIT license.
 
 #pragma once
@@ -29,7 +29,7 @@ namespace netxs::events::userland
 namespace netxs::app::shop
 {
     static constexpr auto id = "gems";
-    static constexpr auto desc = "Application Distribution Hub (DEMO)";
+    static constexpr auto name = "Application Distribution Hub (DEMO)";
 
     using events = netxs::events::userland::shop;
 
@@ -53,7 +53,7 @@ namespace netxs::app::shop
                 auto line = ansi::wrp(wrap::off).add("──────────────────────────────────────────────────────────────────────────────────────").wrp(wrap::on).eol();
                 auto item = [](auto app, auto clr, auto rating, auto price, auto buy, auto desc)
                 {
-                    auto clr_light = rgba{ clr };
+                    auto clr_light = argb{ clr };
                     clr_light.mix(0xa7ffffff);
 
                     auto lot = ansi::nil()
@@ -115,7 +115,7 @@ namespace netxs::app::shop
                     item("Char", yellowdk, "161", "Free ", "Get",
                     "Unicode codepoints browser."),
 
-                    item(ansi::fgc(0xFFff0000).add("File"), cyanlt, "4", "Free ", "Get",
+                    item(ansi::fgc(0xFF0000ff).add("File"), cyanlt, "4", "Free ", "Get",
                     "File manager."),
 
                     item("Time", bluedk, "4", "Free ", "Get",
@@ -124,7 +124,7 @@ namespace netxs::app::shop
                     item("Goto", bluedk, "4", "Free ", "Get",
                     "Internet/SSH browser."),
 
-                    item(ansi::fgc(0xFF00FFFF).add("Doom").fgc(), reddk, "4", "Free ", "Get",
+                    item(ansi::fgc(0xFFFFFF00).add("Doom").fgc(), reddk, "4", "Free ", "Get",
                     "Doom II source port."),
 
                     item("Clip", bluedk, "1", "Free ", "Get",
@@ -185,11 +185,11 @@ namespace netxs::app::shop
             return std::tuple{ appstore_head, appstore_body, desktopio_body };
         };
 
-        auto build = [](text env, text cwd, text arg, xmls& config, text patch)
+        auto build = [](eccc /*appcfg*/, xmls& config)
         {
             auto highlight_color = skin::color(tone::highlight);
             auto c3 = highlight_color;
-            auto x3 = cell{ c3 }.alpha(0x00);
+            //auto x3 = cell{ c3 }.alpha(0x00);
 
             auto [appstore_head, appstore_body, desktopio_body] = get_text();
             auto window = ui::cake::ctor();

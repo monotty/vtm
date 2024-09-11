@@ -1,4 +1,4 @@
-# Text Mode Desktop Settings
+# Text-based Desktop Environment settings
 
 ```mermaid
 graph LR
@@ -6,45 +6,52 @@ graph LR
     direction LR
         B("Init hardcoded
         settings")
-        B --> C["--config #lt;file#gt;
+        B --> C["--config ‹file›
         specified?"]
-        C -->|Yes| D["Merge #lt;file#gt;"]
-        C --->|No| F["Merge global"]
-        F --> G["Merge user wise"]
-        D ---> H["Merge DirectVT packet
-        received from parent"]
+        C -->|Yes| D["Overlay the settings from the ‹file›"]
+        C --->|No| F["Overlay global settings"]
+        F --> G["Overlay user wise settings"]
+        D ---> H["Overlay the settings received
+        from the DirectVT Gateway"]
         G --> H
     end
 ```
 
 - Hardcoded settings
   - See [/src/vtm.xml](../src/vtm.xml) for reference.
+- `--config <file>` CLI option
+  - Instead of the path to the configuration file, the configuration body itself can be specified (this case is detected by the keyword `<config` at the beginning).  
+    `command line`:
+    ```bash
+    vtm -c "<config><term><scrollback size=1000000 growstep=100000/></term></config>" -r term
+    ```
+
 - Global settings
-  - on posix: `/etc/vtm/settings.xml`
-  - on win32: `%programdata%/vtm/settings.xml`
+  - on POSIX: `/etc/vtm/settings.xml`
+  - on Windows: `%programdata%/vtm/settings.xml`
 - User wise settings
-  - on posix: `~/.config/vtm/settings.xml`
-  - on win32: `%userprofile%/.config/vtm/settings.xml`
-- DirectVT packet (built-in terminal only for now)
-  - The `<config>` menu item subsection passed to the dtvt application upon startup:
+  - on POSIX: `~/.config/vtm/settings.xml`
+  - on Windows: `%userprofile%/.config/vtm/settings.xml`
+- DirectVT packet with configuration payload
+  - The value of the `cfg` menu item attribute (or `<config>` subsection) will be passed to the dtvt-aware application on launch.  
+    `settings.xml`:
     ```xml
-    <config>
+        ...
         <menu>
             ...
-            <item ... type=DirectVT ... param="$0 ...">
-                <config> <!-- item's `<config>` subsection -->
+            <item ... type=dtvt ... cfg="xml data as alternative to <config> subsection" cmd="dtvt_app...">
+                <config> <!-- item's `<config>` subsection in case of 'cfg=' is not specified -->
                     ...
                 </config>
             </item>
             ...
         </menu>
         ...
-    </config>
     ```
 
-## Configuration file Format (settings.xml)
+## Configuration body Format (settings.xml)
 
-Configuration file format is a slightly modified XML-format which allows to store hierarchical list of key=value pairs.
+Configuration body format is a slightly modified XML-format which allows to store hierarchical list of key=value pairs.
 
 ### Key differences from the standard XML
 
@@ -142,30 +149,30 @@ The following declarations have the same meaning:
 
 ```xml
 <list>
-    <listitem id=first  name="text">another_text</listitem>
-    <listitem id=second name="text">another_text</listitem>
+    <listitem id=first  name="text_string1">text_string2</listitem>
+    <listitem id=second name="text_string1">text_string2</listitem>
 </list>
 ```
 
 ```xml
 <list>
-    <listitem* name="text"/> <!-- skip this element and set name="text" as default for the following listitems -->
-    <listitem id=first >another_text</listitem>
-    <listitem id=second>another_text</listitem>
+    <listitem* name="text_string1"/> <!-- skip this element and set name="text_string1" as default for the following listitems -->
+    <listitem id=first >text_string2</listitem>
+    <listitem id=second>text_string2</listitem>
 </list>
 ```
 
 ```xml
 <list>
-    <listitem* name="text"/>
-    <listitem="another_text" id=first />
-    <listitem="another_text" id=second/>
+    <listitem* name="text_string1"/>
+    <listitem="text_string2" id=first />
+    <listitem="text_string2" id=second/>
 </list>
 ```
 
 ```xml
 <list>
-    <listitem*="another_text" name="text"/>  <!-- skip this element and set listitem="another_text" and name="text" as default for the following listitems -->
+    <listitem*="text_string2" name="text_string1"/>  <!-- skip this element and set listitem="text_string2" and name="text_string1" as default for the following listitems -->
     <listitem id=first />
     <listitem id=second/>
 </list>
@@ -180,58 +187,57 @@ Top-level element `<config>` contains the following base elements:
 
 #### Application Configuration
 
-The menu item of DirectVT type (`type=DirectVT` or `type=dtvt`) can be additionally configured using `<config>` subelement. This type is only supported by built-in terminal for now.
+The menu item of DirectVT Gateway type (`type=dtvt`) can be additionally configured using a `<config>` subsection or a `cfg="xml-text-data"` attribute. The `<config>` subsection will be ignored if the `cfg` attribute contains a non-empty value.
 
-The content of the `<config>` subelement is passed to the application upon startup.
+The content of the `cfg` attribute (or `<config>` subsection) is passed to the dtvt-application on launch.
 
 #### Taskbar menu item attributes
 
-Attribute  | Description                                       | Value type | Mandatory | Default value
------------|---------------------------------------------------|------------|-----------|---------------
-`id`       |  Item textual identifier                          | `string`   | required  |
-`alias`    |  Use existing item specified by `id` as template  | `string`   |           |
-`hidden`   |  Item visibility                                  | `boolean`  |           | `no`
-`label`    |  Item label text                                  | `string`   |           | =`id`
-`notes`    |  Item tooltip text                                | `string`   |           | empty
-`title`    |  App window title                                 | `string`   |           | empty
-`footer`   |  App window footer                                | `string`   |           | empty
-`bgc`      |  App window background color                      | `RGBA`     |           |
-`fgc`      |  App window foreground color                      | `RGBA`     |           |
-`winsize`  |  App window 2D size                               | `x;y`      |           |
-`winform`  |  App window state                                 | `undefined` \| `maximized` \| `minimized` |           |
-`slimmenu` |  App window menu vertical size                    | `boolean`  |           | `no`
-`env`      |  Environment variable in "var=val" format         | `string`   |           |
-`cwd`      |  Current working directory                        | `string`   |           |
-`type`     |  App type                                         | `string`   |           | `SHELL`
-`param`    |  App constructor arguments                        | `string`   |           | empty
-`config`   |  Configuration patch for DirectVT apps            | `xml-node` |           | empty
+Attribute  | Description                                       | Value type | Default value
+-----------|---------------------------------------------------|------------|---------------
+`id`       |  Item id                                          | `string`   |
+`alias`    |  Item template `id` reference                     | `string`   |
+`hidden`   |  Item visibility on taskbar                       | `boolean`  | `no`
+`label`    |  Item label text                                  | `string`   | =`id`
+`notes`    |  Item tooltip text                                | `string`   | empty
+`title`    |  App window title                                 | `string`   | empty
+`footer`   |  App window footer                                | `string`   | empty
+`winsize`  |  App window size                                  | `x;y`      |
+`winform`  |  App window state                                 | `undefined` \| `normal` \| `maximized` \| `minimized` |
+`type`     |  Desktop window type                              | `string`   | `vtty`
+`env`      |  Environment variable in "var=val" format         | `string`   |
+`cwd`      |  Current working directory                        | `string`   |
+`cmd`      |  Desktop window constructor arguments             | `string`   | empty
+`cfg`      |  Configuration patch for dtvt-apps in XML-format  | `string`   | empty
+`config`   |  Configuration patch for dtvt-apps                | `xml-node` | empty
 
 #### Value literals
 
-Type     | Format
----------|-----------------
-`RGBA`   |  `#rrggbbaa` \| `0xaabbggrr` \| `rrr,ggg,bbb,aaa` \| 256-color index
-`boolean`|  `true` \| `false` \| `yes` \| `no` \| `1` \| `0` \| `on` \| `off`
-`string` |  _UTF-8 text string_
-`x;y`    |  _integer_ <any_delimeter> _integer_
+All value literals containing spaces must be enclosed in double or single quotes.
 
-#### App type
+Value type | Format
+-----------|-----------------
+`RGBA`     | `#rrggbbaa` \| `0xaarrggbb` \| `rrr,ggg,bbb,aaa` \| 256-color index
+`boolean`  | `true` \| `false` \| `yes` \| `no` \| `1` \| `0` \| `on` \| `off` \| `undef`
+`string`   | _UTF-8 text string_
+`x;y`      | _integer_ <any_delimeter> _integer_
 
-Type              | Parameter        | Description
-------------------|------------------|-----------
-`DirectVT`        | `_command line_` | Run `_command line_` using DirectVT protocol. Usage example `type=DirectVT param="_command line_"`.
-`XLVT`\|`XLinkVT` | `_command line_` | Run `_command line_` using DirectVT protocol with controlling terminal attached for OpenSSH interactivity. Usage example `type=XLVT param="_command line_"`.
-`ANSIVT`          | `_command line_` | Run `_command line_` inside the built-in terminal. Usage example `type=ANSIVT param="_command line_"`. Same as `type=DirectVT param="$0 -r term _command line_"`.
-`SHELL` (default) | `_command line_` | Run `_command line_` on top of a system shell that runs inside the built-in terminal. Usage example `type=SHELL param="_command line_"`. Same as `type=DirectVT param="$0 -r term _shell_ -c _command line_"`.
-`Group`           | [[ v[`n:m:w`] \| h[`n:m:w`] ] ( id_1 \| _nested_block_ , id_2 \| _nested_block_ )] | Run tiling window manager with layout specified in `param`. Usage example `type=Group param="h1:1(Term, Term)"`.
-`Region`          | | The `param` attribute is not used, use attribute `title=_view_title_` to set region name.
+#### Desktop Window Types
+
+Window type<br>(case insensitive) | Parameter `cmd=` | Description
+----------------------------------|------------------|------------
+`vtty` (default)                  | A CUI application command line with arguments | Run a CUI application inside the `Teletype Console dtvt-bridge`. Usage example `type=vtty cmd="cui_app ..."`. It is the same as `type=dtvt cmd="vtm -r vtty cui_app ..."`.
+`term`                            | A CUI application command line with arguments | Run a CUI application inside the `Terminal Console dtvt-bridge`. Usage example `type=term cmd="cui_app ..."`. It is the same as `type=dtvt cmd="vtm -r term cui_app ..."`.
+`dtvt`                            | A DirectVT-aware application command line with arguments | Run a DirectVT-aware application inside the `DirectVT Gateway`. Usage example `type=dtvt cmd="dtvt_app ..."`.
+`dtty`                            | A DirectVT-aware application command line with arguments | Run a DirectVT-aware application inside the `DirectVT Gateway with TTY` which has additional controlling terminal. Usage example `type=dtty cmd="dtvt_app ..."`.
+`tile`                            | [[ v[`n:m:w`] \| h[`n:m:w`] ] ( id1 \| _nested_block_ , id2 \| _nested_block_ )] | Run tiling window manager with layout specified in `cmd`. Usage example `type=tile cmd="v(h1:1(Term, Term),Term)"`.<br>`n:m` - Ratio between panes (default n:m=1:1).<br>`w` - Resizing grip width (default w=1).
+`site`                            | `cmd=@` or empty | The attribute `title=<view_title>` is used to set region name/title. Setting the value of the `cmd` attribute to `@` adds numbering to the title.
 
 The following configuration items produce the same final result:
 ```
-<item …. param=‘mc’/>
-<item …. type=SHELL param=‘mc’/>
-<item …. type=ANSIVT param=‘bash -c mc’/>
-<item …. type=DirectVT param=‘$0 -r term bash -c mc’/>
+<item ... cmd=mc/>
+<item ... type=vtty cmd=mc/>
+<item ... type=dtvt cmd='vtm -r vtty mc'/>
 ```
 
 ### Configuration Example
@@ -240,22 +246,41 @@ Note: The following configuration sections are not implemented yet:
 - config/menu/item/hotkeys
 - config/hotkeys
 
-#### Minimal config (`~/.config/vtm/settings.xml`)
+#### Minimal config
 
+`~/.config/vtm/settings.xml`:
 ```xml
 <config>
     <menu selected=Term item*>  <!-- Use asterisk to remove previous/existing items from the list. -->
-        <item id=Term/>  <!-- title=id type=SHELL param=os_default_shell -->
+        <item id=Term/>  <!-- title=id type=SHELL cmd=os_default_shell -->
     </menu>
 </config>
 ```
 
-#### Typical config  (`~/.config/vtm/settings.xml`)
+#### Typical config
 
-Note: Hardcoded settings are built from the [/src/vtm.xml](../src/vtm.xml) source file.
+Notes
+- Hardcoded settings can be found in the source file [/src/vtm.xml](../src/vtm.xml).
+- The `$0` tag will be expanded to the fully qualified current module filename at runtime.
 
+`~/.config/vtm/settings.xml`:
 ```xml
 <config>
+    <gui> <!-- GUI related settings. (win32 platform only for now) -->
+        <antialiasing=off/>   <!-- Antialiasing of rendered glyphs. Note: Multi-layered color glyphs such as emoji are always antialiased. -->
+        <cellheight=20/>      <!-- Text cell height in physical pixels. Note: The width of the text cell depends on the primary font (the first one in the font list). -->
+        <gridsize=""/>        <!-- Window initial grid size "width,height" in text cells. If gridsize="" or gridsize=0,0, then the size of the GUI window is left to the OS window manager. -->
+        <wincoor=""/>         <!-- Window initial coordinates "x,y" (top-left corner on the desktop in physical pixels). If wincoor="", then the position of the GUI window is left to the OS window manager. -->
+        <winstate=normal/>    <!-- Window initial state: normal | maximized | minimized -->
+        <blinkrate=400ms/>    <!-- SGR5/6 attribute blink rate. Blinking will be disabled when set to zero. -->
+        <fonts> <!-- Font fallback ordered list. The rest of the fonts available in the system will be loaded dynamically. -->
+            <font*/> <!-- Clear previously defined fonts. Start a new list. -->
+            <font="Courier New"/> <!-- The first font in the list: Primary font. Its metrics define the cell geometry. -->
+            <font="Cascadia Mono"/>
+            <font="NSimSun"/>
+            <font="Noto Sans Devanagari"/>
+        </fonts>
+    </gui>
     <menu wide=off selected=Term>  <!-- Set selected using menu item id. -->
         <item*/>  <!-- Use asterisk at the end of the element name to set defaults.
                        Using an asterisk with the parameter name of the first element in the list without any other nested attributes
@@ -266,24 +291,25 @@ Note: Hardcoded settings are built from the [/src/vtm.xml](../src/vtm.xml) sourc
                 " It can be configured in ~/.config/vtm/settings.xml "
             </notes>
         </item>
-        <item* hidden=no fgc=whitedk bgc=0x00000000 winsize=0,0 wincoor=0,0 winform=undefined /> <!-- winform: undefined | maximized | minimized -->
-        <item id=Term label="Term" type=DirectVT title="Terminal Emulator" notes=" Terminal Emulator " param="$0 -r term">
+        <item* hidden=no winsize=0,0 wincoor=0,0 winform=normal/> <!-- winform: normal | maximized | minimized -->
+        <item id=Term label="Term" type=dtvt title="Terminal Console" notes=" Terminal Console " cmd="$0 -r term">
             <config>   <!-- The following config partially overrides the base configuration. It is valid for DirectVT apps only. -->
                 <term>
                     <scrollback>
-                        <size=35000    />   <!-- Initial scrollback buffer length. -->
-                        <wrap="on"     />   <!-- Lines wrapping mode. -->
+                        <size=35000/>   <!-- Initial scrollback buffer length. -->
+                        <wrap="on" />   <!-- Lines wrapping mode. -->
                     </scrollback>
                     <color>
-                        <color4  = bluedk     /> <!-- See /config/set/* for the color name reference. -->
-                        <color15 = whitelt    />
-                        <default bgc=0 fgc=15 />  <!-- Initial colors. -->
+                        <color4=bluedk  /> <!-- See /config/set/* for the color name reference. -->
+                        <color15=whitelt/>
+                        <default bgc=pureblack fgc=whitedk/>  <!-- Default/current colors (SGR49/39). -->
+                        <bground=default/>  <!-- Independent background color of the scrollback canvas. Set to 0x00ffffff(or =default) to sync with SGR49 (default background). -->
                     </color>
                     <cursor>
                         <style="underline"/> <!-- block | underline  -->
                     </cursor>
                     <selection>
-                        <mode = text/> <!-- text | ansi | rich | html | protected | none -->
+                        <mode=text/> <!-- text | ansi | rich | html | protected | none -->
                     </selection>
                     <menu>
                         <autohide=off/>  <!--  If true/on, show window menu only on hover. -->
@@ -293,55 +319,55 @@ Note: Hardcoded settings are built from the [/src/vtm.xml](../src/vtm.xml) sourc
                 </term>
             </config>
         </item>
-        <item id=PowerShell label="PowerShell" type=DirectVT title="Windows PowerShell"          param="$0 -r term powershell" fgc=15 bgc=0xFF562401 notes=" Windows PowerShell "/>
-   <!-- <item id=WSL        label="WSL"        type=DirectVT title="Windows Subsystem for Linux" param="$0 -r term wsl"                              notes=" Default WSL profile session "/> -->
-   <!-- <item id=Far        label="Far"        type=SHELL    title="Far Manager"                 param="far"                                         notes=" Far Manager in its own window "/> -->
-   <!-- <item id=mc         label="mc"         type=SHELL    title="Midnight Commander"    param="mc"               notes=" Midnight Commander in its own window "/> -->
-        <item id=Tile       label="Tile"       type=Group    title="Tiling Window Manager" param="h1:1(Term, Term)" notes=" Tiling window manager with two terminals attached "/>
-        <item id=View       label=View         type=Region   title="\e[11:3pView: Region"  winform=maximized        notes=" Desktop region marker "/>
-        <item id=Logs       label=Logs         type=DirectVT title="Logs"            param="$0 -q -r term $0 -m" notes=" Log monitor "/>
+        <item id=pwsh label=PowerShell   type=dtvt title="PowerShell"            cmd="$0 -r term pwsh"     notes=" PowerShell Core "/>
+   <!-- <item id=WSL  label="WSL"        type=dtvt title="Windows Subsystem for Linux" cmd="$0 -r term wsl"                  notes=" Default WSL profile session "/> -->
+   <!-- <item id=Far  label="Far"        type=vtty title="Far Manager"           cmd="far"                             notes=" Far Manager in its own window "/> -->
+   <!-- <item id=mc   label="mc"         type=vtty title="Midnight Commander"    cmd="mc"                  notes=" Midnight Commander in its own window "/> -->
+        <item id=Tile label=Tile         type=tile title="Tiling Window Manager" cmd="h1:1(Term, Term)"    notes=" Tiling window manager with two terminals attached "/>
+        <item id=Site label=Site         type=site title="\e[11:3pSite "         cmd=@ winform=maximized   notes=" Desktop region marker "/>
+        <item id=Logs label=Logs         type=dtvt title="Logs"                  cmd="$0 -q -r term $0 -m" notes=" Log monitor "/>
         <autorun item*>  <!-- Autorun specified menu items      -->
-            <!--  <item* id=Term winsize=80,25 />               -->
-            <!--  <item wincoor=92,31 winform=minimized />      --> <!-- Autorun supports minimized winform only. -->
-            <!--  <item wincoor=8,31 />                         -->
-            <!--  <item wincoor=8,4 winsize=164,25 focused />   -->
+            <!--  <item* id=Term winsize=80,25/>                -->
+            <!--  <item wincoor=92,31 winform=minimized/>       --> <!-- Autorun supports minimized winform only. -->
+            <!--  <item wincoor=8,31/>                          -->
+            <!--  <item wincoor=8,4 winsize=164,25 focused/>    -->
         </autorun>
         <viewport coor=0,0/>  <!-- Viewport position for the first connected user. At runtime, this value is temporarily replaced with the next disconnecting user's viewport coordinates to restore the viewport position on reconnection. -->
         <width>    <!-- Taskbar menu width -->
             <folded=11/>
             <expanded=32/>
         </width>
-        <color fgc=whitedk bgc=0x60202020 />
+        <color fgc=whitedk bgc=0x60202020/>
     </menu>
     <panel> <!-- Desktop info panel. -->
-        <cmd = ""/> <!-- Command-line to activate. -->
-        <cwd = ""/> <!-- Working directory. -->
-        <height = 1 /> <!-- Desktop space reserved on top. -->
+        <cmd=""/> <!-- Command-line to activate. -->
+        <cwd=""/> <!-- Working directory. -->
+        <height=1/> <!-- Desktop space reserved on top. -->
     </panel>
     <hotkeys key*>    <!-- not implemented -->
-        <key="Ctrl+PgUp" action=PrevWindow />
-        <key="Ctrl+PgDn" action=NextWindow />
+        <key="Ctrl+PgUp" action=PrevWindow/>
+        <key="Ctrl+PgDn" action=NextWindow/>
     </hotkeys>
     <appearance>
         <defaults>
-            <fps      = 60   />
-            <bordersz = 1,1  />
-            <lucidity = 0xff /> <!-- not implemented -->
-            <tracking = off  /> <!-- Mouse cursor highlighting. -->
-            <macstyle = no /> <!-- Preferred window control buttons location. no: right corner (like on MS Windows), yes: left side (like on macOS) -->
-            <brighter   fgc=purewhite bgc=purewhite alpha=60 /> <!-- Highlighter. -->
-            <kb_focus   fgc=bluelt    bgc=bluelt    alpha=60 /> <!-- Keyboard focus indicator. -->
-            <shadower   bgc=0xB4202020 />                       <!-- Darklighter. -->
-            <shadow     bgc=0xB4202020 />                       <!-- Light Darklighter. -->
-            <selector   bgc=0x30ffffff txt=" " />               <!-- Selection overlay. -->
-            <highlight  fgc=purewhite bgc=bluelt      />
-            <warning    fgc=whitelt   bgc=yellowdk    />
-            <danger     fgc=whitelt   bgc=redlt       />
-            <action     fgc=whitelt   bgc=greenlt     />
-            <label      fgc=blackdk   bgc=whitedk     />
-            <inactive   fgc=blacklt   bgc=transparent />
-            <menu_white fgc=whitelt   bgc=0x80404040  />
-            <menu_black fgc=blackdk   bgc=0x80404040  />
+            <fps=60/>
+            <bordersz=1,1 />
+            <lucidity=0xff/> <!-- not implemented -->
+            <tracking=off /> <!-- Mouse cursor highlighting. -->
+            <macstyle=no  /> <!-- Preferred window control buttons location. no: right corner (like on MS Windows), yes: left side (like on macOS) -->
+            <brighter   fgc=purewhite bgc=purewhite alpha=60/> <!-- Highlighter. -->
+            <kb_focus   fgc=bluelt    bgc=bluelt    alpha=60/> <!-- Keyboard focus indicator. -->
+            <shadower   bgc=0xB4202020/>                       <!-- Darklighter. -->
+            <shadow     bgc=0xB4202020/>                       <!-- Light Darklighter. -->
+            <selector   bgc=0x30ffffff txt=" "/>               <!-- Selection overlay. -->
+            <highlight  fgc=purewhite bgc=bluelt     />
+            <warning    fgc=whitelt   bgc=yellowdk   />
+            <danger     fgc=whitelt   bgc=redlt      />
+            <action     fgc=whitelt   bgc=greenlt    />
+            <label      fgc=blackdk   bgc=whitedk    />
+            <inactive   fgc=blacklt   bgc=transparent/>
+            <menu_white fgc=whitelt   bgc=0x80404040 />
+            <menu_black fgc=blackdk   bgc=0x80404040 />
             <timings>
                 <fader duration=0ms fast=0ms/>  <!-- Fader animation config. -->
                 <spd            = 10    /> <!-- Auto-scroll initial speed component ΔR.              -->
@@ -360,29 +386,29 @@ Note: Hardcoded settings are built from the [/src/vtm.xml](../src/vtm.xml) sourc
                 <repeat_rate    = 30ms  /> <!-- Repeat rate.                                         -->
             </timings>
             <limits>
-                <window size=2000x1000 />  <!-- Max window size -->
+                <window size=3000x2000/> <!-- Max window grid size -->
             </limits>
         </defaults>
         <runapp>    <!-- Override defaults. -->
-            <brighter fgc=purewhite bgc=purewhite alpha=0 /> <!-- Highlighter. -->
+            <brighter fgc=purewhite bgc=purewhite alpha=0/> <!-- Highlighter. -->
         </runapp>
     </appearance>
     <set>         <!-- Global namespace - Unresolved literals will be taken from here. -->
         <blackdk   = 0xFF101010 /> <!-- Color reference literals. -->
-        <reddk     = 0xFF1f0fc4 />
-        <greendk   = 0xFF0ea112 />
-        <yellowdk  = 0xFF009cc0 />
-        <bluedk    = 0xFFdb3700 />
-        <magentadk = 0xFF981787 />
-        <cyandk    = 0xFFdd963b />
+        <reddk     = 0xFFc40f1f />
+        <greendk   = 0xFF12a10e />
+        <yellowdk  = 0xFFc09c00 />
+        <bluedk    = 0xFF0037db />
+        <magentadk = 0xFF871798 />
+        <cyandk    = 0xFF3b96dd />
         <whitedk   = 0xFFbbbbbb />
         <blacklt   = 0xFF757575 />
-        <redlt     = 0xFF5648e6 />
-        <greenlt   = 0xFF0cc615 />
-        <yellowlt  = 0xFFa5f1f8 />
-        <bluelt    = 0xFFff783a />
-        <magentalt = 0xFF9e00b3 />
-        <cyanlt    = 0xFFd6d660 />
+        <redlt     = 0xFFe64856 />
+        <greenlt   = 0xFF15c60c />
+        <yellowlt  = 0xFFf8f1a5 />
+        <bluelt    = 0xFF3a78ff />
+        <magentalt = 0xFFb3009e />
+        <cyanlt    = 0xFF60d6d6 />
         <whitelt   = 0xFFf3f3f3 />
         <pureblack = 0xFF000000 />
         <purewhite = 0xFFffffff />
@@ -401,28 +427,32 @@ Note: Hardcoded settings are built from the [/src/vtm.xml](../src/vtm.xml) sourc
         </background>
         <clipboard>
             <preview enabled=true size=80x25 bgc=bluedk fgc=whitelt>
-                <alpha=0xFF />  <!-- Preview alpha is applied only to the ansi/rich/html text type -->
-                <timeout=3s />  <!-- Preview hiding timeout. Set it to zero to disable hiding. -->
-                <shadow=7   />  <!-- Preview shadow strength (0-10). -->
+                <alpha=0xFF/>  <!-- Preview alpha is applied only to the ansi/rich/html text type -->
+                <timeout=3s/>  <!-- Preview hiding timeout. Set it to zero to disable hiding. -->
+                <shadow=7  />  <!-- Preview shadow strength (0-10). -->
             </preview>
-            <format=html />  <!-- none | text | ansi | rich | html | protected -->
+            <format=html/>  <!-- none | text | ansi | rich | html | protected -->
         </clipboard>
-        <viewport coor=0,0 />
-        <mouse dblclick=500ms />
-        <tooltips timeout=2000ms enabled=true fgc=pureblack bgc=purewhite />
-        <debug overlay=off toggle="🐞" />  <!-- Display console debug info. -->
-        <regions enabled=0 />             <!-- Highlight UI objects boundaries. -->
+        <viewport coor=0,0/>
+        <mouse dblclick=500ms/>
+        <tooltips timeout=2000ms enabled=true fgc=pureblack bgc=purewhite/>
+        <debug overlay=off toggle="🐞"/>  <!-- Display console debug info. -->
+        <regions enabled=0/>  <!-- Highlight UI objects boundaries. -->
     </client>
     <term>      <!-- Base configuration for the Term app. It can be partially overridden by the menu item's config subarg. -->
+        <sendinput=""/>  <!-- Send input on startup. E.g. sendinput="echo test\n" -->
+        <cwdsync=" cd $P\n"/>   <!-- Command to sync the current working directory. When 'Sync' is active, $P (case sensitive) will be replaced with the current path received via OSC9;9 notification. Prefixed with a space to avoid touching command history. -->
         <scrollback>
-            <size=40000    />   <!-- Scrollback buffer length. -->
+            <size=40000    />   <!-- Initial scrollback buffer length. -->
             <growstep=0    />   <!-- Scrollback buffer grow step. The buffer behaves like a ring in case of zero. -->
+            <growlimit=0   />   <!-- Scrollback buffer grow limit. The buffer will behave like a ring when the limit is reached. If set to zero, then the limit is equal to the initial buffer size. -->
             <maxline=65535 />   <!-- Max line length. Line splits if it exceeds the limit. -->
             <wrap="on"     />   <!-- Lines wrapping mode. -->
-            <reset onkey="on" onoutput="off" />   <!-- Scrollback viewport reset triggers. -->
+            <reset onkey="on" onoutput="off"/>  <!-- Scrollback viewport reset triggers. -->
+            <altscroll="on"/>   <!-- Alternate scroll mode settings. -->
         </scrollback>
         <color>
-            <color0  = blackdk    /> <!-- See /config/set/* for the color name reference. -->
+            <color0  = pureblack  /> <!-- See /config/set/* for the color name reference. -->
             <color1  = reddk      />
             <color2  = greendk    />
             <color3  = yellowdk   />
@@ -438,7 +468,8 @@ Note: Hardcoded settings are built from the [/src/vtm.xml](../src/vtm.xml) sourc
             <color13 = magentalt  />
             <color14 = cyanlt     />
             <color15 = whitelt    />
-            <default bgc=0 fgc=15 />  <!-- Initial colors. -->
+            <default bgc=pureblack fgc=whitedk/>  <!-- Default/current colors (SGR49/39). -->
+            <bground = default/>  <!-- Independent background color of the scrollback canvas. Set to 0x00ffffff(or =default) to sync with SGR49 (default background). -->
             <match fx=color bgc="0xFF007F00" fgc=whitelt/>  <!-- Color of the selected text occurrences. Set fx to use cell::shaders: xlight | color | invert | reverse -->
             <selection>
                 <text fx=color bgc=bluelt fgc=whitelt/>  <!-- Highlighting of the selected text in plaintext mode. -->
@@ -449,11 +480,11 @@ Note: Hardcoded settings are built from the [/src/vtm.xml](../src/vtm.xml) sourc
                 <none fx=color bgc=blacklt fgc=whitedk/>  <!-- Inactive selection color. -->
             </selection>
         </color>
-        <fields>
-            <lucent=0xC0 /> <!-- Fields transparency level. -->
-            <size=0      /> <!-- Left/right field size (for hz scrolling UX). -->
-        </fields>
-        <tablen=8 />   <!-- Tab length. -->
+        <layout>
+            <oversize=0 opacity=0xC0/>  <!-- Scrollback horizontal (left and right) oversize. (for convenient horizontal scrolling). -->
+            <border=0/>                 <!-- Terminal window left and right border size. -->
+        </layout>
+        <tablen=8/>   <!-- Tab length. -->
         <cursor>
             <style="underline"/> <!-- block | underline -->
             <blink=400ms/>       <!-- blink period -->
@@ -490,17 +521,21 @@ Note: Hardcoded settings are built from the [/src/vtm.xml](../src/vtm.xml) sourc
             <item label="<" action=TerminalFindPrev>  <!-- type=Command is a default item's attribute. -->
                 <label="\e[38:2:0:255:0m<\e[m"/>
                 <notes>
-                    " Previous match                    \n"
-                    " - using clipboard if no selection \n"
-                    " - page up if no clipboard data    "
+                    " Previous match                                  \n"
+                    "   LeftClick to jump to previous match or scroll \n"
+                    "             one page up if nothing to search    \n"
+                    "   Match clipboard data if no selection          \n"
+                    "   Left+RightClick to clear clipboard            "
                 </notes>
             </item>
             <item label=">" action=TerminalFindNext>
                 <label="\e[38:2:0:255:0m>\e[m"/>
                 <notes>
-                    " Next match                        \n"
-                    " - using clipboard if no selection \n"
-                    " - page up if no clipboard data    "
+                    " Next match                                     \n"
+                    "   LeftClick to jump to next match or scroll    \n"
+                    "             one page down if nothing to search \n"
+                    "   Match clipboard data if no selection         \n"
+                    "   Left+RightClick to clear clipboard           "
                 </notes>
             </item>
             <item label="  "    notes=" ...empty menu block/splitter for safety "/>
@@ -516,14 +551,14 @@ Note: Hardcoded settings are built from the [/src/vtm.xml](../src/vtm.xml) sourc
             <mode="text"/> <!-- text | ansi | rich | html | protected | none -->
             <rect=false/>  <!-- Preferred selection form: Rectangular: true, Linear false. -->
         </selection>
-        <atexit = auto /> <!-- auto:    Stay open and ask if exit code != 0. (default)
-                               ask:     Stay open and ask.
-                               close:   Always close.
-                               restart: Restart session.
-                               retry:   Restart session if exit code != 0. -->
-        <hotkeys key*>    <!-- not implemented -->
-            <key="Alt+RightArrow" action=TerminalFindNext />
-            <key="Alt+LeftArrow"  action=TerminalFindPrev />
+        <atexit=auto/> <!-- auto:    Stay open and ask if exit code != 0. (default)
+                            ask:     Stay open and ask.
+                            close:   Always close.
+                            restart: Restart session.
+                            retry:   Restart session if exit code != 0. -->
+        <hotkeys key*> <!-- not implemented -->
+            <key="Alt+RightArrow" action=TerminalFindNext/>
+            <key="Alt+LeftArrow"  action=TerminalFindPrev/>
         </hotkeys>
     </term>
     <defapp>
@@ -551,5 +586,3 @@ Note: Hardcoded settings are built from the [/src/vtm.xml](../src/vtm.xml) sourc
     </settings>
 </config>
 ```
-
-Note: The `$0` tag will be expanded to the fully qualified current module filename when the configuration is loaded.

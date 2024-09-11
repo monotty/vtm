@@ -1,4 +1,4 @@
-// Copyright (c) NetXS Group.
+// Copyright (c) Dmitry Sapozhnikov
 // Licensed under the MIT license.
 
 #pragma once
@@ -14,165 +14,203 @@ namespace netxs
 {
     using fifo = generics::fifo<si32>;
 
-    // geometry: 2D point template.
-    template<class T = int>
-    struct duplet
+    // geometry: Generic 2D point.
+    template<class T>
+    struct xy2d
     {
         using type = T;
 
-        T x;
-        T y;
+        T x, y;
 
-        bool operator == (duplet const&) const = default;
+        template<class D> constexpr static auto cast(D x) requires(std::is_floating_point_v<T> || (std::is_integral_v<T> == std::is_integral_v<D>)) { return netxs::saturate_cast<T>(x); }
+        template<class D> constexpr static auto cast(D x) requires(std::is_integral_v<T> && std::is_floating_point_v<D>)                            { return netxs::saturate_cast<T>(std::floor(x)); }
 
-        constexpr duplet()
-            : x{ 0 },
-              y{ 0 }
+        constexpr xy2d(xy2d const&) = default;
+        constexpr xy2d()
+            : x{ },
+              y{ }
         { }
-
-        constexpr duplet(T const& x, T const& y)
+        constexpr xy2d(T x, T y)
             : x{ x },
               y{ y }
         { }
-
-        constexpr duplet(duplet const& p)
-            : duplet{ p.x,
-                      p.y }
+        template<class D>
+        constexpr xy2d(D x, D y)
+            : x{ cast(x) },
+              y{ cast(y) }
+        { }
+        template<class D>
+        constexpr xy2d(xy2d<D> d)
+            : xy2d{ d.x, d.y }
+        { }
+        constexpr xy2d(fifo& q)
+            : x{ q(0) },
+              y{ q(0) }
         { }
 
         template<class D>
-        constexpr duplet(duplet<D> const& d)
-            : duplet{ static_cast<T>(d.x),
-                      static_cast<T>(d.y) }
-        { }
+        constexpr bool operator == (xy2d<D> p) const //todo Apple clang don't get auto result.
+        {
+            return x == cast(p.x)
+                && y == cast(p.y);
+        }
+        template<class D>
+        bool operator () (xy2d<D> p)
+        {
+            auto changed = *this != p;
+            if (changed) *this = p;
+            return changed;
+        }
+        constexpr explicit operator bool()   const { return x != T{} || y != T{};      }
+        constexpr auto& operator [] (si32 i)       { return i ? y : x;                 }
+        constexpr auto& operator [] (si32 i) const { return i ? y : x;                 }
+        constexpr auto& operator ++ ()             { ++x; ++y;           return *this; }
+        constexpr auto& operator -- ()             { --x; --y;           return *this; }
+        constexpr auto& operator =  (xy2d p)       { x =  p.x; y =  p.y; return *this; }
+        constexpr auto& operator += (xy2d p)       { x += p.x; y += p.y; return *this; }
+        constexpr auto& operator -= (xy2d p)       { x -= p.x; y -= p.y; return *this; }
+        constexpr auto& operator *= (xy2d p)       { x *= p.x; y *= p.y; return *this; }
+        constexpr auto& operator /= (xy2d p)       { x /= p.x; y /= p.y; return *this; }
+        constexpr auto& operator %= (xy2d p)       { x %= p.x; y %= p.y; return *this; }
+        constexpr auto& operator -= (T i)          { x -= i;   y -= i;   return *this; }
+        constexpr auto& operator += (T i)          { x += i;   y += i;   return *this; }
+        constexpr auto& operator *= (T i)          { x *= i;   y *= i;   return *this; }
+        constexpr auto& operator /= (T i)          { x /= i;   y /= i;   return *this; }
+        constexpr auto& operator %= (T i)          { x %= i;   y %= i;   return *this; }
+        constexpr auto  operator <  (T i)    const { return x < i && y < i;            }
+        constexpr auto  operator >  (T i)    const { return x > i && y > i;            }
+        constexpr auto  operator +  (xy2d p) const { return xy2d{ x + p.x, y + p.y };  }
+        constexpr auto  operator -  (xy2d p) const { return xy2d{ x - p.x, y - p.y };  }
+        constexpr auto  operator *  (xy2d p) const { return xy2d{ x * p.x, y * p.y };  }
+        constexpr auto  operator /  (xy2d p) const { return xy2d{ x / p.x, y / p.y };  }
+        constexpr auto  operator %  (xy2d p) const { return xy2d{ x % p.x, y % p.y };  } // Consider to use grid_mod().
+        constexpr auto  operator -  ()       const { return xy2d{      -x,-y       };  }
+        constexpr auto  operator &  (T i)    const { return xy2d{   x & i, y & i   };  }
+        constexpr auto  operator ~  ()       const { return xy2d{       y, x       };  }
 
-        constexpr duplet(fifo& queue)
-            : x{ queue(0) },
-              y{ queue(0) }
-        { }
-
-        constexpr T&       operator []  (int selector)          { return selector ? y : x;          }
-        constexpr T const& operator []  (int selector) const    { return selector ? y : x;          }
-        constexpr explicit operator bool() const                { return x != 0 || y != 0;          }
-        constexpr duplet&  operator ++  ()                      { x++; y++;           return *this; }
-        constexpr duplet&  operator --  ()                      { x--; y--;           return *this; }
-        constexpr duplet&  operator =   (duplet const& p)       { x  = p.x; y  = p.y; return *this; }
-        constexpr void     operator +=  (duplet const& p)       { x += p.x; y += p.y;               }
-        constexpr void     operator -=  (duplet const& p)       { x -= p.x; y -= p.y;               }
-        constexpr void     operator *=  (duplet const& p)       { x *= p.x; y *= p.y;               }
-        constexpr void     operator /=  (duplet const& p)       { x /= p.x; y /= p.y;               }
-        constexpr void     operator %=  (duplet const& p)       { x %= p.x; y %= p.y;               }
-        constexpr void     operator -=  (T i)                   { x -=   i; y -=   i;               }
-        constexpr void     operator +=  (T i)                   { x +=   i; y +=   i;               }
-        constexpr void     operator *=  (T i)                   { x *=   i; y *=   i;               }
-        constexpr void     operator /=  (T i)                   { x /=   i; y /=   i;               }
-        constexpr void     operator %=  (T i)                   { x %=   i; y %=   i;               }
-        constexpr bool     operator <   (T i) const             { return x < i && y < i;            }
-        constexpr bool     operator >   (T i) const             { return x > i && y > i;            }
-        constexpr duplet   operator +   (duplet const& p) const { return { x + p.x, y + p.y };      }
-        constexpr duplet   operator -   (duplet const& p) const { return { x - p.x, y - p.y };      }
-        constexpr duplet   operator *   (duplet const& p) const { return { x * p.x, y * p.y };      }
-        constexpr duplet   operator /   (duplet const& p) const { return { x / p.x, y / p.y };      }
-        constexpr duplet   operator %   (duplet const& p) const { return { x % p.x, y % p.y };      }
-        constexpr duplet   operator -   ()                const { return {      -x,-y       };      }
-        constexpr duplet   operator &   (T i)             const { return {   x & i, y & i   };      }
-        constexpr duplet   operator ~   ()                const { return {       y, x       };      }
-
-        ///In C++11, signed shift left of a negative number is always undefined
+        //In C++11, signed shift left of a negative number is always undefined
         //void operator>>= (T i) { x >>=i; y >>=i; }
         //void operator<<= (T i) { x <<=i; y <<=i; }
+        //
+        //In C++11, signed shift left of a negative number is always undefined
+        //xy2d operator << (T i) const { return { x << i, y << i }; }
+        //xy2d operator >> (T i) const { return { x >> i, y >> i }; }
 
-        ///In C++11, signed shift left of a negative number is always undefined
-        //duplet operator << (T i) const { return { x << i, y << i }; }
-        //duplet operator >> (T i) const { return { x >> i, y >> i }; }
+        template<class D, class = std::enable_if_t<std::is_arithmetic_v<D>>> constexpr auto operator +  (D i) const { return xy2d<D>{ x + i, y + i }; }
+        template<class D, class = std::enable_if_t<std::is_arithmetic_v<D>>> constexpr auto operator -  (D i) const { return xy2d<D>{ x - i, y - i }; }
+        template<class D, class = std::enable_if_t<std::is_arithmetic_v<D>>> constexpr auto operator *  (D i) const { return xy2d<D>{ x * i, y * i }; }
+        template<class D, class = std::enable_if_t<std::is_arithmetic_v<D>>> constexpr auto operator /  (D i) const { return xy2d<D>{ x / i, y / i }; }
+        template<class D, class = std::enable_if_t<std::is_arithmetic_v<D>>> constexpr auto operator +  (xy2d<D> f) const { return xy2d{ x + f.x, y + f.y }; }
+        template<class D, class = std::enable_if_t<std::is_arithmetic_v<D>>> constexpr auto operator -  (xy2d<D> f) const { return xy2d{ x - f.x, y - f.y }; }
+        template<class D, class = std::enable_if_t<std::is_arithmetic_v<D>>> constexpr auto operator *  (xy2d<D> f) const { return xy2d{ x * f.x, y * f.y }; }
+        template<class D, class = std::enable_if_t<std::is_arithmetic_v<D>>> constexpr auto operator /  (xy2d<D> f) const { return xy2d{ x / f.x, y / f.y }; }
+        template<class D, class = std::enable_if_t<std::is_arithmetic_v<D>>> constexpr auto operator += (xy2d<D> f)       { x = cast(x + f.x); y = cast(y + f.y); return *this; }
+        template<class D, class = std::enable_if_t<std::is_arithmetic_v<D>>> constexpr auto operator -= (xy2d<D> f)       { x = cast(x - f.x); y = cast(y - f.y); return *this; }
+        template<class D, class = std::enable_if_t<std::is_arithmetic_v<D>>> constexpr auto operator *= (xy2d<D> f)       { x = cast(x * f.x); y = cast(y * f.y); return *this; }
+        template<class D, class = std::enable_if_t<std::is_arithmetic_v<D>>> constexpr auto operator /= (xy2d<D> f)       { x = cast(x / f.x); y = cast(y / f.y); return *this; }
 
-        template<class D> duplet<D> constexpr operator / (D i) const { return { x / i, y / i }; }
-        template<class D> duplet<D> constexpr operator + (D i) const { return { x + i, y + i }; }
-        template<class D> duplet<D> constexpr operator - (D i) const { return { x - i, y - i }; }
-        template<class D> duplet<D> constexpr operator * (D i) const { return { x * i, y * i }; }
-
-        bool operator () (duplet const& p)
-        {
-            if (*this != p)
-            {
-                x = p.x;
-                y = p.y;
-                return true;
-            }
-            return faux;
-        }
-        duplet less(duplet const& what, duplet const& if_yes, duplet const& if_no) const
+        xy2d   less(xy2d what, xy2d if_yes, xy2d if_no) const
         {
             return { x < what.x ? if_yes.x : if_no.x,
                      y < what.y ? if_yes.y : if_no.y };
         }
-        duplet equals(duplet const& what, duplet const& if_yes, duplet const& if_no) const
+        xy2d equals(xy2d what, xy2d if_yes, xy2d if_no) const
         {
             return { x == what.x ? if_yes.x : if_no.x,
                      y == what.y ? if_yes.y : if_no.y };
         }
-        bool inside(duplet const& p) const
+        xy2d   less(T what, xy2d if_yes, xy2d if_no) const
         {
-            if (x > 0 ? (p.x >= 0 && p.x < x) : (p.x >= x && p.x < 0))
-            {
-                if (y > 0 ? (p.y >= 0 && p.y < y) : (p.y >= y && p.y < 0))
-                {
-                    return true;
-                }
-            }
-            return faux;
+            return { x < what ? if_yes.x : if_no.x,
+                     y < what ? if_yes.y : if_no.y };
+        }
+        xy2d equals(T what, xy2d if_yes, xy2d if_no) const
+        {
+            return { x == what ? if_yes.x : if_no.x,
+                     y == what ? if_yes.y : if_no.y };
+        }
+        xy2d   less(T what, T if_yes, T if_no) const
+        {
+            return { x < what ? if_yes : if_no,
+                     y < what ? if_yes : if_no };
+        }
+        xy2d equals(T what, T if_yes, T if_no) const
+        {
+            return { x == what ? if_yes : if_no,
+                     y == what ? if_yes : if_no };
+        }
+        bool inside(xy2d p) const
+        {
+            return (x > 0 ? (p.x >= 0 && p.x < x) : (p.x >= x && p.x < 0))
+                && (y > 0 ? (p.y >= 0 && p.y < y) : (p.y >= y && p.y < 0));
         }
 
-        duplet divround(type n)          const { return { netxs::divround(x, n  ), netxs::divround(y, n  ) }; }
-        duplet divround(duplet const& p) const { return { netxs::divround(x, p.x), netxs::divround(y, p.y) }; }
-        duplet divupper(duplet const& p) const { return { netxs::divupper(x, p.x), netxs::divupper(y, p.y) }; }
+        xy2d divround(T    n) const { return { netxs::divround(x, n  ), netxs::divround(y, n  ) }; }
+        xy2d divround(xy2d p) const { return { netxs::divround(x, p.x), netxs::divround(y, p.y) }; }
 
         auto str() const
         {
             return "{ " + std::to_string(x) + ", " + std::to_string(y) + " }";
         }
-        friend auto& operator << (std::ostream& s, duplet const& p)
+        friend auto& operator << (std::ostream& s, xy2d p)
         {
             return s << "{ " << p.x << ", " << p.y << " }";
         }
-        // Change endianness to LE.
-        friend auto letoh(duplet const& p)
+        friend auto letoh(xy2d p) // Change endianness to LE.
         {
-            return duplet{ netxs::letoh(p.x), netxs::letoh(p.y) };
+            return xy2d{ netxs::letoh(p.x), netxs::letoh(p.y) };
         }
-        friend auto min  (duplet const& p1, duplet const& p2) { return duplet{ std::min(p1.x, p2.x), std::min(p1.y, p2.y) }; }
-        friend auto max  (duplet const& p1, duplet const& p2) { return duplet{ std::max(p1.x, p2.x), std::max(p1.y, p2.y) }; }
-        friend auto round(duplet const& p) { return duplet{ std::round(p.x), std::round(p.y) }; }
-        friend auto abs  (duplet const& p) { return duplet{ std::  abs(p.x), std::  abs(p.y) }; }
-        friend auto clamp(duplet const& p, duplet const& p1, duplet const& p2) { return duplet{ std::clamp(p.x, p1.x, p2.x), std::clamp(p.y, p1.y, p2.y) }; }
+        static constexpr auto sort(xy2d a, xy2d b)
+        {
+            if (a.x > b.x) std::swap(a.x, b.x);
+            if (a.y > b.y) std::swap(a.y, b.y);
+            return std::pair{ a, b };
+        }
+        friend auto   min(xy2d a, xy2d b) { return xy2d{ std::min(a.x, b.x), std::min(a.y, b.y) }; }
+        friend auto   max(xy2d a, xy2d b) { return xy2d{ std::max(a.x, b.x), std::max(a.y, b.y) }; }
+        friend auto   abs(xy2d p)         { return xy2d{ std::abs(p.x), std::abs(p.y) }; }
+        friend auto round(xy2d p)         { return xy2d{ std::round(p.x), std::round(p.y) }; }
+        friend auto clamp(xy2d p, xy2d p1, xy2d p2)
+        {
+            auto [a, b] = sort(p1, p2);
+            return xy2d{ std::clamp(p.x, a.x, b.x),
+                         std::clamp(p.y, a.y, b.y) };
+        }
+        constexpr auto clampby(xy2d p) const
+        {
+            auto [a, b] = sort(xy2d{}, p);
+            return xy2d{ std::clamp(x, a.x, b.x), std::clamp(y, a.y, b.y) };
+        }
     };
 
     // geometry: 2D point.
-    using twod = duplet<si32>;
+    using twod = xy2d<si32>;
+    using fp2d = xy2d<fp32>;
 
-    static constexpr const auto dot_00 = twod{ 0,0 };
-    static constexpr const auto dot_01 = twod{ 0,1 };
-    static constexpr const auto dot_10 = twod{ 1,0 };
-    static constexpr const auto dot_11 = twod{ 1,1 };
-    static constexpr const auto dot_22 = twod{ 2,2 };
-    static constexpr const auto dot_21 = twod{ 2,1 };
-    static constexpr const auto dot_33 = twod{ 3,3 };
-    static constexpr const auto dot_mx = twod{ si32max / 2,
-                                               si32max / 2 };
+    static constexpr auto dot_00 = twod{ 0,0 };
+    static constexpr auto dot_01 = twod{ 0,1 };
+    static constexpr auto dot_10 = twod{ 1,0 };
+    static constexpr auto dot_11 = twod{ 1,1 };
+    static constexpr auto dot_22 = twod{ 2,2 };
+    static constexpr auto dot_21 = twod{ 2,1 };
+    static constexpr auto dot_33 = twod{ 3,3 };
+    static constexpr auto dot_mx = twod{ (si32)(si32max / 2.f), (si32)(si32max / 2.f) };
 
-    static twod divround(twod p, si32 n) { return { divround(p.x, n  ), divround(p.y, n  ) }; }
-    static twod divround(si32 n, twod p) { return { divround(n  , p.x), divround(n  , p.y) }; }
-    static twod divround(twod n, twod p) { return { divround(n.x, p.x), divround(n.y, p.y) }; }
-    static twod divupper(twod n, twod p) { return { divupper(n.x, p.x), divupper(n.y, p.y) }; }
+    twod divround(twod p, si32 n) { return { divround(p.x, n  ), divround(p.y, n  ) }; }
+    twod divround(si32 n, twod p) { return { divround(n  , p.x), divround(n  , p.y) }; }
+    twod divround(twod n, twod p) { return { divround(n.x, p.x), divround(n.y, p.y) }; }
+    twod grid_mod(twod n, twod p) { return { grid_mod(n.x, p.x), grid_mod(n.y, p.y) }; }
 }
 
 namespace std
 {
-    template<class T = netxs::si32> constexpr netxs::duplet<T> min  (netxs::duplet<T> const& p1, netxs::duplet<T> const& p2) { return { std::min(p1.x, p2.x), std::min(p1.y, p2.y) }; }
-    template<class T = netxs::si32> constexpr netxs::duplet<T> max  (netxs::duplet<T> const& p1, netxs::duplet<T> const& p2) { return { std::max(p1.x, p2.x), std::max(p1.y, p2.y) }; }
-    template<class T = netxs::si32> constexpr netxs::duplet<T> round(netxs::duplet<T> const& p) { return { std::round(p.x), std::round(p.y) }; }
-    template<class T = netxs::si32> constexpr netxs::duplet<T> abs  (netxs::duplet<T> const& p) { return { std::  abs(p.x), std::  abs(p.y) }; }
-    template<class T = netxs::si32> constexpr netxs::duplet<T> clamp(netxs::duplet<T> const& p, netxs::duplet<T> const& p1, netxs::duplet<T> const& p2) { return { std::clamp(p.x, p1.x, p2.x), std::clamp(p.y, p1.y, p2.y) }; }
+    template<class T> constexpr netxs::xy2d<T>   min(netxs::xy2d<T> p1, netxs::xy2d<T> p2) { return { std::min(p1.x, p2.x), std::min(p1.y, p2.y) }; }
+    template<class T> constexpr netxs::xy2d<T>   max(netxs::xy2d<T> p1, netxs::xy2d<T> p2) { return { std::max(p1.x, p2.x), std::max(p1.y, p2.y) }; }
+    template<class T> constexpr netxs::xy2d<T> round(netxs::xy2d<T> p)                     { return { std::round(p.x), std::round(p.y) }; }
+    template<class T> constexpr netxs::xy2d<T>   abs(netxs::xy2d<T> p)                     { return { std::abs(p.x), std::abs(p.y) }; }
+    template<class T> constexpr netxs::xy2d<T> floor(netxs::xy2d<T> p)                     { return { std::floor(p.x), std::floor(p.y) }; }
+    template<class T> constexpr netxs::xy2d<T>  ceil(netxs::xy2d<T> p)                     { return { std::ceil(p.x), std::ceil(p.y) }; }
+    template<class T> constexpr netxs::xy2d<T> clamp(netxs::xy2d<T> p, netxs::xy2d<T> p1, netxs::xy2d<T> p2) { return { std::clamp(p.x, p1.x, p2.x), std::clamp(p.y, p1.y, p2.y) }; }
 }
 
 namespace netxs
@@ -180,170 +218,135 @@ namespace netxs
     // geometry: Rectangle.
     struct rect
     {
-        twod coor;
-        twod size;
+        twod coor, size;
 
-        // rect: Intersect two rects.
-        template<bool Relative = faux>
-        constexpr rect clip(rect r) const
-        {
-            if constexpr (Relative) r.coor += coor;
-            auto apex = coor + size;
-            auto r_apex = r.coor + r.size;
-            r.coor = std::clamp(r.coor, coor, apex);
-            r.size = std::clamp(r_apex, coor, apex) - r.coor;
-            return r;
-        }
-        twod clip(twod point) const
-        {
-            return std::clamp(point, coor, coor + std::max(dot_00, size - dot_11));
-        }
         bool operator == (rect const&) const = default;
         explicit operator bool ()       const { return size.x != 0 && size.y != 0;            }
         auto   center          ()       const { return coor + size / 2;                       }
-        auto   area            ()       const { return size.x * size.y;                       }
+        auto   length          ()       const { return size.x * size.y;                       }
         twod   map             (twod p) const { return p - coor;                              }
         rect   shift           (twod p) const { return { coor + p, size };                    }
         auto&  shift_itself    (twod p)       { coor += p; return *this;                      }
-        rect   operator &      (rect r) const { return clip(r);                               }
-        rect   operator |      (rect r) const { return unite(r);                              }
+        auto&  moveto          (twod p)       { coor = p;  return *this;                      }
+        rect   operator /      (twod p) const { return { coor / p, size / p };                }
+        rect   operator |      (rect r) const { return unite(r, *this);                       }
+        auto&  operator |=     (rect r)       { return unitewith(r);                          }
         auto&  operator +=     (rect r)       { coor += r.coor; size += r.size; return *this; }
         auto&  operator -=     (rect r)       { coor -= r.coor; size -= r.size; return *this; }
 
-        // rect: Is the point inside the rect.
-        bool hittest(twod p) const
+        // rect: Return rect trimmed by r.
+        template<bool Relative = faux>
+        constexpr rect trim(rect r) const
         {
-            bool test;
-            if (size.x > 0)
-            {
-                auto t = p.x - coor.x;
-                test = t >= 0 && t < size.x;
-            }
-            else
-            {
-                auto t = p.x + coor.x;
-                test = t >= size.x && t < 0;
-            }
+            if constexpr (Relative) r.coor += coor;
+            auto r_apex = r.coor + r.size;
+            auto [min, max] = twod::sort(coor, coor + size);
+            r.coor = std::clamp(r.coor, min, max);
+            r.size = std::clamp(r_apex, min, max) - r.coor;
+            return r;
+        }
+        // rect: Trim by the specified rect.
+        template<bool Relative = faux>
+        constexpr auto& trimby(rect r)
+        {
+            if constexpr (Relative) coor += r.coor;
+            auto apex = coor + size;
+            auto [min, max] = twod::sort(r.coor, r.coor + r.size);
+            coor = std::clamp(coor, min, max);
+            size = std::clamp(apex, min, max) - coor;
+            return *this;
+        }
+        // rect: Return clamped point.
+        constexpr twod clamp(twod point) const
+        {
+            auto [min, max] = twod::sort(coor, coor + size);
+            return std::clamp(point, min, max - dot_11);
+        }
+        // rect: Is the point inside the rect.
+        constexpr bool hittest(twod p) const
+        {
+            auto test = faux;
+            if (size.x > 0) { auto t = p.x - coor.x; test = t >= 0 && t < size.x; }
+            else            { auto t = p.x + coor.x; test = t >= size.x && t < 0; }
 
             if (test)
             {
-                if (size.y > 0)
-                {
-                    auto t = p.y - coor.y;
-                    test = t >= 0 && t < size.y;
-                }
-                else
-                {
-                    auto t = p.y + coor.y;
-                    test = t >= size.y && t < 0;
-                }
-                return test;
+                if (size.y > 0) { auto t = p.y - coor.y; test = t >= 0 && t < size.y; }
+                else            { auto t = p.y + coor.y; test = t >= size.y && t < 0; }
             }
-            return faux;
+            return test;
         }
-        rect rotate(twod dir) const
+        // rect: Return rect with specified orientation.
+        constexpr rect rotate(twod dir) const
         {
-            rect r;
-            if ((dir.x ^ size.x) < 0)
-            {
-                r.coor.x = coor.x + size.x;
-                r.size.x = -size.x;
-            }
-            else
-            {
-                r.coor.x = coor.x;
-                r.size.x = size.x;
-            }
-
-            if ((dir.y ^ size.y) < 0)
-            {
-                r.coor.y =  coor.y + size.y;
-                r.size.y = -size.y;
-            }
-            else
-            {
-                r.coor.y = coor.y;
-                r.size.y = size.y;
-            }
-            return r;
+            auto sx = (dir.x ^ size.x) < 0;
+            auto sy = (dir.y ^ size.y) < 0;
+            return {{ sx ?  coor.x + size.x : coor.x, sy ?  coor.y + size.y : coor.y },
+                    { sx ? -size.x          : size.x, sy ? -size.y          : size.y }};
         }
-        rect normalize() const
+        // rect: Change orientation.
+        constexpr auto& rotate_itself(twod dir)
         {
-            rect r;
-            if (size.x < 0)
-            {
-                r.coor.x =  coor.x + size.x;
-                r.size.x = -size.x;
-            }
-            else
-            {
-                r.coor.x = coor.x;
-                r.size.x = size.x;
-            }
-
-            if (size.y < 0)
-            {
-                r.coor.y =  coor.y + size.y;
-                r.size.y = -size.y;
-            }
-            else
-            {
-                r.coor.y = coor.y;
-                r.size.y = size.y;
-            }
-
-            return r;
+            if ((dir.x ^ size.x) < 0) { coor.x += size.x; size.x = -size.x; }
+            if ((dir.y ^ size.y) < 0) { coor.y += size.y; size.y = -size.y; }
+            return *this;
         }
-        auto& normalize_itself()
+        // rect: Return rect with top-left orientation.
+        constexpr rect normalize() const
         {
-            if (size.x < 0)
-            {
-                coor.x =  coor.x + size.x;
-                size.x = -size.x;
-            }
-            else
-            {
-                coor.x = coor.x;
-                size.x = size.x;
-            }
-
-            if (size.y < 0)
-            {
-                coor.y =  coor.y + size.y;
-                size.y = -size.y;
-            }
-            else
-            {
-                coor.y = coor.y;
-                size.y = size.y;
-            }
+            auto sx = size.x < 0;
+            auto sy = size.y < 0;
+            return {{ sx ?  coor.x + size.x : coor.x, sy ?  coor.y + size.y : coor.y },
+                    { sx ? -size.x : size.x         , sy ? -size.y : size.y          }};
+        }
+        // rect: Set top-left orientation.
+        constexpr auto& normalize_itself()
+        {
+            if (size.x < 0) { coor.x += size.x; size.x = -size.x; }
+            if (size.y < 0) { coor.y += size.y; size.y = -size.y; }
             return *this;
         }
         // rect: Intersect the rect with rect{ dot_00, edge }.
-        rect trunc(twod edge) const
+        constexpr rect trunc(twod edge) const
         {
-            rect r;
+            auto r = rect{};
             r.coor = std::clamp(coor, dot_00, edge);
             r.size = std::clamp(size, -coor, edge - coor) + coor - r.coor;
             return r;
         }
-        // rect: Return circumscribed rect.
-        rect unite(rect annex) const
+        // rect: Unite with rect (normalized only).
+        constexpr rect& unitewith(rect r)
         {
-            auto r1 = annex.normalize();
-            auto r2 = normalize();
+            auto new_coor = std::min(coor, r.coor);
+            size = std::max(coor + size, r.coor + r.size ) - new_coor;
+            coor = new_coor;
+            return *this;
+        }
+        // rect: Return circumscribed rect.
+        static constexpr rect unite(rect r1, rect r2)
+        {
+            r1.normalize_itself();
+            r2.normalize_itself();
             auto tl = std::min(r1.coor, r2.coor);
             auto br = std::max(r1.coor + r1.size, r2.coor + r2.size );
             return { tl, br - tl};
         }
         // rect: Return true in case of normalized rectangles are overlapped.
-        bool overlap(rect r) const
+        constexpr bool overlap(rect r) const
         {
             return coor.x          < r.coor.x + r.size.x
                 && coor.y          < r.coor.y + r.size.y
                 && coor.x + size.x > r.coor.x
                 && coor.y + size.y > r.coor.y;
         }
+        constexpr bool nearby(rect r) const
+        {
+            return coor.x          <= r.coor.x + r.size.x
+                && coor.y          <= r.coor.y + r.size.y
+                && coor.x + size.x >= r.coor.x
+                && coor.y + size.y >= r.coor.y;
+        }
+        // rect: To string.
         auto str() const
         {
             return "{" + coor.str() + ", " + size.str() + "}";
@@ -358,6 +361,8 @@ namespace netxs
             return rect{ netxs::letoh(r.coor), netxs::letoh(r.size) };
         }
     };
+
+    using regs = std::vector<rect>;
 
     static constexpr auto rect_00 = rect{ dot_00,dot_00 };
     static constexpr auto rect_11 = rect{ dot_00,dot_11 };
@@ -385,13 +390,14 @@ namespace netxs
             : l{ a.coor.x }, r{ a.coor.x + a.size.x },
               t{ a.coor.y }, b{ a.coor.y + a.size.y }
         { }
-        side(fifo& queue)
+        side(fifo& q)
         {
-            l = queue(0);
-            r = queue(0);
-            t = queue(0);
-            b = queue(0);
+            l = q.subarg(0);
+            r = q.subarg(0);
+            t = q.subarg(0);
+            b = q.subarg(0);
         }
+        constexpr side& operator = (side const&) = default;
         bool operator == (side const&) const = default;
         // side: Unite the two rectangles.
         void operator |= (side s)
@@ -467,7 +473,7 @@ namespace netxs
         }
     };
 
-    // geometry: Padding, space around object.
+    // geometry: Padding around the rect.
     struct dent
     {
         si32 l, r, t, b;
@@ -476,6 +482,7 @@ namespace netxs
             : l{ l }, r{ r }, t{ t }, b{ b }
         { }
         constexpr dent(dent const&) = default;
+        constexpr dent& operator = (dent const&) = default;
         constexpr bool operator == (dent const&) const = default;
         explicit operator bool () const { return l != 0
                                               || r != 0
@@ -552,10 +559,10 @@ namespace netxs
         }
         void set(fifo& q)
         {
-            l = q(0);
-            r = q(0);
-            t = q(0);
-            b = q(0);
+            l = q.subarg(0);
+            r = q.subarg(0);
+            t = q.subarg(0);
+            b = q.subarg(0);
         }
         // dent: Unary minus operator.
         constexpr auto operator - () const
@@ -568,68 +575,87 @@ namespace netxs
             return dent{ l * factor, r * factor, t * factor, b * factor };
         }
         // dent: Return size with padding.
-        friend auto operator + (twod size, dent pad)
+        friend constexpr auto operator + (twod size, dent pad)
         {
             return twod{ std::max(0, size.x + (pad.l + pad.r)),
                          std::max(0, size.y + (pad.t + pad.b)) };
         }
         // dent: Return size without padding.
-        friend auto operator - (twod size, dent pad)
+        friend constexpr auto operator - (twod size, dent pad)
         {
             return twod{ std::max(0, size.x - (pad.l + pad.r)),
                          std::max(0, size.y - (pad.t + pad.b)) };
         }
         // dent: Return area with padding.
-        friend auto operator + (rect area, dent pad)
+        friend constexpr rect operator + (rect area, dent pad) //todo msvc 17.10.1 don't get auto as return type
         {
-            return rect{{ area.coor.x - pad.l,
-                          area.coor.y - pad.t },
-                        { std::max(0, area.size.x + (pad.l + pad.r)),
-                          std::max(0, area.size.y + (pad.t + pad.b)) }};
+            if (area.size.x < 0) { area.coor.x += pad.l; area.size.x -= pad.l + pad.r; }
+            else                 { area.coor.x -= pad.l; area.size.x += pad.l + pad.r; }
+            if (area.size.y < 0) { area.coor.y += pad.t; area.size.y -= pad.t + pad.b; }
+            else                 { area.coor.y -= pad.t; area.size.y += pad.t + pad.b; }
+            return area;
         }
         // dent: Return area without padding.
-        friend auto operator - (rect area, dent pad)
+        friend constexpr auto operator - (rect area, dent pad)
         {
-            return rect{{ area.coor.x + pad.l,
-                          area.coor.y + pad.t },
-                        { std::max(0, area.size.x - (pad.l + pad.r)),
-                          std::max(0, area.size.y - (pad.t + pad.b)) }};
+            if (area.size.x < 0) { area.coor.x -= pad.l; area.size.x += pad.l + pad.r; }
+            else                 { area.coor.x += pad.l; area.size.x -= pad.l + pad.r; }
+            if (area.size.y < 0) { area.coor.y -= pad.t; area.size.y += pad.t + pad.b; }
+            else                 { area.coor.y += pad.t; area.size.y -= pad.t + pad.b; }
+            return area;
         }
         // dent: Return area with padding.
-        friend auto operator += (rect& area, dent pad)
+        friend constexpr auto operator += (rect& area, dent pad)
         {
             return area = area + pad;
         }
         // dent: Return area without padding.
-        friend auto operator -= (rect& area, dent pad)
+        friend constexpr auto operator -= (rect& area, dent pad)
         {
             return area = area - pad;
         }
         // dent: Return size with padding.
-        friend auto operator += (twod& size, dent pad)
+        friend constexpr auto operator += (twod& size, dent pad)
         {
             return size = size + pad;
         }
         // dent: Return size without padding.
-        friend auto operator -= (twod& size, dent pad)
+        friend constexpr auto operator -= (twod& size, dent pad)
         {
             return size = size - pad;
         }
         // dent: Return summ of two paddings.
-        friend auto operator + (dent pad1, dent pad2)
+        friend constexpr auto operator + (dent pad1, dent pad2)
         {
-            return dent{ pad1.l + pad2.l,
-                         pad1.r + pad2.r,
-                         pad1.t + pad2.t,
-                         pad1.b + pad2.b };
+            pad1.l += pad2.l;
+            pad1.r += pad2.r;
+            pad1.t += pad2.t;
+            pad1.b += pad2.b;
+            return pad1;
         }
         // dent: Return diff of two paddings.
-        friend auto operator - (dent pad1, dent pad2)
+        friend constexpr auto operator - (dent pad1, dent pad2)
         {
-            return dent{ pad1.l - pad2.l,
-                         pad1.r - pad2.r,
-                         pad1.t - pad2.t,
-                         pad1.b - pad2.b };
+            pad1.l -= pad2.l;
+            pad1.r -= pad2.r;
+            pad1.t -= pad2.t;
+            pad1.b -= pad2.b;
+            return pad1;
+        }
+        auto bump(rect src) const
+        {
+            auto dst = src + *this;
+            if (dst.size.x < 0)
+            {
+                dst.coor.x = std::clamp(dst.coor.x, src.coor.x, src.coor.x + src.size.x);
+                dst.size.x = 0;
+            }
+            if (dst.size.y < 0)
+            {
+                dst.coor.y = std::clamp(dst.coor.y, src.coor.y, src.coor.y + src.size.y);
+                dst.size.y = 0;
+            }
+            return dst;
         }
         // dent: Change endianness to LE.
         friend auto letoh(dent d)
@@ -650,6 +676,8 @@ namespace netxs
         {
             return s << d.str();
         }
+        friend constexpr auto min(dent d1, dent d2) { return dent{ std::min(d1.l, d2.l), std::min(d1.r, d2.r), std::min(d1.t, d2.t), std::min(d1.b, d2.b) }; }
+        friend constexpr auto max(dent d1, dent d2) { return dent{ std::max(d1.l, d2.l), std::max(d1.r, d2.r), std::max(d1.t, d2.t), std::max(d1.b, d2.b) }; }
     };
     // dent: Return difference between area.
     auto operator - (rect r1, rect r2)
@@ -658,6 +686,40 @@ namespace netxs
         auto end = r1.size - r2.size - top;
         return dent{ top.x, end.x,
                      top.y, end.y };
+    }
+    // dent: Exclude r2 from r1.
+    auto operator / (rect r1, rect r2)
+    {
+        r2 = r1.trim(r2);
+        auto top = r2.coor - r1.coor;
+        auto end = r1.size - r2.size - top;
+        if (top.y == 0 && end.y == 0)
+        {
+            if (top.x > 0)
+            {
+                r1.size.x = std::min(r1.size.x, top.x);
+            }
+            else
+            {
+                auto dx = std::max(0, r1.size.x - end.x);
+                r1.coor.x += dx;
+                r1.size.x -= dx;
+            }
+        }
+        else if (top.x == 0 && end.x == 0)
+        {
+            if (top.y > 0)
+            {
+                r1.size.y = std::min(r1.size.y, top.y);
+            }
+            else
+            {
+                auto dy = std::max(0, r1.size.y - end.y);
+                r1.coor.y += dy;
+                r1.size.y -= dy;
+            }
+        }
+        return r1;
     }
 
     // geometry: Scroll info.

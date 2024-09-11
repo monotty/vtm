@@ -1,4 +1,4 @@
-// Copyright (c) NetXS Group.
+// Copyright (c) Dmitry Sapozhnikov
 // Licensed under the MIT license.
 
 #pragma once
@@ -7,6 +7,14 @@
 namespace netxs::scripting
 {
     using namespace ui;
+
+    struct events
+    {
+        EVENTPACK( events, netxs::events::userland::root::scripting )
+        {
+            EVENT_XS( invoke, eccc ), // Invoke script.
+        };
+    };
 
     namespace path
     {
@@ -45,7 +53,7 @@ namespace netxs::scripting
             : public s11n
         {
             ui::host& owner; // xlat: Boss object reference.
-            subs  token; // xlat: Subscription tokens.
+            subs      token; // xlat: Subscription tokens.
 
         public:
             void disable()
@@ -54,19 +62,19 @@ namespace netxs::scripting
                 token.clear();
             }
 
-            void handle(s11n::xs::fullscreen          lock)
+            void handle(s11n::xs::fullscrn          /*lock*/)
             {
                 //...
             }
-            void handle(s11n::xs::focus_cut           lock)
+            void handle(s11n::xs::focus_cut         /*lock*/)
             {
                 //...
             }
-            void handle(s11n::xs::focus_set           lock)
+            void handle(s11n::xs::focus_set         /*lock*/)
             {
                 //...
             }
-            void handle(s11n::xs::keybd_event         lock)
+            void handle(s11n::xs::keybd_event       /*lock*/)
             {
                 //...
             };
@@ -75,11 +83,11 @@ namespace netxs::scripting
                 : s11n{ *this },
                  owner{ owner }
             {
-                owner.LISTEN(tier::release, hids::events::device::mouse::any, gear, token)
+                this->owner.LISTEN(tier::release, hids::events::device::mouse::any, gear, token)
                 {
                     //...
                 };
-                owner.LISTEN(tier::general, hids::events::die, gear, token)
+                this->owner.LISTEN(tier::general, hids::events::die, gear, token)
                 {
                     //...
                 };
@@ -87,9 +95,7 @@ namespace netxs::scripting
         };
 
         xlat stream; // scripting::host: Event tracker.
-        text curdir; // scripting::host: Current working directory.
-        text cmdarg; // scripting::host: Startup command line arguments.
-        text envvar; // scripting::host: Environment block.
+        eccc appcfg; // scripting::host: Application startup config.
         flag active; // scripting::host: Scripting engine lifetime.
         vtty engine; // scripting::host: Scripting engine instance.
 
@@ -99,7 +105,7 @@ namespace netxs::scripting
             log<faux>(ansi::fgc(greenlt).add(data).nil());
         }
         // scripting::host: Cooked read input.
-        void data(rich& data)
+        void data(rich& /*data*/)
         {
             boss.bell::trysync(active, [&]
             {
@@ -108,11 +114,11 @@ namespace netxs::scripting
             });
         }
         // scripting::host: Shutdown callback handler.
-        void onexit(si32 code, view msg = {}, bool exit_after_sighup = faux)
+        void onexit(si32 /*code*/, view /*msg*/ = {}, bool /*exit_after_sighup*/ = faux)
         {
             //todo initiate global shutdown
 
-            //netxs::events::enqueue(owner.This(), [&, code](auto& boss) mutable
+            //owner.bell::enqueue(owner.This(), [&, code](auto& boss) mutable
             //{
             //    if (code) log(ansi::bgc(reddk).fgc(whitelt).add('\n', prompt::repl, "Exit code ", utf::to_hex_0x(code), ' ').nil());
             //    else      log(prompt::repl, "Exit code 0");
@@ -140,16 +146,14 @@ namespace netxs::scripting
             engine->write(data + '\n');
         }
         // scripting::host: Start a new process.
-        void runapp(text cmd, text cwd, text env, twod win)
+        void runapp(eccc cfg)
         {
             if (!engine) return;
-            cmdarg = cmd;
-            curdir = cwd;
-            envvar = env;
+            appcfg = cfg;
             if (!engine->connected())
             {
-                engine->runapp(cmd, cwd, env, win, [&](auto utf8_shadow) { ondata(utf8_shadow); },
-                                                   [&](auto code, auto msg) { onexit(code, msg); });
+                engine->runapp(appcfg, [&](auto utf8_shadow){ ondata(utf8_shadow); },
+                                       [&](auto code, auto msg){ onexit(code, msg); });
             }
         }
         void shut()
@@ -176,17 +180,30 @@ namespace netxs::scripting
                 auto run = config.take(attr::run, ""s);
                 auto tty = config.take(attr::tty, faux);
                 auto win = os::ttysize;
-                if (tty) engine = ptr::shared<os::runspace::tty<scripting::host>>(*this);
-                else     engine = ptr::shared<os::runspace::raw<scripting::host>>(*this);
-                runapp(cmd, cwd, env, win);
+                auto cfg = eccc{ .env = env,
+                                 .cwd = cwd,
+                                 .cmd = cmd,
+                                 .win = win };
+                if (tty)
+                {
+                    engine = ptr::shared<os::runspace::tty<scripting::host>>(*this);
+                }
+                else
+                {
+                    engine = ptr::shared<os::runspace::raw<scripting::host>>(*this);
+                }
+                runapp(cfg);
                 //todo run integration script
                 if (run.size()) write(run);
                 config.popd();
             }
-            owner.LISTEN(tier::release, e2::conio::readline, utf8, skill::memo)
+            owner.LISTEN(tier::release, scripting::events::invoke, script, skill::memo)
             {
-                if (engine) write(utf8);
-                else        log(prompt::repl, utf::debase<faux, faux>(utf8));
+                if (engine)
+                {
+                    write(script.cmd);
+                    owner.bell::template expire<tier::release>();
+                }
             };
         }
     };

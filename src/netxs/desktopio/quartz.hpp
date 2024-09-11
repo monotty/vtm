@@ -1,4 +1,4 @@
-// Copyright (c) NetXS Group.
+// Copyright (c) Dmitry Sapozhnikov
 // Licensed under the MIT license.
 
 #pragma once
@@ -26,13 +26,13 @@ namespace netxs::datetime
     template<class T, class degree = std::chrono::milliseconds>
     T round(time t)
     {
-        return clamp<T>(std::chrono::duration_cast<degree>(t.time_since_epoch()).count());
+        return netxs::saturate_cast<T>(std::chrono::duration_cast<degree>(t.time_since_epoch()).count());
     }
     // quartz: Round a chrono time period in degree (def: milliseconds).
     template<class T, class degree = std::chrono::milliseconds>
     T round(span t)
     {
-        return clamp<T>(std::chrono::duration_cast<degree>(t).count());
+        return netxs::saturate_cast<T>(std::chrono::duration_cast<degree>(t).count());
     }
 
     // quartz: Return a total count degree unts (def: milliseconds) since epoch.
@@ -55,21 +55,20 @@ namespace netxs::datetime
         return std::tuple{ days, hours, minutes, seconds };
     }
 
-    template<class Reactor, class Context>
+    template<class Bell, auto Tier, auto Deed>
     class quartz
     {
         using cond = std::condition_variable;
         using work = std::thread;
 
-        Reactor& alarm;
-        Context  cause;
-        flag     alive;
-        flag     letup;
-        span     delay;
-        span     pulse;
-        work     fiber;
-        cond     synch;
-        span     watch;
+        Bell& owner;
+        flag  alive;
+        flag  letup;
+        span  delay;
+        span  watch;
+        span  pulse;
+        work  fiber;
+        cond  synch;
 
         void worker()
         {
@@ -85,7 +84,7 @@ namespace netxs::datetime
                 prior =  now;
 
                 now = datetime::now();
-                alarm.notify(cause, now);
+                owner.template signal<Tier>(Deed, now);
 
                 if (letup.exchange(faux))
                 {
@@ -101,9 +100,8 @@ namespace netxs::datetime
         }
 
     public:
-        quartz(Reactor& router, Context cause)
-            : alarm{ router       },
-              cause{ cause        },
+        quartz(Bell& owner)
+            : owner{ owner        },
               alive{ faux         },
               letup{ faux         },
               delay{ span::zero() },
@@ -184,8 +182,8 @@ namespace netxs::datetime
         span minint; // tail: The minimal period of time between the records stored.
 
         tail(span period = 75ms, span minint = 4ms) //todo unify the minint=1/fps
-            : size{ 1 },
-              iter{ 0 },
+            : iter{ 0 },
+              size{ 1 },
               period{ period },
               minint{ minint }
         {

@@ -1,4 +1,4 @@
-// Copyright (c) NetXS Group.
+// Copyright (c) Dmitry Sapozhnikov
 // Licensed under the MIT license.
 
 #include "ansivt.hpp"
@@ -10,6 +10,7 @@ namespace netxs::prompt
 {
     static constexpr auto  pads = "      "sv;
     static constexpr auto    os = "  os: "sv;
+    static constexpr auto   gui = " gui: "sv;
     static constexpr auto   ack = " ack: "sv;
     static constexpr auto   key = " key: "sv;
     static constexpr auto   tty = " tty: "sv;
@@ -21,6 +22,7 @@ namespace netxs::prompt
 
     #define prompt_list \
         X(apps) /* */ \
+        X(args) /* */ \
         X(base) /* */ \
         X(calc) /* */ \
         X(desk) /* */ \
@@ -73,8 +75,7 @@ namespace netxs::directvt
 
         static constexpr auto is_list = type{ 1 << (sizeof(type) * 8 - 1) };
 
-        //todo unify
-        struct frag : public view
+        struct blob : public view
         { };
 
         #pragma pack(push,1)
@@ -118,9 +119,78 @@ namespace netxs::directvt
         };
         #pragma pack(pop)
 
+        template<class T>
+        void fuse_ext(auto& block, T&& data)
+        {
+            using D = std::remove_cv_t<std::remove_reference_t<T>>;
+            if constexpr (std::is_same_v<D, char>
+                       || std::is_same_v<D, byte>
+                       || std::is_same_v<D, type>)
+            {
+                block.text::push_back((char)data);
+            }
+            else if constexpr (std::is_arithmetic_v<D>
+                            || std::is_same_v<D, twod>
+                            || std::is_same_v<D, fp2d>
+                            || std::is_same_v<D, dent>
+                            || std::is_same_v<D, rect>)
+            {
+                auto le_data = netxs::letoh(data);
+                block += view{ (char*)&le_data, sizeof(le_data) };
+            }
+            else if constexpr (std::is_same_v<D, argb>)
+            {
+                block += view{ (char*)&data, sizeof(data) };
+            }
+            else if constexpr (std::is_same_v<D, view>
+                            || std::is_same_v<D, qiew>
+                            || std::is_same_v<D, text>)
+            {
+                auto length = (sz_t)data.length();
+                auto le_len = netxs::letoh(length);
+                block += view{ (char*)&le_len, sizeof(le_len) };
+                block += data;
+            }
+            else if constexpr (std::is_same_v<D, time>)
+            {
+                auto n = data.time_since_epoch().count();
+                auto le_n = netxs::letoh(n);
+                block += view{ (char*)&le_n, sizeof(le_n) };
+            }
+            else if constexpr (std::is_same_v<D, std::unordered_map<text, text>>
+                            || std::is_same_v<D, std::map<text, text>>
+                            || std::is_same_v<D, generics::imap<text, text>>)
+            {
+                //todo implement
+            }
+            else if constexpr (std::is_same_v<D, noop>)
+            {
+                // Noop.
+            }
+            else if constexpr (requires{ std::begin(std::declval<D>()); })
+            {
+                auto length = (sz_t)data.size();
+                auto le_len = netxs::letoh(length);
+                block += view{ (char*)&le_len, sizeof(le_len) };
+                for (auto& item : data) fuse_ext(block, item);
+            }
+            else log(prompt::dtvt, "Unsupported data type");
+        }
+
+        struct packet : text
+        {
+            void fuse(auto&& data)            { fuse_ext(*this, std::forward<decltype(data)>(data)); }
+            auto& add(auto&& data)            { fuse(std::forward<decltype(data)>(data)); return *this; }
+            auto& add(auto*  data, auto size) { operator+=(view{ data, size }); return *this; }
+            auto& add(auto&& data, auto&&... data_list)
+            {
+                fuse(std::forward<decltype(data)>(data));
+                return add(std::forward<decltype(data_list)>(data_list)...);
+            }
+        };
+
         struct stream
         {
-            //todo revise
             type next{};
 
             constexpr explicit operator bool () const
@@ -136,57 +206,7 @@ namespace netxs::directvt
 
             // stream: .
             template<class T>
-            inline void fuse(T&& data)
-            {
-                using D = std::remove_cv_t<std::remove_reference_t<T>>;
-                if constexpr (std::is_same_v<D, char>
-                           || std::is_same_v<D, byte>
-                           || std::is_same_v<D, type>)
-                {
-                    block.text::push_back(static_cast<char>(data));
-                }
-                else if constexpr (std::is_integral_v<D>
-                                || std::is_same_v<D, twod>
-                                || std::is_same_v<D, dent>
-                                || std::is_same_v<D, rect>)
-                {
-                    auto le_data = netxs::letoh(data);
-                    auto v = view{ reinterpret_cast<char const*>(&le_data), sizeof(le_data) };
-                    block += v;
-                }
-                else if constexpr (std::is_same_v<D, rgba>)
-                {
-                    auto v = view{ reinterpret_cast<char const*>(&data), sizeof(data) };
-                    block += v;
-                }
-                else if constexpr (std::is_same_v<D, view>
-                                || std::is_same_v<D, qiew>
-                                || std::is_same_v<D, text>)
-                {
-                    auto length = static_cast<sz_t>(data.length());
-                    auto le_data = netxs::letoh(length);
-                    auto size = view{ reinterpret_cast<char const*>(&le_data), sizeof(le_data) };
-                    block += size;
-                    block += data;
-                }
-                else if constexpr (std::is_same_v<D, time>)
-                {
-                    auto n = data.time_since_epoch().count();
-                    auto v = view{ reinterpret_cast<char const*>(&n), sizeof(n) };
-                    block += v;
-                }
-                else if constexpr (std::is_same_v<D, std::unordered_map<text, text>>
-                                || std::is_same_v<D, std::map<text, text>>
-                                || std::is_same_v<D, generics::imap<text, text>>)
-                {
-                    //todo implement
-                }
-                else if constexpr (std::is_same_v<D, noop>)
-                {
-                    // Noop.
-                }
-                else log(prompt::dtvt, "Unsupported data type");
-            }
+            void fuse(T&& data) { fuse_ext(block, std::forward<T>(data)); }
             // stream: Replace bytes at specified position.
             template<class T>
             inline auto& add_at(sz_t at, T&& data)
@@ -223,9 +243,9 @@ namespace netxs::directvt
                     }
                     return crop;
                 }
-                else if constexpr (std::is_same_v<D, frag>)
+                else if constexpr (std::is_same_v<D, blob>)
                 {
-                    auto crop = frag{ data };
+                    auto crop = blob{ data };
                     if constexpr (!PeekOnly)
                     {
                         data.remove_prefix(data.size());
@@ -239,19 +259,41 @@ namespace netxs::directvt
                 else if constexpr (std::is_same_v<D, time>)
                 {
                     using span = decltype(time{}.time_since_epoch());
-                    using type = decltype(span{}.count());
-                    if (data.size() < sizeof(type))
+                    using data_type = decltype(span{}.count());
+                    if (data.size() < sizeof(data_type))
                     {
                         log(prompt::dtvt, "Corrupted datetime data");
                         if constexpr (!PeekOnly) data.remove_prefix(data.size());
                         return D{};
                     }
-                    auto temp = netxs::aligned<type>(data.data());
+                    auto temp = netxs::aligned<data_type>(data.data());
                     auto crop = time{ span{ temp }};
                     if constexpr (!PeekOnly)
                     {
-                        data.remove_prefix(sizeof(type));
+                        data.remove_prefix(sizeof(data_type));
                     }
+                    return crop;
+                }
+                else if constexpr (requires{ std::begin(std::declval<D>()); })
+                {
+                    using data_type = decltype(*std::begin(std::declval<D>()));
+                    auto crop = D{};
+                    if (data.size() < sizeof(sz_t))
+                    {
+                        log(prompt::dtvt, "Corrupted frame header");
+                        if constexpr (!PeekOnly) data.remove_prefix(data.size());
+                        return crop;
+                    }
+                    auto count = netxs::aligned<sz_t>(data.data());
+                    if (data.size() < sizeof(count) + count) // At least 1 byte per element required.
+                    {
+                        log(prompt::dtvt, "Corrupted frame data");
+                        if constexpr (!PeekOnly) data.remove_prefix(data.size());
+                        return crop;
+                    }
+                    auto bits = data.substr(sizeof(sz_t));
+                    while (count--) crop.push_back(_take_item<data_type>(bits));
+                    if constexpr (!PeekOnly) data = bits;
                     return crop;
                 }
                 else
@@ -378,6 +420,12 @@ namespace netxs::directvt
                 }
             }
             // stream: .
+            template<class T, class P>
+            static void reading_loop(netxs::sptr<T> link_ptr, P&& proc)
+            {
+                reading_loop(*link_ptr, proc);
+            }
+            // stream: .
             auto length() const
             {
                 return static_cast<sz_t>(block.length());
@@ -438,7 +486,7 @@ namespace netxs::directvt
             template<class T, class P>
             static auto read_block(T& object, P input)
             {
-                auto buff = text(sizeof(sz_t), 0);
+                auto buff = text(sizeof(sz_t), '\0');
                 auto shot = input(buff.data(), buff.size());
                 if (shot.size() != buff.size())
                 {
@@ -491,21 +539,24 @@ namespace netxs::directvt
                 block += other.block;
                 other.reset();
             }
+
+            stream(stream const&) = default;
             stream(type kind)
                 : basis{ sizeof(basis) + sizeof(kind) },
-                  start{ basis },
-                  valid{ true  }
+                  start{ basis                        },
+                  valid{ true                         }
             {
                 add(basis, kind);
             }
+            stream& operator = (stream const&) = default;
         };
 
         template<class Base>
         class wrapper
         {
             friend struct access;
-            using utex = std::mutex;
-            using cond = std::condition_variable;
+            using utex = std::recursive_mutex;
+            using cond = std::condition_variable_any;
             using Lock = std::unique_lock<utex>;
 
             utex mutex; // wrapper: Accesss mutex.
@@ -719,7 +770,7 @@ namespace netxs::directvt
                     stream::reset();                                                        \
                     stream::add(SEQ_NAME_macro(WRAP_macro(struct_members)) noop{});         \
                 }                                                                           \
-                void set(SEQ_SIGN_macro(WRAP_macro(struct_members)) int _tmp = {})          \
+                void set(SEQ_SIGN_macro(WRAP_macro(struct_members)) int /*_tmp*/ = {})      \
                 {                                                                           \
                     SEQ_INIT_macro(WRAP_macro(struct_members))                              \
                     set();                                                                  \
@@ -737,9 +788,23 @@ namespace netxs::directvt
                       stream::take<SEQ_TYPE_macro(WRAP_macro(struct_members)) noop>(_data); \
                 }                                                                           \
                 template<class P>                                                           \
-                auto load(P recv)                                                           \
+                auto load(P _recv)                                                          \
                 {                                                                           \
-                    stream::valid = stream::read_block(*this, recv);                        \
+                    stream::valid = stream::read_block(*this, _recv);                       \
+                    return stream::valid;                                                   \
+                }                                                                           \
+                auto load(qiew _data)                                                       \
+                {                                                                           \
+                    stream::valid = stream::read_block(*this, [&](auto dst, auto len)       \
+                    {                                                                       \
+                        if (_data.size() >= len)                                            \
+                        {                                                                   \
+                            std::copy(_data.begin(), _data.begin() + len, dst);             \
+                            _data.remove_prefix(len);                                       \
+                            return qiew{ dst, len };                                        \
+                        }                                                                   \
+                        else return qiew{};                                                 \
+                    });                                                                     \
                     return stream::valid;                                                   \
                 }                                                                           \
                 void wipe()                                                                 \
@@ -767,36 +832,35 @@ namespace netxs::directvt
                     : stream{ kind }                                              \
                 { }                                                               \
                 void set() {}                                                     \
-                void get(view& data) {}                                           \
+                void get(view& /*_data*/) {}                                      \
                                                                                   \
                 friend std::ostream& operator << (std::ostream& s,                \
-                                             CAT_macro(struct_name, _t) const& o) \
+                                         CAT_macro(struct_name, _t) const& /*o*/) \
                 {                                                                 \
                     return s << #struct_name " { }";                              \
                 }                                                                 \
             };                                                                    \
             using struct_name = wrapper<CAT_macro(struct_name, _t)>;
 
-        //todo unify
-        static auto& operator << (std::ostream& s, wchr const& o) { return s << utf::to_hex_0x(o); }
-        static auto& operator << (std::ostream& s, time const& o) { return s << utf::to_hex_0x(o.time_since_epoch().count()); }
+        auto& operator << (std::ostream& s, wchr const& o) { return s << utf::to_hex_0x(o); }
+        auto& operator << (std::ostream& s, time const& o) { return s << utf::to_hex_0x(o.time_since_epoch().count()); }
+        auto& operator << (std::ostream& s, regs const& rs) { s << '{'; for (auto r : rs) s << r; return s << '}'; }
 
-        STRUCT_macro(frame_element,     (frag, data))
+        STRUCT_macro(frame_element,     (blob, data))
         STRUCT_macro(jgc_element,       (ui64, token) (text, cluster))
         STRUCT_macro(tooltip_element,   (id_t, gear_id) (text, tip_text) (bool, update))
-        STRUCT_macro(mouse_event,       (id_t, gear_id) (ui32, ctlstat) (hint, cause) (twod, coord) (twod, delta) (ui32, buttons))
-        STRUCT_macro(keybd_event,       (id_t, gear_id) (ui32, ctlstat) (bool, extflag) (ui32, virtcod) (ui32, scancod) (bool, pressed) (text, cluster) (bool, handled))
-        //STRUCT_macro(focus,             (id_t, gear_id) (bool, state) (bool, focus_combine) (bool, focus_force_group))
+        STRUCT_macro(mouse_event,       (id_t, gear_id) (si32, ctlstat) (hint, cause) (fp2d, coord) (fp2d, delta) (si32, buttons) (fp32, whlfp) (si32, whlsi) (bool, hzwhl))
+        STRUCT_macro(keybd_event,       (id_t, gear_id) (si32, ctlstat) (bool, extflag) (byte, payload) (si32, virtcod) (si32, scancod) (bool, pressed) (text, cluster) (bool, handled))
         STRUCT_macro(focus_cut,         (id_t, gear_id))
         STRUCT_macro(focus_set,         (id_t, gear_id) (si32, solo))
-        STRUCT_macro(fullscreen,        (id_t, gear_id))
+        STRUCT_macro(fullscrn,          (id_t, gear_id))
         STRUCT_macro(maximize,          (id_t, gear_id))
         STRUCT_macro(header,            (id_t, window_id) (text, utf8))
         STRUCT_macro(footer,            (id_t, window_id) (text, utf8))
         STRUCT_macro(header_request,    (id_t, window_id))
         STRUCT_macro(footer_request,    (id_t, window_id))
         STRUCT_macro(warping,           (id_t, window_id) (dent, warpdata))
-        STRUCT_macro(vt_command,        (text, command))
+        STRUCT_macro(command,           (text, utf8))
         STRUCT_macro(logs,              (ui32, id) (time, guid) (text, data))
         STRUCT_macro(fatal,             (text, err_msg))
         STRUCT_macro(minimize,          (id_t, gear_id))
@@ -808,35 +872,36 @@ namespace netxs::directvt
         STRUCT_macro(sysboard,          (id_t, gear_id) (twod, size) (text, utf8) (si32, form))
         STRUCT_macro_lite(sysstart)
         STRUCT_macro(sysclose,          (bool, fast))
-        STRUCT_macro(syspaste,          (id_t, gear_id) (text, txtdata))
         STRUCT_macro(sysfocus,          (id_t, gear_id) (bool, state) (bool, focus_combine) (bool, focus_force_group))
         STRUCT_macro(syswinsz,          (id_t, gear_id) (twod, winsize))
         STRUCT_macro(syskeybd,          (id_t, gear_id)  // syskeybd: Devide id.
-                                        (ui32, ctlstat)  // syskeybd: Keybd modifiers.
+                                        (si32, ctlstat)  // syskeybd: Keybd modifiers.
                                         (bool, extflag) //todo deprecated
-                                        (ui32, virtcod) //todo deprecated
-                                        (ui32, scancod)  // syskeybd: Scancode.
+                                        (byte, payload)  // syskeybd: Payload type.
+                                        (si32, virtcod) //todo deprecated
+                                        (si32, scancod)  // syskeybd: Scancode.
                                         (bool, pressed)  // syskeybd: Key is pressed.
                                         (text, cluster)  // syskeybd: Generated string.
                                         (bool, handled)  // syskeybd: Key event is handled.
                                         (si32, keycode)) // syskeybd: Key id.
         STRUCT_macro(sysmouse,          (id_t, gear_id)  // sysmouse: Devide id.
-                                        (ui32, ctlstat)  // sysmouse: Keybd modifiers.
-                                        (ui32, enabled)  // sysmouse: Mouse device health status.
-                                        (ui32, buttons)  // sysmouse: Buttons bit state.
-                                        (bool, wheeled)  // sysmouse: Vertical scroll wheel.
-                                        (bool, hzwheel)  // sysmouse: Horizontal scroll wheel.
-                                        (si32, wheeldt)  // sysmouse: Scroll delta.
-                                        (twod, coordxy)  // sysmouse: Cursor coordinates.
+                                        (si32, ctlstat)  // sysmouse: Keybd modifiers.
+                                        (si32, enabled)  // sysmouse: Mouse device health status.
+                                        (si32, buttons)  // sysmouse: Buttons bit state.
+                                        (bool, hzwheel)  // sysmouse: If true: Horizontal scroll wheel. If faux: Vertical scroll wheel.
+                                        (fp32, wheelfp)  // sysmouse: Scroll delta in floating units.
+                                        (si32, wheelsi)  // sysmouse: Scroll delta in integer units.
+                                        (fp2d, coordxy)  // sysmouse: Pixel-wise cursor coordinates.
                                         (time, timecod)  // sysmouse: Event time code.
                                         (ui32, changed)) // sysmouse: Update stamp.
         STRUCT_macro(mousebar,          (bool, mode)) // CCC_SMS/* 26:1p */
         STRUCT_macro(unknown_gc,        (ui64, token))
         STRUCT_macro(fps,               (si32, frame_rate))
-        STRUCT_macro(bgc,               (rgba, color))
-        STRUCT_macro(fgc,               (rgba, color))
-        STRUCT_macro(slimmenu,          (bool, menusize))
-        STRUCT_macro(init,              (text, user) (si32, mode) (twod, winsz) (text, config))
+        STRUCT_macro(init,              (text, user) (si32, mode) (text, env) (text, cwd) (text, cmd) (text, cfg) (twod, win))
+        STRUCT_macro(cwd,               (text, path))
+        STRUCT_macro(restored,          (id_t, gear_id))
+        STRUCT_macro(req_input_fields,  (id_t, gear_id) (si32, acpStart) (si32, acpEnd))
+        STRUCT_macro(ack_input_fields,  (id_t, gear_id) (regs, field_list))
 
         #undef STRUCT_macro
         #undef STRUCT_macro_lite
@@ -854,15 +919,6 @@ namespace netxs::directvt
 
             cell                           state; // bitmap: .
             core                           image; // bitmap: .
-            std::unordered_map<ui64, text> newgc; // bitmap: Unknown grapheme cluster list.
-
-            struct subtype
-            {
-                static constexpr auto nop = byte{ 0x00 }; // Apply current brush. nop = dif - refer.
-                static constexpr auto dif = byte{ 0x20 }; // Cell dif.
-                static constexpr auto mov = byte{ 0xFE }; // Set insertion point. sz_t: offset.
-                static constexpr auto rep = byte{ 0xFF }; // Repeat current brush ui32 times. sz_t: N.
-            };
 
             enum : byte
             {
@@ -870,7 +926,17 @@ namespace netxs::directvt
                 bgclr = 1 << 1,
                 fgclr = 1 << 2,
                 style = 1 << 3,
-                glyph = 1 << 4,
+                rastr = 1 << 4,
+                glyph = 1 << 5,
+                dmax  = 1 << 6,
+            };
+
+            struct subtype
+            {
+                static constexpr auto nop = byte{ 0x00 }; // Apply current brush. nop = dif - refer.
+                static constexpr auto dif = byte{ dmax }; // Cell dif.
+                static constexpr auto mov = byte{ 0xFE }; // Set insertion point. sz_t: offset.
+                static constexpr auto rep = byte{ 0xFF }; // Repeat current brush ui32 times. sz_t: N.
             };
 
             void set(id_t winid, twod coord, core& cache, flag& abort, sz_t& delta)
@@ -878,13 +944,18 @@ namespace netxs::directvt
                 //todo multiple windows
                 stream::reinit(winid, rect{ coord, cache.size() });
                 auto pen = state;
-                auto src = cache.iter();
-                auto end = cache.iend();
+                auto src = cache.begin();
+                auto end = cache.end();
                 auto csz = cache.size();
                 auto fsz = image.size();
-                auto dst = image.iter();
+                auto dst = image.begin();
                 auto dtx = fsz.x - csz.x;
                 auto min = std::min(csz, fsz);
+                if (src == end)
+                {
+                    delta = {};
+                    return;
+                }
                 auto beg = src + 1;
                 auto mid = src + csz.x * min.y;
                 bool bad = true;
@@ -910,10 +981,10 @@ namespace netxs::directvt
                     if (c1.bgc() != c2.bgc()) { meaning += sizeof(c1.bgc()); changes |= bgclr; }
                     if (c1.fgc() != c2.fgc()) { meaning += sizeof(c1.fgc()); changes |= fgclr; }
                     if (c1.stl() != c2.stl()) { meaning += sizeof(c1.stl()); changes |= style; }
+                    if (c1.img() != c2.img()) { meaning += sizeof(c1.img()); changes |= rastr; }
                     if (c1.egc() != c2.egc())
                     {
-                        cluster = c1.egc().state.jumbo ? 8
-                                                       : c1.egc().state.count + 1;
+                        cluster = (byte)c1.len();
                         meaning += cluster + 1;
                         changes |= glyph;
                     }
@@ -925,6 +996,7 @@ namespace netxs::directvt
                     if (changes & bgclr) add(cache.bgc());
                     if (changes & fgclr) add(cache.fgc());
                     if (changes & style) add(cache.stl());
+                    if (changes & rastr) add(cache.img());
                     if (changes & glyph) add(cluster, cache.egc().glyph, cluster);
                     state = cache;
                 };
@@ -953,13 +1025,13 @@ namespace netxs::directvt
                 };
                 while (src != mid && !abort)
                 {
-                    auto end = src + min.x;
-                    while (src != end) map(*src++, *dst++);
+                    auto stop = src + min.x;
+                    while (src != stop) map(*src++, *dst++);
                     if (dtx >= 0) dst += dtx;
                     else
                     {
-                        end += -dtx;
-                        while (src != end) map(*src++, pen);
+                        stop += -dtx;
+                        while (src != stop) map(*src++, pen);
                     }
                 }
                 if (csz.y > fsz.y)
@@ -980,18 +1052,19 @@ namespace netxs::directvt
                 }
                 delta = sum;
             }
-            template<class P = noop>
-            void get(view& data, P update = {})
+            template<class P = noop, class S = noop>
+            void get(view& data, P update = {}, S resize = {})
             {
                 auto [myid, area] = stream::take<id_t, rect>(data);
                 //todo head.myid
                 if (image.size() != area.size)
                 {
                     image.crop(area.size);
+                    resize(area.size);
                 }
                 auto mark = image.mark();
-                auto head = image.iter();
-                auto tail = image.iend();
+                auto head = image.begin();
+                auto tail = image.end();
                 auto iter = head;
                 auto step = head;
                 auto take = [&](auto what, cell& c)
@@ -999,11 +1072,14 @@ namespace netxs::directvt
                     if (what & bgclr) stream::take(c.bgc(), data);
                     if (what & fgclr) stream::take(c.fgc(), data);
                     if (what & style) stream::take(c.stl(), data);
+                    if (what & rastr) stream::take(c.img(), data);
                     if (what & glyph)
                     {
+                        auto& gc = c.egc();
+                        gc.token = 0;
                         auto [size] = stream::take<byte>(data);
-                        stream::take(c.egc().glyph, size, data);
-                        if (c.jgc() == faux) newgc[c.tkn()];
+                        stream::take(gc.glyph, size, data);
+                        c.jgc(); // Check unknown jumbo clusters.
                     }
                     return c;
                 };
@@ -1050,12 +1126,12 @@ namespace netxs::directvt
                             log(prompt::dtvt, "bitmap: ", "Corrupted data, subtype: ", what);
                             break;
                         }
-                        iter = dest;
                         if constexpr (!std::is_same_v<P, noop>)
                         {
-                            update(area.size, head, step, iter);
-                            step = iter;
+                            if (step != iter) update(head, step, iter);
+                            step = dest;
                         }
+                        iter = dest;
                     }
                     else // Unknown subtype.
                     {
@@ -1066,7 +1142,7 @@ namespace netxs::directvt
                 image.mark(mark);
                 if constexpr (!std::is_same_v<P, noop>)
                 {
-                    update(area.size, head, step, iter);
+                    update(head, step, iter);
                 }
                 //log(prompt::dtvt, "frame len: ", frame_len);
                 //log(prompt::dtvt, "nop count: ", nop_count);
@@ -1088,7 +1164,7 @@ namespace netxs::directvt
                 : stream{ Kind }
             { }
 
-            void set(id_t winid, twod winxy, core& cache, flag& abort, sz_t& delta)
+            void set(id_t /*winid*/, twod /*winxy*/, core& cache, flag& abort, sz_t& delta)
             {
                 auto coord = dot_00;
                 auto saved = state;
@@ -1100,13 +1176,19 @@ namespace netxs::directvt
                 };
                 auto put = [&](cell const& cache)
                 {
-                    //todo
-                    cache.scan<Mode>(state, block);
+                    if (cache.cur())
+                    {
+                        auto c = cache;
+                        c.draw_cursor();
+                        c.scan<Mode>(state, block);
+                    }
+                    else cache.scan<Mode>(state, block);
                 };
                 auto dif = [&](cell const& cache, cell const& front)
                 {
-                    //todo
-                    return !cache.scan<Mode>(front, state, block);
+                    auto same = cache.check_pair(front);
+                    if (same) put(cache);
+                    return !same;
                 };
                 auto left_half = [&](cell const& cache)
                 {
@@ -1120,18 +1202,18 @@ namespace netxs::directvt
                     temp.txt(cache.get_c0_right());
                     put(temp);
                 };
-                auto tie = [&](cell const& fore, cell const& next)
+                auto tie = [&](cell const& left, cell const& right)
                 {
-                    if (dif(fore, next))
+                    if (dif(left, right))
                     {
-                         left_half(fore);
-                        right_half(next);
+                        left_half(left);
+                        right_half(right);
                     }
                 };
                 if (image.hash() != cache.hash())
                 {
                     block.basevt::scroll_wipe();
-                    auto src = cache.iter();
+                    auto src = cache.begin();
                     while (coord.y < field.y)
                     {
                         if (abort)
@@ -1145,19 +1227,21 @@ namespace netxs::directvt
                         while (src != end)
                         {
                             auto& c = *src++;
-                            if (c.wdt() < 2) put(c);
+                            auto [w, h, x, y] = c.whxy();
+                            if (w < 2 && x < 2) put(c);
                             else
                             {
-                                if (c.wdt() == 2)
+                                if (w == 2 && x == 1)
                                 {
                                     if (src != end)
                                     {
-                                        auto& next = *src;
-                                        if (next.wdt() < 3) left_half(c);
+                                        auto& right = *src;
+                                        auto [rw, rh, rx, ry] = right.whxy();
+                                        if (rx == 1) left_half(c);
                                         else
                                         {
-                                            if (dif(c, next)) left_half(c);
-                                            else              ++src;
+                                            if (dif(c, right)) left_half(c);
+                                            else               ++src;
                                         }
                                     }
                                     else left_half(c);
@@ -1172,8 +1256,8 @@ namespace netxs::directvt
                 }
                 else
                 {
-                    auto src = cache.iter();
-                    auto dst = image.iter();
+                    auto src = cache.begin();
+                    auto dst = image.begin();
                     while (coord.y < field.y)
                     {
                         if (abort)
@@ -1188,7 +1272,7 @@ namespace netxs::directvt
                         {
                             auto& fore = *src++;
                             auto& back = *dst++;
-                            auto w = fore.wdt();
+                            auto [w, h, x, y] = fore.whxy();
                             if (w < 2)
                             {
                                 if (back != fore)
@@ -1197,20 +1281,21 @@ namespace netxs::directvt
                                     put(fore);
                                     while (src != end)
                                     {
-                                        auto& fore = *src++;
-                                        auto& back = *dst++;
-                                        auto w = fore.wdt();
-                                        if (w < 2)
+                                        auto& f = *src++;
+                                        auto& b = *dst++;
+                                        //auto fw = f.wdt();
+                                        auto [fw, fh, fx, fy] = f.whxy();
+                                        if (fw < 2)
                                         {
-                                            if (back == fore) break;
-                                            else              put(fore);
+                                            if (b == f) break;
+                                            else        put(f);
                                         }
-                                        else if (w == 2) // Check left part.
+                                        else if (fw == 2 && fx == 1) // Check left part.
                                         {
                                             if (src != end)
                                             {
-                                                auto& next = *src;
-                                                if (back == fore && next == *dst)
+                                                auto& right = *src;
+                                                if (b == f && right == *dst)
                                                 {
                                                     ++src;
                                                     ++dst;
@@ -1218,18 +1303,19 @@ namespace netxs::directvt
                                                 }
                                                 else
                                                 {
-                                                    if (next.wdt() < 3) left_half(fore);
-                                                    else // next.wdt() == 3
+                                                    auto [rw, rh, rx, ry] = right.whxy();
+                                                    if (rx == 1) left_half(f);
+                                                    else // right.wdt() == 3
                                                     {
-                                                        tie(fore, next);
+                                                        tie(f, right);
                                                         ++src;
                                                         ++dst;
                                                     }
                                                 }
                                             }
-                                            else left_half(fore);
+                                            else left_half(f);
                                         }
-                                        else right_half(fore); // w == 3
+                                        else right_half(f); // fw == 3
                                     }
                                 }
                             }
@@ -1242,11 +1328,12 @@ namespace netxs::directvt
                                         mov(src - beg);
                                         if (src != end)
                                         {
-                                            auto& next = *src;
-                                            if (next.wdt() < 3) left_half(fore);
-                                            else // next.wdt() == 3
+                                            auto& right = *src;
+                                            auto [rw, rh, rx, ry] = right.whxy();
+                                            if (rx == 1) left_half(fore);
+                                            else // right.wdt() == 3
                                             {
-                                                tie(fore, next);
+                                                tie(fore, right);
                                                 ++src;
                                                 ++dst;
                                             }
@@ -1257,14 +1344,15 @@ namespace netxs::directvt
                                     {
                                         if (src != end)
                                         {
-                                            auto& next = *src;
-                                            if (next.wdt() < 3) mov(src - beg), left_half(fore);
-                                            else // next.wdt() == 3
+                                            auto& right = *src;
+                                            auto [rw, rh, rx, ry] = right.whxy();
+                                            if (rx == 1) mov(src - beg), left_half(fore);
+                                            else // right.wdt() == 3
                                             {
-                                                if (next != *dst)
+                                                if (right != *dst)
                                                 {
                                                     mov(src - beg);
-                                                    tie(fore, next);
+                                                    tie(fore, right);
                                                 }
                                                 ++src;
                                                 ++dst;
@@ -1282,7 +1370,7 @@ namespace netxs::directvt
                     delta = commit(true);
                 }
             }
-            void get(view& data) {}
+            void get(view& /*data*/) { }
         };
         struct bitmap_vtrgb_t : bitmap_a<svga::vtrgb, __COUNTER__ - _counter_base> { };
         struct bitmap_vt256_t : bitmap_a<svga::vt256, __COUNTER__ - _counter_base> { };
@@ -1314,7 +1402,7 @@ namespace netxs::directvt
             X(jgc_list         ) /* List of jumbo GC.                             */\
             X(focus_cut        ) /* Request to focus cut.                         */\
             X(focus_set        ) /* Request to focus set.                         */\
-            X(fullscreen       ) /* Request to fullscreen.                        */\
+            X(fullscrn         ) /* Notify/Request to fullscreen.                 */\
             X(maximize         ) /* Request to maximize window.                   */\
             X(header           ) /* Set window title.                             */\
             X(footer           ) /* Set window footer.                            */\
@@ -1323,7 +1411,7 @@ namespace netxs::directvt
             X(warping          ) /* Warp resize.                                  */\
             X(minimize         ) /* Minimize window.                              */\
             X(expose           ) /* Bring window to the front.                    */\
-            X(vt_command       ) /* Parse following vt-sequences in UTF-8 format. */\
+            X(command          ) /* Interactive command/result in UTF-8 format.   */\
             X(frames           ) /* Received frames.                              */\
             X(tooltip_element  ) /* Tooltip text.                                 */\
             X(jgc_element      ) /* jumbo GC: gc.token + gc.view.                 */\
@@ -1335,7 +1423,6 @@ namespace netxs::directvt
             X(sysstart         ) /* System start event.                           */\
             X(sysclose         ) /* System close event.                           */\
             X(syswinsz         ) /* Console window resize.                        */\
-            X(syspaste         ) /* Clipboard paste.                              */\
             X(sysboard         ) /* Clipboard preview.                            */\
             X(clipdata         ) /* Clipboard raw data.                           */\
             X(clipdata_request ) /* Request clipboard data.                       */\
@@ -1344,12 +1431,13 @@ namespace netxs::directvt
             X(request_gc       ) /* Unknown gc token list.                        */\
             X(unknown_gc       ) /* Unknown gc token.                             */\
             X(fps              ) /* Set frame rate.                               */\
-            X(bgc              ) /* Set background color.                         */\
-            X(fgc              ) /* Set foreground color.                         */\
-            X(slimmenu         ) /* Set window menu size.                         */\
-            X(init             ) /* Startup data.                                 */
-            //X(quit             ) /* Close and disconnect dtvt app.                */\
-            //X(focus            ) /* Request to set focus.                         */\
+            X(init             ) /* Startup data.                                 */\
+            X(cwd              ) /* CWD Notification.                             */\
+            X(restored         ) /* Notify normal window state.                   */\
+            X(req_input_fields ) /* Request input field list.                     */\
+            X(ack_input_fields ) /* Reply input field list.                       */
+            //X(quit             ) /* Close and disconnect dtvt app.                */
+            //X(focus            ) /* Request to set focus.                         */
 
             struct xs
             {
@@ -1363,6 +1451,8 @@ namespace netxs::directvt
             #undef X
 
             std::unordered_map<type, std::function<void(view&)>> exec; // s11n: .
+            escx s11n_output; // s11n: Logs buffer.
+            escx s11n_logpad; // s11n: Logs left margin.
 
             // s11n: Deserialize objects.
             void sync(view& data)
@@ -1378,6 +1468,73 @@ namespace netxs::directvt
                     else log(prompt::s11n, "Unsupported frame type: ", (int)frame.next, "\n", utf::debase(frame.data));
                 }
             }
+            // s11n: Request jumbo clusters (after received bitmap synchronization).
+            void request_jgc(auto& master)
+            {
+                auto jumbos = cell::glyf::jumbos();
+                if (jumbos.unk.size())
+                {
+                    auto list = s11n::request_gc.freeze();
+                    for (auto& token : jumbos.unk)
+                    {
+                        list.thing.push(token);
+                    }
+                    jumbos.unk.clear();
+                    list.thing.sendby(master);
+                }
+            }
+            // s11n: Receive jumbo clusters.
+            void receive_jgc(s11n::xs::jgc_list& lock)
+            {
+                auto jumbos = cell::glyf::jumbos();
+                for (auto& jgc : lock.thing)
+                {
+                    jumbos.set(jgc.token, jgc.cluster);
+                    if constexpr (debugmode) log(prompt::s11n, "New gc token: ", utf::to_hex_0x(jgc.token), " cluster size ", jgc.cluster.size(), " data: ", jgc.cluster);
+                }
+            }
+            // s11n: Recycle logs.
+            void recycle_log(s11n::xs::logs& lock, auto process_guid)
+            {
+                if (lock.thing.guid != process_guid) // To avoid overflow on recursive dtvt connections.
+                {
+                    auto utf8 = view{ lock.thing.data };
+                    if (utf8.size() && utf8.back() == '\n') utf8.remove_suffix(1);
+                    if (lock.thing.id == 0) // Message from our process.
+                    {
+                        log(utf8);
+                    }
+                    else
+                    {
+                        s11n_logpad.add(prompt::pads, lock.thing.id, ": "); // Local host pid and remote host pid can be different. It is different if sshed.
+                        utf::split(utf8, '\n', [&](auto line)
+                        {
+                            s11n_output.add(s11n_logpad, line, '\n');
+                        });
+                        log<faux>(s11n_output);
+                        s11n_output.clear();
+                        s11n_logpad.clear();
+                    }
+                }
+            }
+            // s11n: Recycle clipboard request.
+            void recycle_cliprequest(auto& master, s11n::xs::clipdata_request& lock)
+            {
+                auto& item = lock.thing;
+                auto data = s11n::clipdata.freeze();
+                if (data.thing.hash != item.hash)
+                {
+                    data.thing.template sendby<faux, faux>(master); //todo gcc 11.4.0 requires template keyword
+                }
+                else // Send without payload if hash the same.
+                {
+                    auto temp = std::move(data.thing.utf8);
+                    data.thing.set();
+                    data.thing.template sendby<faux, faux>(master); //todo gcc 11.4.0 requires template keyword
+                    data.thing.utf8 = std::move(temp);
+                    data.thing.set();
+                }
+            }
             // s11n: Wake up waiting objects.
             void stop(bool alive = faux)
             {
@@ -1387,16 +1544,15 @@ namespace netxs::directvt
             }
 
             s11n() = default;
-            template<class T>
-            s11n(T& boss, id_t boss_id = {})
+            s11n(auto& boss, id_t boss_id = {})
             {
                 #define X(_object) \
-                    if constexpr (requires(view data) { boss.direct(_object.freeze(), data); }) \
-                        exec[binary::_object::kind] = [&](auto& data) { boss.direct(_object.freeze(), data); }; \
-                    else if constexpr (requires(view data) { boss.handle(_object.sync(data)); }) \
-                        exec[binary::_object::kind] = [&](auto& data) { boss.handle(_object.sync(data)); }; \
+                    if constexpr (requires(view data){ boss.direct(_object.freeze(), data); }) \
+                        exec[binary::_object::kind] = [&](auto& data){ boss.direct(_object.freeze(), data); }; \
+                    else if constexpr (requires(view data){ boss.handle(_object.sync(data)); }) \
+                        exec[binary::_object::kind] = [&](auto& data){ boss.handle(_object.sync(data)); }; \
                     else \
-                        exec[binary::_object::kind] = [&](auto& data) { _object.sync(data); }; // Notify on receiving.
+                        exec[binary::_object::kind] = [&](auto& data){ _object.sync(data); }; // Notify on receiving.
                 object_list
                 #undef X
                 auto lock = bitmap_dtvt.freeze();

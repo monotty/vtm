@@ -1,4 +1,4 @@
-// Copyright (c) NetXS Group.
+// Copyright (c) Dmitry Sapozhnikov
 // Licensed under the MIT license.
 
 #if defined(DEFINE_macro)
@@ -17,10 +17,11 @@
         #define WRAP_macro(args) EVAL_macro(CAT_macro(WRAP__odd args, _last))
 
         #define TAKE_NAME_macro(...) __VA_OPT__(this->__VA_ARGS__) // Ignore trailing spaces.
+        #define TAKE_TEMP_macro(...) __VA_OPT__(_ ## __VA_ARGS__) // gcc don't get _##name inline.
         #define MAKE_NAME_macro(type, name, ...) TAKE_NAME_macro(name)
-        #define MAKE_INIT_macro(type, name, ...) this->name = name;
+        #define MAKE_INIT_macro(type, name, ...) this->name = TAKE_TEMP_macro(name);
         #define MAKE_ATTR_macro(type, name, ...) type name{};
-        #define MAKE_SIGN_macro(type, name, ...) type name
+        #define MAKE_SIGN_macro(type, name, ...) type TAKE_TEMP_macro(name)
         #define MAKE_TYPE_macro(type, name, ...) type
         #define MAKE_TEMP_macro(type, name, ...) this->name = source. name;
         #define MAKE_LOGS_macro(type, name, ...) s << "\n\t " << #name << ": " << o.name;
@@ -71,17 +72,11 @@
         #define SEQ_TYPE_even_last
         #define SEQ_TYPE__odd_last
 
-    #if defined(_WIN32)
-        #define SEQ_SIGN_macro(args) EVAL_macro(CAT_macro(SEQ_SIGN__odd args, _last))
-        #define SEQ_NAME_macro(args) EVAL_macro(CAT_macro(SEQ_NAME__odd args, _last))
-        #define SEQ_TYPE_macro(args) EVAL_macro(CAT_macro(SEQ_TYPE__odd args, _last))
-    #else
         #define DEL_macro_(...)
         #define DEL_TAIL_macro DEL_macro_(
         #define SEQ_SIGN_macro(args) SEQ_SIGN__odd args ((,DEL_TAIL_macro ))) // Trailing comma workaround.
         #define SEQ_NAME_macro(args) SEQ_NAME__odd args ((,DEL_TAIL_macro ))) //
         #define SEQ_TYPE_macro(args) SEQ_TYPE__odd args (( DEL_TAIL_macro,))) //
-    #endif
 
 #endif
 #if defined(UNDEFINE_macro)

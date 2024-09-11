@@ -1,4 +1,4 @@
-// Copyright (c) NetXS Group.
+// Copyright (c) Dmitry Sapozhnikov
 // Licensed under the MIT license.
 
 #pragma once
@@ -8,6 +8,7 @@
 #include "xml.hpp"
 
 #include <typeindex>
+#include <future>
 
 namespace netxs::input
 {
@@ -18,47 +19,14 @@ namespace netxs::input
     using sysfocus = directvt::binary::sysfocus_t;
     using syswinsz = directvt::binary::syswinsz_t;
     using sysclose = directvt::binary::sysclose_t;
-    using syspaste = directvt::binary::syspaste_t;
     using sysboard = directvt::binary::sysboard_t;
     using clipdata = directvt::binary::clipdata_t;
+    using auth = netxs::events::auth;
 }
 namespace netxs::ui
 {
-    enum axis { X, Y };
-
-    enum class sort
-    {
-        forward,
-        reverse,
-    };
-
-    enum class snap
-    {
-        none,
-        head,
-        tail,
-        both,
-        center,
-    };
-
-    enum class slot { _1, _2, _I };
-
-    enum class axes
-    {
-        none   = 0,
-        X_only = 1 << 0,
-        Y_only = 1 << 1,
-        all    = X_only | Y_only,
-    };
-    constexpr auto operator & (axes l, axes r) { return static_cast<si32>(l) & static_cast<si32>(r); }
-
-    struct bind
-    {
-        snap x = snap::both;
-        snap y = snap::both;
-    };
-
     struct base;
+    struct input_fields_t;
 
     using namespace netxs::input;
     using sptr = netxs::sptr<base>;
@@ -130,13 +98,13 @@ namespace netxs::events::userland
             {
                 EVENT_XS( creator, ui::sptr ), // request: pointer to world object.
                 EVENT_XS( fps    , si32     ), // request to set new fps, arg: new fps (si32); the value == -1 is used to request current fps.
-                GROUP_XS( caret  , span     ), // any kind of intervals property.
+                GROUP_XS( cursor , span     ), // any kind of intervals property.
                 GROUP_XS( plugins, si32     ),
 
-                SUBSET_XS( caret )
+                SUBSET_XS( cursor )
                 {
-                    EVENT_XS( blink, span ), // caret blinking interval.
-                    EVENT_XS( style, si32 ), // caret style: 0 - underline, 1 - box.
+                    EVENT_XS( blink, span ), // cursor blinking interval.
+                    EVENT_XS( style, si32 ), // netxs::text_cursor.
                 };
                 SUBSET_XS( plugins )
                 {
@@ -158,14 +126,12 @@ namespace netxs::events::userland
                 EVENT_XS( keybd   , input::syskeybd ), // release: keybd activity.
                 EVENT_XS( focus   , input::sysfocus ), // release: focus activity.
                 EVENT_XS( board   , input::sysboard ), // release: Clipboard preview.
-                EVENT_XS( paste   , input::syspaste ), // release: clipboard activity.
                 EVENT_XS( error   , const si32      ), // release: return error code.
                 EVENT_XS( winsz   , const twod      ), // release: order to update terminal primary overlay.
                 EVENT_XS( preclose, const bool      ), // release: signal to quit after idle timeout, arg: bool - ready to shutdown.
                 EVENT_XS( quit    , const si32      ), // release: quit, arg: si32 - quit reason.
                 EVENT_XS( pointer , const bool      ), // release: mouse pointer visibility.
                 EVENT_XS( logs    , const text      ), // logs output.
-                EVENT_XS( readline, text            ), // Standard input (scripting).
                 //EVENT_XS( menu  , si32 ),
             };
             SUBSET_XS( data )
@@ -182,6 +148,12 @@ namespace netxs::events::userland
                 EVENT_XS( cout       , const text  ), // Append extra data to output.
                 EVENT_XS( custom     , si32        ), // Custom command, arg: cmd_id.
                 EVENT_XS( printscreen, input::hids ), // Copy screen area to clipboard.
+                GROUP_XS( request    , input::hids ), // general: Request input field list.
+
+                SUBSET_XS( request )
+                {
+                    EVENT_XS( inputfields, ui::input_fields_t ), // general: Request input field list.
+                };
             };
             SUBSET_XS( form )
             {
@@ -215,11 +187,11 @@ namespace netxs::events::userland
                     EVENT_XS( left     , bool ),
                     EVENT_XS( right    , bool ),
                     EVENT_XS( middle   , bool ),
-                    EVENT_XS( wheel    , bool ),
-                    EVENT_XS( win      , bool ),
+                    EVENT_XS( xbutton1 , bool ),
+                    EVENT_XS( xbutton2 , bool ),
                     EVENT_XS( leftright, bool ),
 
-                    INDEX_XS( left, right, middle, wheel, win, leftright ),
+                    INDEX_XS( left, right, middle, xbutton1, xbutton2, leftright ),
                 };
                 SUBSET_XS( layout )
                 {
@@ -366,44 +338,44 @@ namespace netxs::events::userland
                         EVENT_XS( left     , input::hids ),
                         EVENT_XS( right    , input::hids ),
                         EVENT_XS( middle   , input::hids ),
-                        EVENT_XS( wheel    , input::hids ),
-                        EVENT_XS( win      , input::hids ),
+                        EVENT_XS( xbutton1 , input::hids ),
+                        EVENT_XS( xbutton2 , input::hids ),
                         EVENT_XS( leftright, input::hids ),
 
-                        INDEX_XS( left, right, middle, wheel, win, leftright ),
+                        INDEX_XS( left, right, middle, xbutton1, xbutton2, leftright ),
                     };
                     SUBSET_XS( pull )
                     {
                         EVENT_XS( left     , input::hids ),
                         EVENT_XS( right    , input::hids ),
                         EVENT_XS( middle   , input::hids ),
-                        EVENT_XS( wheel    , input::hids ),
-                        EVENT_XS( win      , input::hids ),
+                        EVENT_XS( xbutton1 , input::hids ),
+                        EVENT_XS( xbutton2 , input::hids ),
                         EVENT_XS( leftright, input::hids ),
 
-                        INDEX_XS( left, right, middle, wheel, win, leftright ),
+                        INDEX_XS( left, right, middle, xbutton1, xbutton2, leftright ),
                     };
                     SUBSET_XS( cancel )
                     {
                         EVENT_XS( left     , input::hids ),
                         EVENT_XS( right    , input::hids ),
                         EVENT_XS( middle   , input::hids ),
-                        EVENT_XS( wheel    , input::hids ),
-                        EVENT_XS( win      , input::hids ),
+                        EVENT_XS( xbutton1 , input::hids ),
+                        EVENT_XS( xbutton2 , input::hids ),
                         EVENT_XS( leftright, input::hids ),
 
-                        INDEX_XS( left, right, middle, wheel, win, leftright ),
+                        INDEX_XS( left, right, middle, xbutton1, xbutton2, leftright ),
                     };
                     SUBSET_XS( stop )
                     {
                         EVENT_XS( left     , input::hids ),
                         EVENT_XS( right    , input::hids ),
                         EVENT_XS( middle   , input::hids ),
-                        EVENT_XS( wheel    , input::hids ),
-                        EVENT_XS( win      , input::hids ),
+                        EVENT_XS( xbutton1 , input::hids ),
+                        EVENT_XS( xbutton2 , input::hids ),
                         EVENT_XS( leftright, input::hids ),
 
-                        INDEX_XS( left, right, middle, wheel, win, leftright ),
+                        INDEX_XS( left, right, middle, xbutton1, xbutton2, leftright ),
                     };
                 };
                 SUBSET_XS( prop )
@@ -414,14 +386,16 @@ namespace netxs::events::userland
                     EVENT_XS( fullscreen, ui::sptr   ), // set fullscreen app.
                     EVENT_XS( viewport  , rect       ), // request: return form actual viewport.
                     EVENT_XS( lucidity  , si32       ), // set or request window transparency, si32: 0-255, -1 to request.
+                    EVENT_XS( cwd       , text       ), // riseup:preview->anycast: current working directory.
                     GROUP_XS( window    , twod       ), // set or request window properties.
                     GROUP_XS( ui        , text       ), // set or request textual properties.
-                    GROUP_XS( colors    , rgba       ), // set or request bg/fg colors.
+                    GROUP_XS( colors    , argb       ), // set or request bg/fg colors.
 
                     SUBSET_XS( window )
                     {
-                        EVENT_XS( size    , twod ), // set window size.
-                        EVENT_XS( fullsize, rect ), // request window size with titles and borders.
+                        EVENT_XS( size    , twod     ), // set window size.
+                        EVENT_XS( fullsize, rect     ), // request window size with titles and borders.
+                        EVENT_XS( instance, ui::sptr ), // request window instance.
                     };
                     SUBSET_XS( ui )
                     {
@@ -435,8 +409,8 @@ namespace netxs::events::userland
                     };
                     SUBSET_XS( colors )
                     {
-                        EVENT_XS( bg, rgba ), // set/get rgba color.
-                        EVENT_XS( fg, rgba ), // set/get rgba color.
+                        EVENT_XS( bg, argb ), // set/get argb color.
+                        EVENT_XS( fg, argb ), // set/get argb color.
                     };
                 };
                 SUBSET_XS( global )
@@ -502,7 +476,6 @@ namespace netxs::ui
         poly kb_focus;
         poly brighter;
         poly shadower;
-        poly shadow;
         poly selector;
 
         cell highlight;
@@ -531,7 +504,6 @@ namespace netxs::ui
         si32 spd_max;
         si32 ccl_max;
         si32 switching;
-        si32 wheel_dt;
         span deceleration;
         span blink_period;
         span menu_timeout;
@@ -541,8 +513,14 @@ namespace netxs::ui
         span fader_time;
         span fader_fast;
 
+        bool shadow_enabled = true;
+        si32 shadow_blur = 3;
+        fp32 shadow_bias = 0.37f;
+        fp32 shadow_opacity = 105.5f;
+        twod shadow_offset = dot_21;
+
         twod min_value = dot_00;
-        twod max_value = twod{ 2000, 1000 }; //todo unify
+        twod max_value = twod{ 3000, 2000 }; //todo unify
 
         static auto& globals()
         {
@@ -558,7 +536,6 @@ namespace netxs::ui
                 case tone::prop::kb_focus:   return g.kb_focus;
                 case tone::prop::brighter:   return g.brighter;
                 case tone::prop::shadower:   return g.shadower;
-                case tone::prop::shadow:     return g.shadow;
                 case tone::prop::selector:   return g.selector;
                 case tone::prop::highlight:  return g.highlight;
                 case tone::prop::selected:   return g.selected;
@@ -583,7 +560,6 @@ namespace netxs::ui
                 case tone::prop::kb_focus: return g.kb_focus;
                 case tone::prop::brighter: return g.brighter;
                 case tone::prop::shadower: return g.shadower;
-                case tone::prop::shadow:   return g.shadow;
                 case tone::prop::selector: return g.selector;
                 default:                   return g.brighter;
             }
@@ -643,7 +619,7 @@ namespace netxs::ui
             return area;
         }
         auto color() const { return base::filler; }
-        void color(rgba fg_color, rgba bg_color)
+        void color(argb fg_color, argb bg_color)
         {
             base::filler.bgc(bg_color)
                         .fgc(fg_color)
@@ -656,7 +632,7 @@ namespace netxs::ui
             SIGNAL(tier::release, e2::form::prop::filler, filler);
         }
         // base: Align object.
-        void xform(snap atcrop, snap atgrow, si32& coor, si32& size, si32& width)
+        static void xform(snap atcrop, snap atgrow, si32& coor, si32& size, si32& width)
         {
             switch (size > width ? atcrop : atgrow)
             {
@@ -722,7 +698,6 @@ namespace netxs::ui
         auto resize(twod new_size, bool apply = true)
         {
             auto anchored = base::anchor;
-            auto old_size = base::region.size;
             auto new_area = base::region;
             new_area.size = new_size;
             new_area += base::extpad;
@@ -779,9 +754,9 @@ namespace netxs::ui
         // base: Mark the visual subtree as requiring redrawing.
         void strike(rect area)
         {
-            area.coor += base::region.coor;
             if (auto parent_ptr = parent())
             {
+                area.coor += base::region.coor;
                 parent_ptr->deface(area);
             }
         }
@@ -824,7 +799,7 @@ namespace netxs::ui
         // base: Remove visual tree branch.
         void destroy()
         {
-            auto lock = events::sync{};
+            auto lock = bell::sync();
             auto shadow = This();
             if (auto parent_ptr = parent())
             {
@@ -833,7 +808,7 @@ namespace netxs::ui
             detach();
         }
         // base: Recursively calculate global coordinate.
-        void global(twod& coor)
+        void global(auto& coor)
         {
             coor -= base::region.coor;
             if (auto parent_ptr = parent())
@@ -910,27 +885,28 @@ namespace netxs::ui
             bell::_saveme();
         }
 
-        void limits(twod min_sz = -dot_11, twod max_sz = -dot_11)
+        void limits(twod new_min_sz = -dot_11, twod new_max_sz = -dot_11)
         {
-            base::min_sz = min_sz.less(dot_00, skin::globals().min_value, min_sz);
-            base::max_sz = max_sz.less(dot_00, skin::globals().max_value, max_sz);
+            base::min_sz = new_min_sz.less(dot_00, skin::globals().min_value, new_min_sz);
+            base::max_sz = new_max_sz.less(dot_00, skin::globals().max_value, new_max_sz);
         }
-        void alignment(bind atgrow, bind atcrop = { snap::none, snap::none })
+        void alignment(bind new_atgrow, bind new_atcrop = { snap::none, snap::none })
         {
-            base::atgrow = atgrow;
-            base::atcrop.x = atcrop.x == snap::none ? atgrow.x : atcrop.x;
-            base::atcrop.y = atcrop.y == snap::none ? atgrow.y : atcrop.y;
+            base::atgrow = new_atgrow;
+            base::atcrop.x = new_atcrop.x == snap::none ? new_atgrow.x : new_atcrop.x;
+            base::atcrop.y = new_atcrop.y == snap::none ? new_atgrow.y : new_atcrop.y;
         }
-        void setpad(dent intpad, dent extpad = {})
+        void setpad(dent new_intpad, dent new_extpad = {})
         {
-            base::intpad = intpad;
-            base::extpad = extpad;
+            base::intpad = new_intpad;
+            base::extpad = new_extpad;
         }
-        // base.: Render to the canvas. Trim = trim viewport to the nested object region.
+        // base: Render to the canvas. Trim = trim viewport to the nested object region.
+        template<bool Forced = faux>
         void render(face& canvas, bool trim = true, bool pred = true, bool post = true)
         {
             if (hidden) return;
-            if (auto context = canvas.change_basis(base::region, trim)) // Basis = base::region.coor.
+            if (auto context = canvas.change_basis<Forced>(base::region, trim)) // Basis = base::region.coor.
             {
                 if (pred) SIGNAL(tier::release, e2::render::background::prerender, canvas);
                 if (post) SIGNAL(tier::release, e2::postrender, canvas);
@@ -938,8 +914,8 @@ namespace netxs::ui
         }
 
     protected:
-        virtual void deform(rect& new_area) {}
-        virtual void inform(rect new_area) {}
+        virtual void deform(rect& /*new_area*/) {}
+        virtual void inform(rect /*new_area*/) {}
         // base: Remove nested object.
         virtual void remove(sptr item_ptr)
         {
@@ -969,8 +945,11 @@ namespace netxs::ui
             }
         }
         virtual ~base() = default;
-        base(size_t nested_count = 0)
-            : subset{ nested_count },
+
+    public:
+        base(auth& indexer, size_t nested_count = 0)
+            : bell{ indexer },
+              subset{ nested_count },
               min_sz{ skin::globals().min_value },
               max_sz{ skin::globals().max_value },
               wasted{ true },
@@ -1010,15 +989,76 @@ namespace netxs::ui
             };
             LISTEN(tier::release, e2::render::background::any, parent_canvas)
             {
-                if (base::filler.wdt())
-                {
-                    parent_canvas.fill([&](cell& c) { c.fusefull(base::filler); });
-                }
-                else if (base::filler.link())
-                {
-                    parent_canvas.fill([&](cell& c) { c.link(bell::id); });
-                }
+                     if (base::filler.xy())   parent_canvas.fill(cell::shaders::fusefull(base::filler));
+                else if (base::filler.link()) parent_canvas.fill(cell::shaders::onlyid(bell::id));
             };
+        }
+    };
+
+    struct input_fields_t
+    {
+        std::list<std::future<regs>> futures;
+        regs fields;
+        id_t gear_id = {};
+        si32 acpStart = {};
+        si32 acpEnd = {};
+
+        void promise(auto& tasks)
+        {
+            auto& new_promise = tasks.emplace_back();
+            futures.emplace_back(new_promise.get_future());
+        }
+        void set_value(rect r)
+        {
+            fields.push_back(r);
+        }
+        void set_value(auto&& rects)
+        {
+            fields.insert(fields.end(), rects.begin(), rects.end());
+        }
+        auto wait_for(span t = 400ms)
+        {
+            auto timeout = datetime::now() + t;
+            for (auto& f : futures)
+            {
+                if (std::future_status::ready == f.wait_until(timeout))
+                {
+                    set_value(f.get());
+                }
+            }
+            return std::move(fields);
+        }
+    };
+    struct input_fields_handler
+    {
+        base&                         owner; // input_fields_handler: .
+        std::list<std::promise<regs>> tasks; // input_fields_handler: .
+
+        void send_input_fields_request(auto& boss, auto& inputfield_request) // Send request without ui sync.
+        {
+            inputfield_request.promise(tasks);
+            boss.stream.s11n::req_input_fields.send(boss, inputfield_request);
+        }
+
+        input_fields_handler(auto& boss)
+            : owner{ boss }
+        {
+            boss.LISTEN(tier::release, ui::e2::command::request::inputfields, inputfield_request)
+            {
+                send_input_fields_request(boss, inputfield_request);
+            };
+        }
+        void handle(s11n::xs::ack_input_fields lock)
+        {
+            if (tasks.size())
+            {
+                auto& list = lock.thing.field_list;
+                auto offset = dot_00;
+                owner.global(offset);
+                for (auto& r : list) r.coor -= offset;
+                tasks.front().set_value(std::move(list));
+                tasks.pop_front();
+            }
         }
     };
 }

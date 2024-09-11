@@ -1,4 +1,4 @@
-// Copyright (c) NetXS Group.
+// Copyright (c) Dmitry Sapozhnikov
 // Licensed under the MIT license.
 
 #pragma once
@@ -27,7 +27,7 @@ struct consrv
     virtual void paste(view block) = 0;
     virtual void focus(bool state) = 0;
     virtual void winsz(twod newsz) = 0;
-    virtual void style(ui32 style) = 0;
+    virtual void style(si32 style) = 0;
     virtual void sighup() = 0;
     void cleanup(bool io_log)
     {
@@ -46,7 +46,7 @@ struct consrv
         return inst;
     }
     template<class Term, class Proc>
-    auto attach(Term& terminal, text cmd, text cwd, text env, twod win, Proc trailer, fdrw fdlink)
+    auto attach(Term& terminal, eccc cfg, Proc trailer, fdrw fdlink)
     {
         auto err_code = 0;
         auto startinf = STARTUPINFOEXW{ sizeof(STARTUPINFOEXW) };
@@ -75,16 +75,16 @@ struct consrv
         }
         else
         {
-            startinf.StartupInfo.hStdInput  = nt::console::handle(condrv, "\\Input",  true);        // Windows8's cmd.exe requires that handles.
-            startinf.StartupInfo.hStdOutput = nt::console::handle(condrv, "\\Output", true);        //
-            startinf.StartupInfo.hStdError  = nt::console::handle(startinf.StartupInfo.hStdOutput); //
+            startinf.StartupInfo.hStdInput  = nt::console::handle(condrv, "\\Input",  true);  // Windows8's cmd.exe requires that handles.
+            startinf.StartupInfo.hStdOutput = nt::console::handle(condrv, "\\Output", true);  //
+            startinf.StartupInfo.hStdError  = nt::duplicate(startinf.StartupInfo.hStdOutput); //
         }
         startinf.StartupInfo.dwX = 0;
         startinf.StartupInfo.dwY = 0;
         startinf.StartupInfo.dwXCountChars = 0;
         startinf.StartupInfo.dwYCountChars = 0;
-        startinf.StartupInfo.dwXSize = win.x;
-        startinf.StartupInfo.dwYSize = win.y;
+        startinf.StartupInfo.dwXSize = cfg.win.x;
+        startinf.StartupInfo.dwYSize = cfg.win.y;
         startinf.StartupInfo.dwFillAttribute = 1;
         startinf.StartupInfo.dwFlags = STARTF_USESTDHANDLES
                                      | STARTF_USESIZE
@@ -109,9 +109,9 @@ struct consrv
                              sizeof(refdrv),
                                     nullptr,
                                     nullptr);
-        auto wcmd = utf::to_utf(cmd);
-        auto wcwd = utf::to_utf(cwd);
-        auto wenv = utf::to_utf(os::env::add(env += "VTM=1\0"sv));
+        auto wcmd = utf::to_utf(cfg.cmd);
+        auto wcwd = utf::to_utf(cfg.cwd);
+        auto wenv = utf::to_utf(os::env::add(cfg.env += "VTM=1\0"sv));
         auto ret = ::CreateProcessW(nullptr,                             // lpApplicationName
                                     wcmd.data(),                         // lpCommandLine
                                     nullptr,                             // lpProcessAttributes
@@ -143,13 +143,13 @@ struct consrv
             os::close( procsinf.hThread );
             prochndl = procsinf.hProcess;
             proc_pid = procsinf.dwProcessId;
-            waitexit = std::thread([&, trailer]
+            waitexit = std::thread{ [&, trailer]
             {
                 auto pid = proc_pid; // MSVC don't capture it.
                 io::select(prochndl, [&terminal, pid]{ if (terminal.io_log) log("%%Process %pid% terminated", prompt::vtty, pid); });
                 trailer();
                 if (terminal.io_log) log("%%Process %pid% waiter ended", prompt::vtty, pid);
-            });
+            }};
         }
         return err_code;
     }
@@ -200,10 +200,10 @@ struct impl : consrv
 
         auto save(para& line)
         {
-            auto& data = line.content();
-            if (undo.empty() || !data.same(undo.back().second))
+            auto& content = line.content();
+            if (undo.empty() || !content.same(undo.back().second))
             {
-                undo.emplace_back(line.caret, data);
+                undo.emplace_back(line.caret, content);
                 redo.clear();
             }
         }
@@ -212,11 +212,11 @@ struct impl : consrv
             if (back) std::swap(undo, redo);
             if (undo.size())
             {
-                auto& data = line.content();
-                while (undo.size() && data.same(undo.back().second)) undo.pop_back();
+                auto& content = line.content();
+                while (undo.size() && content.same(undo.back().second)) undo.pop_back();
                 if (undo.size())
                 {
-                    redo.emplace_back(line.caret, data);
+                    redo.emplace_back(line.caret, content);
                     line.content(undo.back().second);
                     line.caret = undo.back().first;
                     undo.pop_back();
@@ -227,9 +227,9 @@ struct impl : consrv
         auto done(para& line)
         {
             auto& new_data = line.content();
-            auto trimmed = utf::trim(new_data.utf8(), whitespaces);
-
-            if (trimmed.size() && (data.empty() || data.back() != new_data))
+            if (new_data.size().x  // Don't save space prefixed commands in history.
+            && !new_data.peek(dot_00).isspc()
+            && (data.empty() || data.back() != new_data))
             {
                 data.push_back(new_data);
                 seek = data.size() - 1;
@@ -476,20 +476,20 @@ struct impl : consrv
             auto rc = nt::ioctl(nt::console::op::write_output, condrv, result);
             if (rc != ERROR_SUCCESS)
             {
-                if constexpr (debugmode) log("\tnt::console::op::write_output returns unexpected result ", utf::to_hex(rc));
+                if constexpr (debugmode) log("\tnt::console::op::write_output()", os::unexpected, " ", utf::to_hex(rc));
                 status = nt::status::unsuccessful;
                 result.length = 0;
             }
             report = result.length;
             if constexpr (Complete) //Note: Be sure that packet.reply.bytes or count is set.
             {
-                auto rc = nt::ioctl(nt::console::op::complete_io, condrv, *this);
+                nt::ioctl(nt::console::op::complete_io, condrv, *this);
             }
         }
-        auto interrupt(fd_t condrv)
+        auto interrupt(fd_t condrv_handle)
         {
             status = nt::status::invalid_handle;
-            auto rc = nt::ioctl(nt::console::op::complete_io, condrv, *this);
+            nt::ioctl(nt::console::op::complete_io, condrv_handle, *this);
             if constexpr (debugmode) log("\tPending operation aborted");
         }
     };
@@ -497,7 +497,6 @@ struct impl : consrv
     struct evnt
     {
         using jobs = generics::jobs<std::tuple<cdrw, Arch /*(hndl*)*/, bool>>;
-        using fire = netxs::os::fire;
         using lock = std::recursive_mutex;
         using sync = std::condition_variable_any;
         using vect = std::vector<INPUT_RECORD>;
@@ -513,6 +512,7 @@ struct impl : consrv
         sync  signal; // evnt: Input event append signal.
         lock  locker; // evnt: Input event buffer mutex.
         cook  cooked; // evnt: Cooked input string.
+        flag  incook; // evnt: Console waits cooked input.
         jobs  worker; // evnt: Background task executer.
         flag  closed; // evnt: Console server was shutdown.
         fire  ondata; // evnt: Signal on input buffer data.
@@ -530,8 +530,8 @@ struct impl : consrv
 
         evnt(impl& serv)
             :  server{ serv },
+               incook{ faux },
                closed{ faux },
-               ondata{ true },
                leader{      },
                ctrl_c{ faux },
                mstate{      }
@@ -639,6 +639,28 @@ struct impl : consrv
             }
             return crop;
         }
+        void map_cd_shim(text& exe, text& line)
+        {
+            static constexpr auto cd_prefix = "cd "sv;
+            static constexpr auto cd_forced = "cd/d ";
+            auto shadow = qiew{ line };
+            utf::trim_front(shadow);
+            if (exe.starts_with("cmd")
+             && shadow.size() > cd_prefix.size()
+             && shadow.back() != '\t')
+            {
+                auto prefix = shadow.substr(0, 3).str();
+                utf::to_low(prefix);
+                if (prefix != cd_prefix) return;
+                auto crop = shadow.substr(cd_prefix.size());
+                auto path = crop;
+                utf::trim_front(path, " \t\r\n");
+                if (path && path.front() != '/')
+                {
+                    line = cd_forced + crop.str();
+                }
+            }
+        }
         void map_aliases(text& exe, text& line)
         {
             if (macros.empty() || line.empty()) return;
@@ -656,7 +678,7 @@ struct impl : consrv
             if (iter == src_map.end()) return;
 
             auto tail = utf::trim_back(rest, "\r\n");
-            auto args = utf::divide<feed::fwd, true>(rest, ' ');
+            auto args = utf::split<true>(rest, ' ');
             auto data = qiew{ iter->second };
             auto result = text{};
             while (data)
@@ -729,7 +751,7 @@ struct impl : consrv
             static auto index = 0;
             if (server.io_log) log(server.prompt, "ConsoleTask event index ", ++index);
             if (ostask.joinable()) ostask.join();
-            ostask = std::thread{[what, pgroup, io_log = server.io_log, joined = server.joined, prompt = escx{ server.prompt }]() mutable
+            ostask = std::thread{ [what, pgroup, io_log = server.io_log, joined = server.joined, prompt = escx{ server.prompt }]() mutable
             {
                 if (io_log) prompt.add(what == os::signals::ctrl_c     ? "Ctrl+C"
                                      : what == os::signals::ctrl_break ? "Ctrl+Break"
@@ -768,7 +790,7 @@ struct impl : consrv
             recbuf.clear();
             cooked.drop();
         }
-        auto generate(wchr ch, ui32 st = 0, ui16 vc = 0, si32 dn = 1, ui16 sc = 0)
+        auto generate(wchr ch, si32 st = 0, si32 vc = 0, si32 dn = 1, si32 sc = 0)
         {
             stream.emplace_back(INPUT_RECORD
             {
@@ -779,10 +801,10 @@ struct impl : consrv
                     {
                         .bKeyDown               = dn,
                         .wRepeatCount           = 1,
-                        .wVirtualKeyCode        = vc,
-                        .wVirtualScanCode       = sc,
+                        .wVirtualKeyCode        = (ui16)vc,
+                        .wVirtualScanCode       = (ui16)sc,
                         .uChar = { .UnicodeChar = ch },
-                        .dwControlKeyState      = st,
+                        .dwControlKeyState      = (ui32)st,
                     }
                 }
             });
@@ -794,7 +816,7 @@ struct impl : consrv
             generate(c2);
             return true;
         }
-        auto generate(wiew wstr, ui32 s = 0)
+        auto generate(wiew wstr, si32 s = 0)
         {
             stream.reserve(wstr.size());
             auto head = wstr.begin();
@@ -803,18 +825,29 @@ struct impl : consrv
             while (head != tail)
             {
                 auto c = *head++;
-                if (c == '\r')
+                if (c == '\r' || c == '\n')
                 {
-                    if (head != tail && *head == '\n') head++; // Eat CR+LF.
-                    generate('\r', s, VK_RETURN, 1, 0x1c); // Emulate Enter.
-                    // Far Manager treats Shift+Enter as its own macro not a soft break.
-                    //if (noni) generate('\n', s);
-                    //else      generate('\r', s | SHIFT_PRESSED, VK_RETURN, 1, 0x1c /*os::nt::takevkey<VK_RETURN>().key*/); // Emulate hitting Enter. Pressed Shift to soft line break when pasting from clipboard.
-                }
-                else if (c == '\n')
-                {
-                    if (head != tail && *head == '\r') head++; // Eat LF+CR.
-                    generate('\n', s | LEFT_CTRL_PRESSED, VK_RETURN, 1, 0x1c); // Emulate Shift+Enter.
+                    //auto mouse_reporting = server.inpmod & nt::console::inmode::mouse;
+                    if (c == '\r')
+                    {
+                        if (head != tail && *head == '\n') head++; // Eat CR+LF.
+                    }
+                    else if (c == '\n')
+                    {
+                        if (head != tail && *head == '\r') head++; // Eat LF+CR.
+                    }
+                    // pwsh: Ctrl+Enter    adds new line below the cursor, so it changes pasted lines order.
+                    // pwsh: Shift+Enter   adds new line, so it's okay for paste.
+                    //  far: (Ctrl)+Enter  adds new line, so it's okay for paste.
+                    //  far: Shift+Enter   paste some macro-string. Far Manager treats Shift+Enter as its own macro not a soft break.
+                    ////generate('\r', s, VK_RETURN, 1, 0x1c); // Emulate Enter.
+                    ////if (noni) generate('\n', s);
+                    ////else      generate('\r', s | SHIFT_PRESSED, VK_RETURN, 1, 0x1c /*os::nt::takevkey<VK_RETURN>().key*/); // Emulate hitting Enter. Pressed Shift to soft line break when pasting from clipboard.
+                    //auto soft_break_modifier = mouse_reporting ? 0 : SHIFT_PRESSED; // Emulate Shift+Enter if no mouse reporting enabled.
+                    //generate('\n', s | soft_break_modifier, VK_RETURN, 1, 0x1c);    // Send a lone Enter keystroke otherwise.
+                    // Send Enter keystroke without any modifiers because it could be a sort of sendinput data.
+                    //generate('\n', s, VK_RETURN, 1, 0x1c);
+                    generate(c, s, VK_RETURN, 1, 0x1c); // WSL requires '\r' as a key char.
                 }
                 else
                 {
@@ -854,22 +887,22 @@ struct impl : consrv
             return;
 
             //todo pwsh is not yet ready for block-pasting (VK_RETURN conversion is required)
-            auto data = INPUT_RECORD{ .EventType = MENU_EVENT };
-            auto keys = INPUT_RECORD{ .EventType = KEY_EVENT, .Event = { .KeyEvent = { .bKeyDown = 1, .wRepeatCount = 1 }}};
-            toWIDE.clear();
-            utf::to_utf(block, toWIDE);
-            stream.reserve(stream.size() + toWIDE.size() + 2);
-            data.Event.MenuEvent.dwCommandId = nt::console::event::custom | nt::console::event::paste_begin;
-            stream.emplace_back(data);
-            for (auto c : toWIDE)
-            {
-                keys.Event.KeyEvent.uChar.UnicodeChar = c;
-                stream.emplace_back(keys);
-            }
-            data.Event.MenuEvent.dwCommandId = nt::console::event::custom | nt::console::event::paste_end;
-            stream.emplace_back(data);
-            ondata.reset();
-            signal.notify_one();
+            //auto data = INPUT_RECORD{ .EventType = MENU_EVENT };
+            //auto keys = INPUT_RECORD{ .EventType = KEY_EVENT, .Event = { .KeyEvent = { .bKeyDown = 1, .wRepeatCount = 1 }}};
+            //toWIDE.clear();
+            //utf::to_utf(block, toWIDE);
+            //stream.reserve(stream.size() + toWIDE.size() + 2);
+            //data.Event.MenuEvent.dwCommandId = nt::console::event::custom | nt::console::event::paste_begin;
+            //stream.emplace_back(data);
+            //for (auto c : toWIDE)
+            //{
+            //    keys.Event.KeyEvent.uChar.UnicodeChar = c;
+            //    stream.emplace_back(keys);
+            //}
+            //data.Event.MenuEvent.dwCommandId = nt::console::event::custom | nt::console::event::paste_end;
+            //stream.emplace_back(data);
+            //ondata.reset();
+            //signal.notify_one();
         }
         auto write(view ustr)
         {
@@ -890,7 +923,7 @@ struct impl : consrv
             ondata.reset();
             signal.notify_one();
         }
-        void style(ui32 format)
+        void style(si32 format)
         {
             auto lock = std::lock_guard{ locker };
             auto data = INPUT_RECORD{ .EventType = MENU_EVENT };
@@ -901,10 +934,11 @@ struct impl : consrv
             ondata.reset();
             signal.notify_one();
         }
-        void mouse(input::hids& gear, bool moved, twod coord)
+        void mouse(input::hids& gear, twod coord)
         {
             auto state = os::nt::ms_kbstate(gear.ctlstate);
-            auto bttns = gear.m.buttons & 0b00011111;
+            auto bttns = gear.m_sys.buttons & 0b00011111;
+            auto moved = gear.m_sys.buttons == gear.m_sav.buttons && gear.m_sys.wheelfp == 0.f; // No events means mouse move. MSFT: "MOUSE_EVENT_RECORD::dwEventFlags: If this value is zero, it indicates a mouse button being pressed or released". Far Manager relies on this.
             auto flags = ui32{};
             if (moved) flags |= MOUSE_MOVED;
             for (auto i = 0_sz; i < dclick.size(); i++)
@@ -914,7 +948,7 @@ struct impl : consrv
                 if (prvbtn != sysbtn && sysbtn) // MS UX guidelines recommend signaling a double-click when the button is pressed twice rather than when it is released twice.
                 {
                     auto& s = dclick[i];
-                    auto fired = gear.m.timecod;
+                    auto fired = gear.m_sys.timecod;
                     if (fired - s.fired < gear.delay && s.coord == coord) // Set the double-click flag if the delay has not expired and the mouse is in the same position.
                     {
                         flags |= DOUBLE_CLICK;
@@ -928,11 +962,12 @@ struct impl : consrv
                 }
             }
             mstate = bttns;
-            if (gear.m.wheeldt)
+            auto wheeldt = netxs::saturate_cast<si32>(gear.m_sys.wheelfp * WHEEL_DELTA);
+            if (wheeldt)
             {
-                     if (gear.m.wheeled) flags |= MOUSE_WHEELED;
-                else if (gear.m.hzwheel) flags |= MOUSE_HWHEELED;
-                bttns |= gear.m.wheeldt << 16;
+                bttns |= wheeldt << 16;
+                flags |= MOUSE_WHEELED;
+                if (gear.m_sys.hzwheel) flags |= MOUSE_HWHEELED;
             }
             auto lock = std::lock_guard{ locker };
             stream.emplace_back(INPUT_RECORD
@@ -947,7 +982,7 @@ struct impl : consrv
                             .X = (si16)std::clamp<si32>(coord.x, 0, si16max),
                             .Y = (si16)std::clamp<si32>(coord.y, 0, si16max),
                         },
-                        .dwButtonState     = bttns,
+                        .dwButtonState     = (DWORD)bttns,
                         .dwControlKeyState = state,
                         .dwEventFlags      = flags,
                     }
@@ -992,6 +1027,22 @@ struct impl : consrv
         {
             auto lock = std::lock_guard{ locker };
             toWIDE.clear();
+            if constexpr (isreal()) // Copy/Paste by Ctrl/Shift+Insert in cooked read mode.
+            {
+                if (incook && gear.pressed && gear.keycode == input::key::Insert)
+                {
+                    if (gear.meta(input::hids::anyShift))
+                    {
+                        server.uiterm.paste(gear);
+                        return;
+                    }
+                    else if (gear.meta(input::hids::anyCtrl))
+                    {
+                        server.uiterm._copy(gear, cooked.ustr);
+                        return;
+                    }
+                }
+            }
             utf::to_utf(gear.cluster, toWIDE);
             if (toWIDE.empty()) toWIDE.push_back(0);
             auto c = toWIDE.front();
@@ -999,12 +1050,12 @@ struct impl : consrv
             auto ctrls = os::nt::ms_kbstate(gear.ctlstate) | (gear.extflag ? ENHANCED_KEY : 0);
             if (toWIDE.size() > 1) // Surrogate pair special case (not a clipboard paste, see generate(wiew wstr, ui32 s = 0)).
             {
-                if (gear.pressed) // Proceed push events only.
+                if (gear.pressed)
                 {
-                    for (auto c : toWIDE)
+                    for (auto a : toWIDE)
                     {
-                        generate(c, ctrls, gear.virtcod, 1, gear.scancod);
-                        generate(c, ctrls, gear.virtcod, 0, gear.scancod);
+                        generate(a, ctrls, gear.virtcod, 1, gear.scancod);
+                        generate(a, ctrls, gear.virtcod, 0, gear.scancod);
                     }
                 }
             }
@@ -1013,12 +1064,7 @@ struct impl : consrv
                 if (server.inpmod & nt::console::inmode::vt)
                 {
                     auto yield = gear.interpret(decckm);
-                    if (yield.size())
-                    {
-                        toWIDE.clear();
-                        utf::to_utf(yield, toWIDE);
-                        generate(toWIDE);
-                    }
+                    if (yield.size()) generate(yield);
                 }
                 else generate(c, ctrls, gear.virtcod, gear.pressed, gear.scancod);
             }
@@ -1027,7 +1073,8 @@ struct impl : consrv
             {
                 if (gear.keybd::scancod == ansi::ctrl_break)
                 {
-                    stream.pop_back();
+                    // Do not pop_back to provide the same behavior as Ctrl+C does in cmd.exe and in pwsh. (despite it emits one more ^C in wsl, but it's okay)
+                    //stream.pop_back();
                     if (gear.pressed) alert(os::signals::ctrl_break);
                 }
                 else
@@ -1072,6 +1119,7 @@ struct impl : consrv
                     {
                         auto& term = server.uiterm;
                         term.ondata("(Ctrl+C = Y) ");
+                        return true;
                     });
                 }
                 lock.lock();
@@ -1084,8 +1132,8 @@ struct impl : consrv
             auto& hist = ref_history(nameview);
             auto mode = testy<bool>{ !!(server.inpmod & nt::console::inmode::insert) };
             auto buff = text{};
-            auto nums = utfx{};
-            auto line = para{ cooked.ustr };
+            //auto nums = utfx{};
+            auto line = para{ 'C', cooked.ustr }; // Set semantic marker OSC 133;C.
             auto done = faux;
             auto crlf = 0;
             auto burn = [&]
@@ -1128,37 +1176,51 @@ struct impl : consrv
                         switch (v)
                         {
                             case VK_CONTROL:
-                            case VK_SHIFT:
-                            case VK_MENU:/*Alt*/
-                            case VK_PAUSE:
-                            case VK_LWIN:
-                            case VK_RWIN:
-                            case VK_APPS:
-                            case VK_NUMLOCK:
-                            case VK_CAPITAL:
-                            case VK_SCROLL:
-                            case VK_CLEAR:/*NUMPAD 5*/
-                            case VK_F2:  //todo menu
-                            case VK_F4:  //todo menu
+                                cooked.ustr.clear();
+                                line.lyric->utf8(cooked.ustr); // Prepare data to copy to clipboard by Ctrl+Instert.
+                                break;
+                            case VK_SHIFT:   break;
+                            case VK_MENU:    break; /*Alt*/
+                            case VK_PAUSE:   break;
+                            case VK_LWIN:    break;
+                            case VK_RWIN:    break;
+                            case VK_APPS:    break;
+                            case VK_NUMLOCK: break;
+                            case VK_CAPITAL: break;
+                            case VK_SCROLL:  break;
+                            case VK_CLEAR:   break; /*NUMPAD 5*/
+                            case VK_F2:      break; //todo menu
+                            case VK_F4:      break; //todo menu
+                            case VK_F9:      break; //todo menu
+                            case VK_F11:     break;
+                            case VK_F12:     break;
                             case VK_F7:
-                            if (cooked.ctrl & (LEFT_ALT_PRESSED | RIGHT_ALT_PRESSED))
-                            {
-                                hist = {};
-                                if (server.io_log) log("%%Cleared command history for process '%procname%'", prompt::cin, nameview);
+                                if (cooked.ctrl & (LEFT_ALT_PRESSED | RIGHT_ALT_PRESSED))
+                                {
+                                    hist = {};
+                                    if (server.io_log) log("%%Cleared command history for process '%procname%'", prompt::cin, nameview);
+                                }
                                 break;
-                            }
-                            case VK_F9:  //todo menu
                             case VK_F10:
-                            if (cooked.ctrl & (LEFT_ALT_PRESSED | RIGHT_ALT_PRESSED))
-                            {
-                                off_aliases(nameview);
-                                if (server.io_log) log("%%Removed DOSKEY aliases for process '%procname%'", prompt::cin, nameview);
+                                if (cooked.ctrl & (LEFT_ALT_PRESSED | RIGHT_ALT_PRESSED))
+                                {
+                                    off_aliases(nameview);
+                                    if (server.io_log) log("%%Removed DOSKEY aliases for process '%procname%'", prompt::cin, nameview);
+                                }
                                 break;
-                            }
-                            case VK_F11:
-                            case VK_F12:
+                            case VK_INSERT:
+                                if (cooked.ctrl & (LEFT_CTRL_PRESSED | RIGHT_CTRL_PRESSED) // Copy to clipboard.
+                                 || cooked.ctrl & (LEFT_ALT_PRESSED | RIGHT_ALT_PRESSED)
+                                 || cooked.ctrl & (SHIFT_PRESSED)) // Paste from clipboard.
+                                {
+                                    // do nothing.
+                                }
+                                else
+                                {
+                                    burn();
+                                    mode(!mode);
+                                }
                                 break;
-                            case VK_INSERT: burn(); mode(!mode);                                                                   break;
                             case VK_F6:     burn(); hist.save(line);               line.insert(cell{}.c0_to_txt('Z' - '@'), mode); break;
                             case VK_ESCAPE: burn(); hist.save(line);               line.wipe();                                    break;
                             case VK_HOME:   burn(); hist.save(line);               line.move_to_home(contrl);                      break;
@@ -1187,15 +1249,28 @@ struct impl : consrv
                             case VK_NUMPAD7:
                             case VK_NUMPAD8:
                             case VK_NUMPAD9:
-                            if (cooked.ctrl & (LEFT_ALT_PRESSED | RIGHT_ALT_PRESSED)) // Process Alt+Numpad input.
-                            {
-                                while (n--) nums = nums * 10 + v - VK_NUMPAD0;
-                                break;
-                            }
+                                if (cooked.ctrl & (LEFT_ALT_PRESSED | RIGHT_ALT_PRESSED)) // Ignore Alt+Numpad input.
+                                {
+                                    //while (n--) nums = nums * 10 + v - VK_NUMPAD0;
+                                    break;
+                                }
+                            //case VK_CANCEL:
+                            case VK_RETURN:
+                                if (cooked.ctrl & (LEFT_ALT_PRESSED | RIGHT_ALT_PRESSED)) // Ignore Alt+Enter.
+                                {
+                                    break;
+                                }
                             default:
                             {
                                 n--;
-                                if (c < ' ')
+                                //if (c == '\0' && !(cooked.ctrl & (LEFT_CTRL_PRESSED | RIGHT_CTRL_PRESSED |
+                                //                                  LEFT_ALT_PRESSED  | RIGHT_ALT_PRESSED |
+                                //                                  SHIFT_PRESSED)))
+                                if (c == '\0' && v != VK_SPACE && v != '2')
+                                {
+                                    break;
+                                }
+                                else if (c < ' ')
                                 {
                                     auto cook = [&](auto c, auto crlf_value)
                                     {
@@ -1263,11 +1338,11 @@ struct impl : consrv
                             }
                         }
                     }
-                    else if (nums && v == VK_MENU) // Alt is released after num digits input.
-                    {
-                        server.inpenc->decode(nums, buff);
-                        nums = 0;
-                    }
+                    //else if (nums && v == VK_MENU) // Alt is released after num digits input.
+                    //{
+                    //    server.inpenc->decode(nums, buff);
+                    //    nums = 0;
+                    //}
                     if (done) break;
                     else      pops++;
                 }
@@ -1289,8 +1364,8 @@ struct impl : consrv
                     {
                         server.uiterm.update([&]
                         {
-                            static auto empty = cell{ emptyspace }.wdt(1);
-                            static auto erase = cell{ whitespace }.wdt(1);
+                            static auto empty = cell{ emptyspace }.wdt(utf::matrix::vs<11,11>);
+                            static auto erase = cell{ whitespace }.wdt(utf::matrix::vs<11,11>);
                             auto& term = *server.uiterm.target;
                             auto& data = line.content();
                             auto  size = line.length();
@@ -1314,6 +1389,7 @@ struct impl : consrv
                                 }
                             }
                             data.crop(size);
+                            return true;
                         });
                     }
                     else
@@ -1333,6 +1409,7 @@ struct impl : consrv
                 if (EOFpos != text::npos) cooked.ustr.resize(EOFpos);
             }
             map_aliases(nameview, cooked.ustr);
+            map_cd_shim(nameview, cooked.ustr);
             cooked.save(utf16);
             if (stream.empty()) ondata.flush();
 
@@ -1403,16 +1480,16 @@ struct impl : consrv
         template<bool Complete = faux, class Payload>
         auto reply(Payload& packet, cdrw& answer, ui32 readstep)
         {
-            auto& inpenc = *server.inpenc;
+            auto& i = *server.inpenc;
             if (server.io_log) log("\thandle ", utf::to_hex_0x(packet.target), ":",
                                  "\n\tbuffered ", Complete ? "read: " : "rest: ", ansi::hi(utf::debase<faux, faux>(cooked.ustr)),
-                                 "\n\treply ", server.show_page(packet.input.utf16, inpenc.codepage), ":");
-            if (packet.input.utf16 || inpenc.codepage == CP_UTF8)
+                                 "\n\treply ", server.show_page(packet.input.utf16, i.codepage), ":");
+            if (packet.input.utf16 || i.codepage == CP_UTF8)
             {
                 auto size = std::min((ui32)cooked.rest.size(), readstep);
                 auto data = view{ cooked.rest.data(), size };
                 if (server.io_log) log("\t", ansi::hi(utf::debase<faux, faux>(packet.input.utf16 ? utf::to_utf((wchr*)data.data(), data.size() / sizeof(wchr))
-                                                                                                       : data)));
+                                                                                                 : data)));
                 cooked.rest.remove_prefix(size);
                 packet.reply.ctrls = cooked.ctrl;
                 packet.reply.bytes = size;
@@ -1420,9 +1497,9 @@ struct impl : consrv
             }
             else
             {
-                auto data = inpenc.encode(cooked.rest, readstep);
+                auto data = i.encode(cooked.rest, readstep);
                 auto size = (ui32)data.size();
-                if (server.io_log) log("\t", ansi::hi(utf::debase<faux, faux>(inpenc.decode_log(data))));
+                if (server.io_log) log("\t", ansi::hi(utf::debase<faux, faux>(i.decode_log(data))));
                 packet.reply.ctrls = cooked.ctrl;
                 packet.reply.bytes = size;
                 answer.send_data<Complete>(server.condrv, data);
@@ -1445,7 +1522,7 @@ struct impl : consrv
                     auto lock = std::unique_lock{ locker };
                     auto& answer = std::get<0>(token);
                     auto& cancel = std::get<2>(token);
-                    auto& client = *(clnt*)packet.client;
+                    //auto& client = *(clnt*)packet.client;
                     answer.buffer = (Arch)&packet.input; // Restore after copy. Payload start address.
 
                     if (closed || cancel) return;
@@ -1455,7 +1532,9 @@ struct impl : consrv
                     {
                         if (packet.input.utf16) utf::to_utf((wchr*)initdata.data(), initdata.size() / 2, cooked.ustr);
                         else                    cooked.ustr = initdata;
+                        incook.exchange(true);
                         readline(lock, cancel, packet.input.utf16, packet.input.EOFon, packet.input.stops, nameview);
+                        incook.exchange(faux);
                     }
                     else
                     {
@@ -1477,8 +1556,8 @@ struct impl : consrv
         auto sendevents(T&& recs, bool utf16)
         {
             auto lock = std::lock_guard{ locker };
-            auto& inpenc = *server.inpenc;
-            if (utf16 || inpenc.codepage == CP_UTF8) // Store UTF-8 as is (I see no reason to decode).
+            auto& i = *server.inpenc;
+            if (utf16 || i.codepage == CP_UTF8) // Store UTF-8 as is (I see no reason to decode).
             {
                 stream.insert(stream.end(), recs.begin(), recs.end());
             }
@@ -1497,18 +1576,18 @@ struct impl : consrv
                         {
                             if (leader.Event.KeyEvent.wVirtualKeyCode == coming.Event.KeyEvent.wVirtualKeyCode)
                             {
-                                coming.Event.KeyEvent.uChar.UnicodeChar = inpenc.decode(lead, next);
+                                coming.Event.KeyEvent.uChar.UnicodeChar = i.decode(lead, next);
                             }
                             leader = {}; // Drop hanging lead byte.
                         }
                         else
                         {
-                            if (inpenc.test(next))
+                            if (i.test(next))
                             {
                                 leader = coming;
                                 continue;
                             }
-                            else coming.Event.KeyEvent.uChar.UnicodeChar = inpenc.decode(next);
+                            else coming.Event.KeyEvent.uChar.UnicodeChar = i.decode(next);
                         }
                     }
                     stream.insert(stream.end(), coming);
@@ -1599,7 +1678,7 @@ struct impl : consrv
                         {
                             auto& next = src.Event.KeyEvent.uChar.UnicodeChar;
                             auto& copy = code ? left : src;
-                            if (utf::tocode(next, code)) // BMP or the second part of surrogate pair.
+                            if (utf::to_code(next, code)) // BMP or the second part of surrogate pair.
                             {
                                 toANSI.clear();
                                 codec_proc(code, toANSI);
@@ -1619,9 +1698,9 @@ struct impl : consrv
                         }
                     }
                 };
-                auto& codec = *server.inpenc;
-                if (codec.codepage == CP_UTF8) splitter([&](utfx& code, text& toUTF8){ utf::to_utf_from_code(code, toUTF8); });
-                else                           splitter([&](utfx& code, text& toANSI){          codec.encode(code, toANSI); });
+                auto& i = *server.inpenc;
+                if (i.codepage == CP_UTF8) splitter([&](utfx& code, text& toUTF8){ utf::to_utf_from_code(code, toUTF8); });
+                else                       splitter([&](utfx& code, text& toANSI){              i.encode(code, toANSI); });
             }
             auto size = std::min(limit, (ui32)recbuf.size());
             auto peek = packet.input.flags & Payload::peek;
@@ -1739,21 +1818,21 @@ struct impl : consrv
                 if ((charsize == 1))
                 {
                     OEMtoBMP.resize(256);
-                    auto i = 0;
+                    auto i = wchr{};
                     for (auto& c : OEMtoBMP) c = i++;
                 }
                 else
                 {
                     OEMtoBMP.resize(65536, 0);
-                    for (auto i = 0; i < 256; i++)
+                    for (auto i = wchr{ 0 }; i < 256; i++)
                     {
                         if (test((byte)i))
                         {
-                            auto lead = i << 8;
-                            auto head = OEMtoBMP.begin() + lead;
-                            auto tail = head + 256;
-                            *head++ = ++lead/*zero can't be a second byte*/;
-                            while (head != tail) *head++ = lead++;
+                            auto lead = (wchr)(i << 8);
+                            auto a = OEMtoBMP.begin() + lead;
+                            auto b = a + 256;
+                            *a++ = ++lead/*zero can't be a second byte*/;
+                            while (a != b) *a++ = lead++;
                         }
                         else OEMtoBMP[i] = i;
                     }
@@ -1798,7 +1877,7 @@ struct impl : consrv
                 // Reverse table.
                 auto bmp = std::vector<wchr>(65536, 0);
                 auto tmp = std::vector<byte>(65536 * 2, 0);
-                auto i = 0;
+                auto i = wchr{ 0 };
                 for (auto& b : bmp) b = i++;
                 ::WideCharToMultiByte(codepage, 0, bmp.data(), (si32)bmp.size(), (char *)tmp.data(), (si32)tmp.size(), 0, 0);
                 auto ptr = tmp.begin();
@@ -1843,7 +1922,7 @@ struct impl : consrv
                  if (code < 0x20 || code == 0x7F) code = *(c0_wchr.begin() + std::min<size_t>(code, c0_wchr.size() - 1));
             else if (code < OEMtoBMP.size())      code = OEMtoBMP[code];
             else                                  code = defchar();
-            return code;
+            return (wchr)code;
         }
         auto decode_char(byte lead, byte next)
         {
@@ -1854,7 +1933,7 @@ struct impl : consrv
         {
             if (code < OEMtoBMP.size()) code = OEMtoBMP[code];
             else                        code = defchar();
-            return code;
+            return (wchr)code;
         }
         auto decode(byte lead, byte next)
         {
@@ -1904,7 +1983,7 @@ struct impl : consrv
                 auto c = (ui16)(byte)*head++;
                 if (test((byte)c))
                 {
-                    c = head != tail ? (c << 8) + (byte)*head++ : defchar();
+                    c = (ui16)(head != tail ? (c << 8) + (byte)*head++ : defchar());
                 }
                 auto bmp = OEMtoBMP[c];
                 utf::to_utf(bmp, toUTF8);
@@ -1912,9 +1991,9 @@ struct impl : consrv
         }
         auto decode_run(auto&& toANSI)
         {
-            auto toUTF8 = text{};
-            decode_run(std::forward<decltype(toANSI)>(toANSI), toUTF8);
-            return toUTF8;
+            auto utf8 = text{};
+            decode_run(std::forward<decltype(toANSI)>(toANSI), utf8);
+            return utf8;
         }
         auto decode_log(view toANSI)
         {
@@ -1939,22 +2018,22 @@ struct impl : consrv
             toANSI.clear();
             if (hang) toANSI.push_back(last);
         }
-        auto encode(wchr code)
+        auto encode(utfx code)
         {
-            return BMPtoOEM[code];
+            return BMPtoOEM[(wchr)code];
         }
-        void encode(wchr code, text& ansi)
+        void encode(utfx code, text& ansi)
         {
             if (code >= 65536) code = defchar();
-            else               code = BMPtoOEM[code];
+            else               code = BMPtoOEM[(wchr)code];
             if (code < 256)
             {
                 ansi.push_back((byte)code);
             }
             else
             {
-                ansi.push_back(code >> 8);
-                ansi.push_back(code & 0xFF);
+                ansi.push_back((byte)(code >> 8));
+                ansi.push_back((byte)(code & 0xFF));
             }
         }
         void reset()
@@ -1984,8 +2063,8 @@ struct impl : consrv
                     auto size = code < 256 ? 1u : 2u;
                     if (rest < size) // Leave the last code point to indicate that the buffer is not empty.
                     {
-                        crop.push_back(code >> 8);
-                        lastbyte = code & 0xFF;
+                        crop.push_back((byte)(code >> 8));
+                        lastbyte = (byte)(code & 0xFF);
                         rest -= 1;
                         assert(rest == 0);
                     }
@@ -1997,8 +2076,8 @@ struct impl : consrv
                         }
                         else
                         {
-                            crop.push_back(code >> 8);
-                            crop.push_back(code & 0xFF);
+                            crop.push_back((byte)(code >> 8));
+                            crop.push_back((byte)(code & 0xFF));
                         }
                         rest -= size;
                         done += next.utf8len;
@@ -2027,7 +2106,7 @@ struct impl : consrv
 
     auto& langmap()
     {
-        static const auto langmap = std::unordered_map<ui32, ui16>
+        static const auto langmap = std::unordered_map<ui32, ui32>
         {
             { 932,   MAKELANGID(LANG_JAPANESE, SUBLANG_DEFAULT            ) },
             { 936,   MAKELANGID(LANG_CHINESE , SUBLANG_CHINESE_SIMPLIFIED ) },
@@ -2168,7 +2247,7 @@ struct impl : consrv
         if (packet.input.utf16)
         {
             auto data = take_buffer<wchr, feed::fwd>(packet);
-            if (data.size() * sizeof(wchr) == size)
+            if (std::cmp_equal(data.size() * sizeof(wchr), size))
             {
                 auto shadow = wiew{ data.data(), data.size() };
                 // Note: The utf::pop_back is used due to the reverse order evaluation when calling std::make_tuple().
@@ -2178,7 +2257,7 @@ struct impl : consrv
         else
         {
             auto data = take_buffer<char, feed::fwd>(packet);
-            if (data.size() == size)
+            if (std::cmp_equal(data.size(), size))
             {
                 auto shadow = view{ data.data(), data.size() };
                 if (inpenc->codepage == CP_UTF8)
@@ -2207,25 +2286,25 @@ struct impl : consrv
         {
             if (handle_ptr->link == &uiterm.target)
             {
-                     if (uiterm.target == &uiterm.normal) uiterm.update([&] { proc(uiterm.normal); });
-                else if (uiterm.target == &uiterm.altbuf) uiterm.update([&] { proc(uiterm.altbuf); });
+                     if (uiterm.target == &uiterm.normal) uiterm.update([&]{ proc(uiterm.normal); return faux; });
+                else if (uiterm.target == &uiterm.altbuf) uiterm.update([&]{ proc(uiterm.altbuf); return faux; });
                 return true;
             }
             else
             {
                 auto client_ptr = &handle_ptr->boss;
-                if (auto iter = std::find_if(joined.begin(), joined.end(), [&](auto& client){ return client_ptr == &client; });
-                    iter != joined.end()) // Client exists.
+                if (auto iter0 = std::find_if(joined.begin(), joined.end(), [&](auto& client){ return client_ptr == &client; });
+                    iter0 != joined.end()) // Client exists.
                 {
                     auto& client = handle_ptr->boss;
-                    if (auto iter = std::find_if(client.tokens.begin(), client.tokens.end(), [&](auto& token){ return handle_ptr == &token; });
-                        iter != client.tokens.end()) // Handle allocated.
+                    if (auto iter1 = std::find_if(client.tokens.begin(), client.tokens.end(), [&](auto& token){ return handle_ptr == &token; });
+                        iter1 != client.tokens.end()) // Handle allocated.
                     {
                         auto link = handle_ptr->link;
-                        if (auto iter = std::find_if(client.alters.begin(), client.alters.end(), [&](auto& altbuf){ return link == &altbuf; });
-                            iter != client.alters.end()) // Buffer exists.
+                        if (auto iter2 = std::find_if(client.alters.begin(), client.alters.end(), [&](auto& altbuf){ return link == &altbuf; });
+                            iter2 != client.alters.end()) // Buffer exists.
                         {
-                            uiterm.update([&] { proc(*iter); });
+                            uiterm.update([&]{ proc(*iter2); return faux; });
                             return true;
                         }
                     }
@@ -2248,18 +2327,18 @@ struct impl : consrv
             else
             {
                 auto client_ptr = &handle_ptr->boss;
-                if (auto iter = std::find_if(joined.begin(), joined.end(), [&](auto& client){ return client_ptr == &client; });
-                    iter != joined.end()) // Client exists.
+                if (auto iter0 = std::find_if(joined.begin(), joined.end(), [&](auto& client){ return client_ptr == &client; });
+                    iter0 != joined.end()) // Client exists.
                 {
                     auto& client = handle_ptr->boss;
-                    if (auto iter = std::find_if(client.tokens.begin(), client.tokens.end(), [&](auto& token){ return handle_ptr == &token; });
-                        iter != client.tokens.end()) // Handle allocated.
+                    if (auto iter1 = std::find_if(client.tokens.begin(), client.tokens.end(), [&](auto& token){ return handle_ptr == &token; });
+                        iter1 != client.tokens.end()) // Handle allocated.
                     {
                         auto link = handle_ptr->link;
-                        if (auto iter = std::find_if(client.alters.begin(), client.alters.end(), [&](auto& altbuf){ return link == &altbuf; });
-                            iter != client.alters.end()) // Buffer exists.
+                        if (auto iter2 = std::find_if(client.alters.begin(), client.alters.end(), [&](auto& altbuf){ return link == &altbuf; });
+                            iter2 != client.alters.end()) // Buffer exists.
                         {
-                            result = &(*iter);
+                            result = &(*iter2);
                         }
                     }
                 }
@@ -2273,8 +2352,9 @@ struct impl : consrv
     }
     void check_buffer_size(auto& console, auto& size)
     {
-        if (size.x > 165)
+        if (size.x > 1280)
         {
+            // Far Manager explicitly sets the buffer size as wide as viewport.
             // Just disable wrapping if user application requests too much (Explicit requirement for horizontal scrolling).
             // E.g. wmic requests { x=1500, y=300 }.
             //      Indep stat for dwSize.X = N: max: 1280, 10000, 192, 237, 200, 2500, 500, 600, 640.
@@ -2283,7 +2363,7 @@ struct impl : consrv
             console.style.wrp(faux);
             size.x = console.panel.x;
         }
-        if (size.y > 99)
+        if (size.y > 299)
         {
              // Applications usually request real viewport heights: 20, 24, 25, 50
              //         or extra large values for the scrollbuffer: 0x7FFF, 5555, 9000, 9999, 4096, 32767, 32000, 10000, 2500, 2000, 1024, 999, 800, 512, 500, 480, 400, 300, 100 etc. (stat for dwSize.Y = N)
@@ -2297,32 +2377,6 @@ struct impl : consrv
         return        utf16 ? "UTF-16"s :
         codepage == CP_UTF8 ? "UTF-8"s  :
                               "OEM-"s + std::to_string(codepage);
-    }
-    template<class S, class P>
-    auto write_block(S& scrollback, core const& block, twod coor, rect clip, P fuse)
-    {
-        auto size = block.size();
-        auto view = block.view();
-        auto dest = rect{ coor, view.size };
-        clip = dest.clip(clip);
-        view -= dest - clip;
-        coor = clip.coor;
-        auto head = block.iter() + view.coor.y * size.x;
-        auto tail = head + view.size.y * size.x;
-        auto rest = size.x - (view.coor.x + view.size.x);
-        auto save = scrollback.coord;
-        assert(rest >= 0);
-        while (head != tail)
-        {
-            head += view.coor.x;
-            auto next = head + view.size.x;
-            auto line = std::span(head, next);
-            scrollback.cup0(coor);
-            scrollback._data<true>(view.size.x, line, fuse);
-            head = next + rest;
-            coor.y++;
-        }
-        scrollback.cup0(save);
     }
     auto newbuf(auto& client) // MSVC bug; It doesn't see constexpr inside lambdas (even constexpr functions).
     {
@@ -2347,7 +2401,6 @@ struct impl : consrv
     }
     auto api_system_langid_get               ()
     {
-        log(prompt, "GetConsoleLangId");
         struct payload : drvpacket<payload>
         {
             struct
@@ -2357,14 +2410,19 @@ struct impl : consrv
             reply;
         };
         auto& packet = payload::cast(upload);
+        auto& client = *(clnt*)packet.client;
+        log(prompt, "GetConsoleLangId",
+            "\n\tcurexe: ", client.detail.curexe,
+            "\n\tprocid: ", client.procid);
         auto winuicp = ::GetACP();
         if (winuicp != 65001 && langmap().contains(winuicp))
         {
-            packet.reply.langid = netxs::map_or(langmap(), outenc->codepage, 65001);
-            log("\tlang id: ", utf::to_hex_0x(packet.reply.langid));
+            packet.reply.langid = (ui16)netxs::map_or(langmap(), outenc->codepage, 65001);
+            log("\tlangid: ", utf::to_hex_0x(packet.reply.langid));
         }
         else
         {
+            //packet.reply.langid = MAKELANGID(LANG_ENGLISH, SUBLANG_ENGLISH_US);
             answer.status = nt::status::not_supported;
             log("\tlang id not supported");
         }
@@ -2421,7 +2479,7 @@ struct impl : consrv
         details.header_size = std::min<ui16>(details.header_size, sizeof(details.header_data));
         details.curdir_size = std::min<ui16>(details.curdir_size, sizeof(details.curdir_data));
 
-        auto iter = std::find_if(joined.begin(), joined.end(), [&](auto& client) { return client.procid == packet.procid; });
+        auto iter = std::find_if(joined.begin(), joined.end(), [&](auto& client){ return client.procid == packet.procid; });
         auto& client = iter != joined.end() ? *iter
                                             : joined.emplace_front();
         auto& inphndl = client.tokens.emplace_front(client, inpmod, hndl::type::events, &events);
@@ -2908,7 +2966,7 @@ struct impl : consrv
         }
         log("\tclient procid: ", client_ptr->procid,
           "\n\thandle: ", events_handle_ptr);
-        auto& events_handle = *events_handle_ptr; //todo validate events_handle
+        //auto& events_handle = *events_handle_ptr; //todo validate events_handle
         events.take(packet);
     }
     auto api_events_add                      ()
@@ -3034,8 +3092,8 @@ struct impl : consrv
                 if constexpr (isreal())
                 {
                     auto active = scroll_handle.link == &uiterm.target || scroll_handle.link == uiterm.target; // Target buffer can be changed during vt execution (eg: switch to altbuf).
-                    if (!direct(packet.target, [&](auto& scrollback) { active ? uiterm.ondata(crop)
-                                                                              : uiterm.ondata(crop, &scrollback); }))
+                    if (!direct(packet.target, [&](auto& scrollback){ active ? uiterm.ondata(crop)
+                                                                             : uiterm.ondata(crop, &scrollback); }))
                     {
                         datasize = 0;
                     }
@@ -3044,8 +3102,7 @@ struct impl : consrv
                 {
                     uiterm.ondata(crop);
                 }
-                log("\t", show_page(packet.input.utf16, codec.codepage),
-                    ": ", ansi::hi(utf::debase<faux, faux>(crop)));
+                log("\t", show_page(packet.input.utf16, codec.codepage), ": ", ansi::hi(utf::debase<faux, faux>(crop)));
                 scroll_handle.toUTF8.erase(0, crop.size()); // Delete processed data.
             }
             else
@@ -3057,6 +3114,7 @@ struct impl : consrv
         }
         else log("\tunexpected: packet.packsz=%val1% answer.readoffset=%val2%", packet.packsz, answer.readoffset());
         answer.report = packet.reply.count;
+        if (packet.reply.count) unsync = true;
     }
     auto api_scrollback_write_data           ()
     {
@@ -3092,7 +3150,7 @@ struct impl : consrv
                             "\n\tinput.coord: ", coord,
                             "\n\tinput.count: ", count);
                 filler.size(count, cell{});
-                auto iter = filler.iter();
+                auto iter = filler.begin();
                 for (auto& attr : recs)
                 {
                     *iter++ = attr_to_brush(attr);
@@ -3197,6 +3255,7 @@ struct impl : consrv
             }
             packet.reply.count = count;
         }
+        if (packet.reply.count) unsync = true;
     }
     auto api_scrollback_write_block          ()
     {
@@ -3226,20 +3285,20 @@ struct impl : consrv
             packet.reply = {};
             return;
         }
-        auto& window = *window_ptr;
-        auto view = rect{{ packet.input.rectL, packet.input.rectT },
+        auto& window_inst = *window_ptr;
+        auto clip = rect{{ packet.input.rectL, packet.input.rectT },
                          { std::max(0, packet.input.rectR - packet.input.rectL + 1),
                            std::max(0, packet.input.rectB - packet.input.rectT + 1) }};
-        auto crop = view;
+        auto crop = clip;
         auto recs = take_buffer<CHAR_INFO, feed::fwd>(packet);
         if constexpr (isreal())
         {
-            crop = view.trunc(window.panel);
-            mirror.size(window.panel);
-            mirror.view(crop);
+            crop = clip.trunc(window_inst.panel);
+            mirror.size(window_inst.panel);
+            mirror.clip(crop);
             if (recs.size() && crop)
             {
-                auto copy = netxs::raster(recs, view);
+                auto copy = netxs::raster(recs, clip);
                 auto& codec = *outenc;
                 if (!packet.input.utf16 && codec.codepage != CP_UTF8) // Decode from OEM.
                 {
@@ -3314,13 +3373,13 @@ struct impl : consrv
                     {
                         if (skip == src.Char.UnicodeChar)
                         {
-                            dst.txt(toUTF8, 3);
+                            dst.txt(toUTF8, utf::matrix::vs<21,21>);
                             skip = {};
                             return;
                         }
                         skip = {};
                     }
-                    if (utf::tocode((wchr)src.Char.UnicodeChar, code))
+                    if (utf::to_code((wchr)src.Char.UnicodeChar, code))
                     {
                         toUTF8.clear();
                         utf::to_utf_from_code(code, toUTF8);
@@ -3329,12 +3388,12 @@ struct impl : consrv
                         {
                             if (prop.ucwidth == unidata::widths::wide)
                             {
-                                prev->txt(toUTF8, 2);
-                                dst  .txt(toUTF8, 3);
+                                prev->txt(toUTF8, utf::matrix::vs<21,11>);
+                                dst  .txt(toUTF8, utf::matrix::vs<21,21>);
                             }
                             else // Narrow surrogate pair.
                             {
-                                prev->txt(toUTF8, 1);
+                                prev->txt(toUTF8, utf::matrix::vs<11,11>);
                                 dst.txt(whitespace);
                             }
                             prev = {};
@@ -3345,17 +3404,17 @@ struct impl : consrv
                             {
                                 if (src.Attributes & COMMON_LVB_TRAILING_BYTE)
                                 {
-                                    dst.txt(toUTF8, 3); // Right half of wide char.
+                                    dst.txt(toUTF8, utf::matrix::vs<21,21>); // Right half of wide char.
                                 }
                                 else
                                 {
-                                    dst.txt(toUTF8, 2); // Left half of wide char.
+                                    dst.txt(toUTF8, utf::matrix::vs<21,11>); // Left half of wide char.
                                     skip = src.Char.UnicodeChar;
                                 }
                             }
                             else
                             {
-                                dst.txt(toUTF8, 1); // Narrow character.
+                                dst.txt(toUTF8, utf::matrix::vs<11,11>); // Narrow character.
                             }
                         }
                         code = {};
@@ -3368,19 +3427,20 @@ struct impl : consrv
                 netxs::onbody(dest, copy, allfx, eolfx);
                 auto success = direct(packet.target, [&](auto& scrollback)
                 {
-                    write_block(scrollback, dest, crop.coor, rect{ dot_00, window.panel }, cell::shaders::full); // cell::shaders::skipnuls for transparency?
+                    uiterm.write_block(scrollback, dest, crop.coor, rect{ dot_00, window_inst.panel }, cell::shaders::full); // cell::shaders::skipnuls for transparency?
                 });
                 if (!success) crop = {};
             }
         }
-        packet.reply.rectL = crop.coor.x;
-        packet.reply.rectT = crop.coor.y;
-        packet.reply.rectR = crop.coor.x + crop.size.x - 1;
-        packet.reply.rectB = crop.coor.y + crop.size.y - 1;
+        packet.reply.rectL = (si16)(crop.coor.x);
+        packet.reply.rectT = (si16)(crop.coor.y);
+        packet.reply.rectR = (si16)(crop.coor.x + crop.size.x - 1);
+        packet.reply.rectB = (si16)(crop.coor.y + crop.size.y - 1);
         log("\tinput.type: ", show_page(packet.input.utf16, outenc->codepage),
-            "\n\tinput.rect: ", view,
-            "\n\treply.rect: ", crop,
-            "\n\twrite data:\n\t", utf::change(ansi::s11n((rich&)mirror, crop), "\n", ansi::pushsgr().nil().add("\n\t").popsgr()));
+          "\n\tinput.rect: ", clip,
+          "\n\treply.rect: ", crop,
+          "\n\twrite data:\n\t", utf::replace_all(ansi::s11n((rich&)mirror, crop), "\n", ansi::pushsgr().nil().add("\n\t").popsgr()));
+        if (crop) unsync = true;
     }
     auto api_scrollback_attribute_set        ()
     {
@@ -3396,9 +3456,9 @@ struct impl : consrv
         auto& packet = payload::cast(upload);
         if constexpr (isreal())
         {
-            if (!direct(packet.target, [&](auto& scrollback) { scrollback.brush = attr_to_brush(packet.input.color); }))
+            if (!direct(packet.target, [&](auto& scrollback){ scrollback.brush = attr_to_brush(packet.input.color); }))
             {
-                log("\tunexpected result");
+                log("\tdirect()", os::unexpected);
             }
             log("\tset default attributes: ", uiterm.target->brush);
         }
@@ -3464,7 +3524,7 @@ struct impl : consrv
                     if (count > maxsz) count = std::max(0, maxsz);
                     filler.kill();
                     filler.size(count, c);
-                    if (!direct(packet.target, [&](auto& scrollback) { scrollback._data(count, filler.pick(), cell::shaders::meta); }))
+                    if (!direct(packet.target, [&](auto& scrollback){ scrollback._data(count, filler.pick(), cell::shaders::meta); }))
                     {
                         count = 0;
                     }
@@ -3476,7 +3536,7 @@ struct impl : consrv
                             "\n\tcodec: ", show_page(packet.input.etype != type::ansiOEM, outenc->codepage),
                             "\n\tcoord: ", coord,
                             "\n\tcount: ", count);
-                auto impcls = coord == dot_00 && piece == ' ' && count == screen.panel.x * screen.panel.y;
+                //auto impcls = coord == dot_00 && piece == ' ' && count == screen.panel.x * screen.panel.y;
                 if (piece <  ' ' || piece == 0x7F) piece = ' ';
                 if (piece == ' ' && count > maxsz)
                 {
@@ -3497,22 +3557,22 @@ struct impl : consrv
                     }
                     log("\tfiller: ", ansi::hi(utf::debase<faux, faux>(toUTF8)));
                     auto c = cell{ toUTF8 };
-                    auto w = c.wdt();
+                    auto [w, h, x, y] = c.whxy();
                     if (count > maxsz) count = std::max(0, maxsz);
                     count *= w;
                     filler.kill();
                     filler.size(count, c);
-                    if (w == 2)
+                    if (w == 2 && h == 1 && x == 0 && y == 0)
                     {
-                        auto head = filler.iter();
-                        auto tail = filler.iend();
+                        auto head = filler.begin();
+                        auto tail = filler.end();
                         while (head != tail)
                         {
-                            (++head)->wdt(3);
-                            (++head);
+                            (head++)->wdt(utf::matrix::vs<21,11>);
+                            (head++)->wdt(utf::matrix::vs<21,21>);
                         }
                     }
-                    if (!direct(packet.target, [&](auto& scrollback) { scrollback._data(count, filler.pick(), cell::shaders::text); }))
+                    if (!direct(packet.target, [&](auto& scrollback){ scrollback._data(count, filler.pick(), cell::shaders::text); }))
                     {
                         count = 0;
                     }
@@ -3551,6 +3611,7 @@ struct impl : consrv
             }
         }
         packet.reply.count = count;
+        if (count) unsync = true;
     }
     auto api_scrollback_read_data            ()
     {
@@ -3577,7 +3638,7 @@ struct impl : consrv
         {
             return;
         }
-        auto& window = *window_ptr;
+        auto& window_inst = *window_ptr;
         auto avail = size_check(packet.echosz, answer.sendoffset());
         if (!avail)
         {
@@ -3589,28 +3650,28 @@ struct impl : consrv
         auto coor = twod{ packet.input.coorx, packet.input.coory };
         if constexpr (isreal())
         {
-            auto view = rect{{ 0, coor.y }, { window.panel.x, (coor.x + count) / window.panel.x + 1 }};
-            view = view.trunc(window.panel);
-            count = std::max(0, std::min(view.size.x * view.size.y, coor.x + count) - coor.x);
-            if (!view || !count)
+            auto clip = rect{{ 0, coor.y }, { window_inst.panel.x, (coor.x + count) / window_inst.panel.x + 1 }};
+            clip = clip.trunc(window_inst.panel);
+            count = std::max(0, std::min(clip.size.x * clip.size.y, coor.x + count) - coor.x);
+            if (!clip || !count)
             {
                 return;
             }
-            auto start = coor.x + coor.y * window.panel.x;
+            auto start = coor.x + coor.y * window_inst.panel.x;
             buffer.clear();
             auto mark = cell{};
             auto attr = brush_to_attr(mark);
-            mirror.size(window.panel);
-            mirror.view(view);
+            mirror.size(window_inst.panel);
+            mirror.clip(clip);
             mirror.fill(mark);
-            window.do_viewport_copy(mirror);
-            auto& copy = (rich&)mirror;
+            window_inst.do_viewport_copy(mirror);
+            //auto& copy = (rich&)mirror;
             if (packet.input.etype == type::attribute)
             {
                 log("\tinput.type: attributes");
                 auto recs = wrap<ui16>::cast(buffer, count);
                 auto iter = recs.begin();
-                auto head = mirror.iter() + start;
+                auto head = mirror.begin() + start;
                 auto tail = head + count;
                 while (head != tail)
                 {
@@ -3628,14 +3689,15 @@ struct impl : consrv
             }
             else
             {
-                auto head = mirror.iter() + start;
+                auto head = mirror.begin() + start;
                 auto tail = head + count;
                 log("\tinput.type: ", show_page(packet.input.etype != type::ansiOEM, outenc->codepage));
                 toUTF8.clear();
                 while (head != tail)
                 {
                     auto& src = *head++;
-                    if (src.wdt() != 3) toUTF8 += src.txt();
+                    auto [w, h, x, y] = src.whxy();
+                    if (x == 1) toUTF8 += src.txt();
                 }
                 if (packet.input.etype == type::ansiOEM)
                 {
@@ -3651,7 +3713,7 @@ struct impl : consrv
                     else
                     {
                         toANSI.clear();
-                        auto utf8 = netxs::view{ toUTF8 };
+                        auto utf8 = view{ toUTF8 };
                         codec.encode(utf8, toANSI, count);
                         count = std::min(count, (si32)toANSI.size());
                         std::copy(toANSI.begin(), toANSI.end(), recs.begin());
@@ -3743,28 +3805,28 @@ struct impl : consrv
             packet.reply = {};
             return;
         }
-        auto& window = *window_ptr;
-        auto view = rect{{ packet.input.rectL, packet.input.rectT },
+        auto& window_inst = *window_ptr;
+        auto clip = rect{{ packet.input.rectL, packet.input.rectT },
                          { std::max(0, packet.input.rectR - packet.input.rectL + 1),
                            std::max(0, packet.input.rectB - packet.input.rectT + 1) }};
         buffer.clear();
-        auto recs = wrap<CHAR_INFO>::cast(buffer, view.size.x * view.size.y);
-        auto crop = view;
-        auto size = view.size;
+        auto recs = wrap<CHAR_INFO>::cast(buffer, clip.size.x * clip.size.y);
+        auto crop = clip;
+        auto size = clip.size;
         if constexpr (isreal())
         {
             if (recs.size())
             {
                 auto mark = cell{};
                 auto attr = brush_to_attr(mark);
-                size = window.panel;
-                mirror.size(window.panel);
-                mirror.view(view);
+                size = window_inst.panel;
+                mirror.size(window_inst.panel);
+                mirror.clip(clip);
                 mirror.fill(mark);
-                window.do_viewport_copy(mirror);
-                crop = mirror.view();
+                window_inst.do_viewport_copy(mirror);
+                crop = mirror.clip();
                 auto& copy = (rich&)mirror;
-                auto  dest = netxs::raster(recs, view);
+                auto  dest = netxs::raster(recs, clip);
                 if (packet.input.utf16)
                 {
                     netxs::onbody(dest, copy, [&](auto& dst, auto& src)
@@ -3777,7 +3839,8 @@ struct impl : consrv
                         dst.Attributes = attr;
                         toWIDE.clear();
                         utf::to_utf(src.txt(), toWIDE);
-                        auto wdt = src.wdt();
+                        auto [w, h, x, y] = src.whxy();
+                        auto wdt = w == 0 ? 0 : w == 2 && x == 2 ? 3 : w == 2 && x == 1 ? 2 : 1;
                         auto& c = dst.Char.UnicodeChar;
                         if (toWIDE.size())
                         {
@@ -3825,7 +3888,7 @@ struct impl : consrv
                             }
                             dst.Attributes = attr;
                             auto utf8 = src.txt();
-                            auto wdt = src.wdt();
+                            //auto wdt = src.wdt();
                             //set_half(wdt, attr);
                             dst.Char.AsciiChar = utf8.size() ? utf8.front() : ' ';
                         });
@@ -3841,7 +3904,8 @@ struct impl : consrv
                             }
                             dst.Attributes = attr;
                             auto utf8 = src.txt();
-                            auto wdt = src.wdt();
+                            auto [w, h, x, y] = src.whxy();
+                            auto wdt = w == 0 ? 0 : w == 2 && x == 2 ? 3 : w == 2 && x == 1 ? 2 : 1;
                             set_half(wdt, dst.Attributes);
                             toANSI.clear();
                             codec.encode(utf8, toANSI);
@@ -3861,15 +3925,15 @@ struct impl : consrv
                 answer.send_data(condrv, recs);
             }
         }
-        packet.reply.rectL = crop.coor.x;
-        packet.reply.rectT = crop.coor.y;
-        packet.reply.rectR = crop.coor.x + crop.size.x - 1;
-        packet.reply.rectB = crop.coor.y + crop.size.y - 1;
+        packet.reply.rectL = (si16)(crop.coor.x);
+        packet.reply.rectT = (si16)(crop.coor.y);
+        packet.reply.rectR = (si16)(crop.coor.x + crop.size.x - 1);
+        packet.reply.rectB = (si16)(crop.coor.y + crop.size.y - 1);
         log("\treply.type: ", show_page(packet.input.utf16, outenc->codepage),
           "\n\tpanel size: ", size,
-          "\n\tinput.rect: ", view,
+          "\n\tinput.rect: ", clip,
           "\n\treply.rect: ", crop,
-          "\n\treply data:\n\t", utf::change(ansi::s11n((rich&)mirror, crop), "\n", ansi::pushsgr().nil().add("\n\t").popsgr()));
+          "\n\treply data:\n\t", utf::replace_all(ansi::s11n((rich&)mirror, crop), "\n", ansi::pushsgr().nil().add("\n\t").popsgr()));
     }
     auto api_scrollback_set_active           ()
     {
@@ -3902,6 +3966,7 @@ struct impl : consrv
                 }
             }
         }
+        unsync = true;
     }
     auto api_scrollback_cursor_coor_set      ()
     {
@@ -3924,6 +3989,7 @@ struct impl : consrv
                 console_ptr->cup0(caretpos);
             }
         }
+        unsync = true;
     }
     auto api_scrollback_cursor_info_get      ()
     {
@@ -3972,7 +4038,8 @@ struct impl : consrv
         {
             if constexpr (isreal())
             {
-                uiterm.cursor.style(packet.input.style > 50);
+                // Ignore legacy cursor style.
+                //uiterm.cursor.style(packet.input.style > 50 ? text_cursor::block : text_cursor::underline);
                 packet.input.alive ? uiterm.cursor.show()
                                    : uiterm.cursor.hide();
             }
@@ -4016,14 +4083,14 @@ struct impl : consrv
         {
             viewport = os::ttysize;
         }
-        packet.reply.cursorposx = caretpos.x;
-        packet.reply.cursorposy = caretpos.y;
-        packet.reply.buffersz_x = viewport.x;
-        packet.reply.buffersz_y = viewport.y;
-        packet.reply.windowsz_x = viewport.x;
-        packet.reply.windowsz_y = viewport.y;
-        packet.reply.maxwinsz_x = viewport.x;
-        packet.reply.maxwinsz_y = viewport.y;
+        packet.reply.cursorposx = (si16)(caretpos.x);
+        packet.reply.cursorposy = (si16)(caretpos.y);
+        packet.reply.buffersz_x = (si16)(viewport.x);
+        packet.reply.buffersz_y = (si16)(viewport.y);
+        packet.reply.windowsz_x = (si16)(viewport.x);
+        packet.reply.windowsz_y = (si16)(viewport.y);
+        packet.reply.maxwinsz_x = (si16)(viewport.x);
+        packet.reply.maxwinsz_y = (si16)(viewport.y);
         packet.reply.windowposx = 0;
         packet.reply.windowposy = 0;
         packet.reply.fullscreen = faux;
@@ -4041,7 +4108,7 @@ struct impl : consrv
             {
                 auto const& c = *head++;
                 auto m = netxs::swap_bits<0, 2>(i); // ANSI<->DOS color scheme reindex.
-                rgbpalette[m] = c & 0x00FFFFFF; // conhost crashed if alpha non zero.
+                rgbpalette[m] = argb::swap_rb(c); // conhost crashes if alpha non zero.
                 if (c == frgb) fgcx = m;
                 if (c == brgb) bgcx = m + 1;
             }
@@ -4049,7 +4116,7 @@ struct impl : consrv
             {
                 bgcx = 0;
                 uiterm.ctrack.color[bgcx] = brgb;
-                rgbpalette         [bgcx] = brgb & 0x00FFFFFF; // conhost crashed if alpha non zero.
+                rgbpalette         [bgcx] = argb::swap_rb(brgb); // conhost crashes if alpha non zero.
             }
             packet.reply.attributes = static_cast<ui16>(fgcx + (bgcx << 4));
             if (mark.inv()) packet.reply.attributes |= COMMON_LVB_REVERSE_VIDEO;
@@ -4110,24 +4177,26 @@ struct impl : consrv
           "\n\twindow size: ", windowsz,
           "\n\tmaxwin size: ", twod{ packet.input.maxwinsz_x, packet.input.maxwinsz_y },
           "\n\tpopup color: ", packet.input.popupcolor,
-          "\n\tfull screen: ", packet.input.fullscreen,
+          "\n\tfull screen: ", (si32)packet.input.fullscreen,
           "\n\trgb palette: ");
         auto i = 0;
         for (auto c : packet.input.rgbpalette)
         {
-            log("\t\t", utf::to_hex(i), " ", rgba{ c });
+            log("\t\t", utf::to_hex(i++), " ", argb{ c });
         }
         if constexpr (isreal())
         {
             //todo set palette per buffer
             auto& rgbpalette = packet.input.rgbpalette;
             auto head = std::begin(uiterm.ctrack.color);
-            for (auto i = 0; i < 16; i++)
+            i = 0;
+            while (i < 16)
             {
-                auto m = netxs::swap_bits<0, 2>(i); // ANSI<->DOS color scheme reindex.
-                *head++ = rgbpalette[m] | 0xFF000000; // conhost crashed if alpha non zero.
+                auto m = netxs::swap_bits<0, 2>(i++); // ANSI<->DOS color scheme reindex.
+                *head++ = argb::swap_rb(rgbpalette[m]) | 0xFF'00'00'00;
             }
         }
+        unsync = true;
     }
     auto api_scrollback_size_set             ()
     {
@@ -4159,9 +4228,10 @@ struct impl : consrv
                 uiterm.window_resize(size);
             }
             auto viewport = console.panel;
-            packet.input.buffersz_x = viewport.x;
-            packet.input.buffersz_y = viewport.y;
+            packet.input.buffersz_x = (si16)(viewport.x);
+            packet.input.buffersz_y = (si16)(viewport.y);
         }
+        unsync = true;
     }
     auto api_scrollback_viewport_get_max_size()
     {
@@ -4181,14 +4251,14 @@ struct impl : consrv
         {
             auto& console = *window_ptr;
             auto viewport = console.panel;
-            packet.reply.maxwinsz_x = viewport.x;
-            packet.reply.maxwinsz_y = viewport.y;
+            packet.reply.maxwinsz_x = (si16)viewport.x;
+            packet.reply.maxwinsz_y = (si16)viewport.y;
         }
         else
         {
             auto viewport = os::ttysize;
-            packet.reply.maxwinsz_x = viewport.x;
-            packet.reply.maxwinsz_y = viewport.y;
+            packet.reply.maxwinsz_x = (si16)(viewport.x);
+            packet.reply.maxwinsz_y = (si16)(viewport.y);
         }
         log("\treply.maxwin size: ", twod{ packet.reply.maxwinsz_x, packet.reply.maxwinsz_y });
     }
@@ -4218,8 +4288,8 @@ struct impl : consrv
             auto viewport = console.panel;
             packet.input.rectL = 0;
             packet.input.rectT = 0;
-            packet.input.rectR = viewport.y - 1;
-            packet.input.rectB = viewport.y - 1;
+            packet.input.rectR = (si16)(viewport.y - 1);
+            packet.input.rectB = (si16)(viewport.y - 1);
             packet.input.isabsolute = 1;
         }
     }
@@ -4247,12 +4317,13 @@ struct impl : consrv
         auto& packet = payload::cast(upload);
         auto window_ptr = select_buffer(packet.target);
         if (!window_ptr) return;
+        unsync = true;
         if constexpr (isreal())
         {
-            auto& window = *window_ptr;
-            if (packet.input.destx == 0 && packet.input.desty ==-window.panel.y
-             && packet.input.scrlL == 0 && packet.input.scrlR == window.panel.x
-             && packet.input.scrlT == 0 && packet.input.scrlB == window.panel.y)
+            auto& window_inst = *window_ptr;
+            if (packet.input.destx == 0 && packet.input.desty ==-window_inst.panel.y
+             && packet.input.scrlL == 0 && packet.input.scrlR == window_inst.panel.x
+             && packet.input.scrlT == 0 && packet.input.scrlB == window_inst.panel.y)
             {
                 log("\timplicit screen clearing detected",
                     "\n\tpacket.input.dest: ", twod{ packet.input.destx, packet.input.desty },
@@ -4264,13 +4335,13 @@ struct impl : consrv
                     "\n\tpacket.input.clipT: ", packet.input.clipT,
                     "\n\tpacket.input.clipR: ", packet.input.clipR,
                     "\n\tpacket.input.clipB: ", packet.input.clipB);
-                window.clear_all();
+                window_inst.clear_all();
                 return;
             }
             auto scrl = rect{{ packet.input.scrlL, packet.input.scrlT },
                              { std::max(0, packet.input.scrlR - packet.input.scrlL + 1),
                                std::max(0, packet.input.scrlB - packet.input.scrlT + 1) }};
-            auto clip = !packet.input.trunc ? rect{ dot_00, window.panel }
+            auto clip = !packet.input.trunc ? rect{ dot_00, window_inst.panel }
                                             : rect{{ packet.input.clipL, packet.input.clipT },
                                                    { std::max(0, packet.input.clipR - packet.input.clipL + 1),
                                                      std::max(0, packet.input.clipB - packet.input.clipT + 1) }};
@@ -4282,20 +4353,20 @@ struct impl : consrv
               "\n\tinput.trunc: ", packet.input.trunc ? "true" : "faux",
               "\n\tinput.utf16: ", packet.input.utf16 ? "true" : "faux",
               "\n\tinput.brush: ", mark);
-            scrl = scrl.trunc(window.panel);
-            clip = clip.trunc(window.panel);
-            mirror.size(window.panel);
-            mirror.view(scrl);
+            scrl = scrl.trunc(window_inst.panel);
+            clip = clip.trunc(window_inst.panel);
+            mirror.size(window_inst.panel);
+            mirror.clip(scrl);
             mirror.fill(cell{});
-            window.do_viewport_copy(mirror);
-            mirror.view(scrl);
+            window_inst.do_viewport_copy(mirror);
+            mirror.clip(scrl);
             filler.kill();
             filler.mark(mark);
             filler.size(scrl.size);
-            auto success = direct(packet.target, [&](auto& scrollback)
+            direct(packet.target, [&](auto& scrollback)
             {
-                write_block(scrollback, filler, scrl.coor, clip, cell::shaders::full);
-                write_block(scrollback, mirror, dest,      clip, cell::shaders::full);
+                uiterm.write_block(scrollback, filler, scrl.coor, clip, cell::shaders::full);
+                uiterm.write_block(scrollback, mirror, dest,      clip, cell::shaders::full);
             });
         }
         else
@@ -4334,8 +4405,8 @@ struct impl : consrv
             }
             reply;
         };
-        auto& packet = payload::cast(upload);
-
+        //auto& packet = payload::cast(upload);
+        //
     }
     auto api_window_title_get                ()
     {
@@ -4411,7 +4482,7 @@ struct impl : consrv
     }
     auto api_window_font_get                 ()
     {
-        log(prompt, "GetCurrentConsoleFont");
+        log(prompt, "GetCurrentConsoleFontEx");
         struct payload : drvpacket<payload>
         {
             struct
@@ -4433,7 +4504,7 @@ struct impl : consrv
         packet.reply.index = 0;
         packet.reply.sizex = 10;
         packet.reply.sizey = 20;
-        packet.reply.pitch = 0;
+        packet.reply.pitch = TMPF_TRUETYPE; // Pwsh checks this to decide whether or not to switch to UTF-8. For raster fonts (non-Unicode), the low-order bits are set to zero.
         packet.reply.heavy = 0;
         auto brand = L"Consolas"s + L'\0';
         std::copy(std::begin(brand), std::end(brand), std::begin(packet.reply.brand));
@@ -4518,14 +4589,14 @@ struct impl : consrv
         if constexpr (isreal())
         {
             auto& console = *window_ptr;
-            packet.reply.buffersz_x = console.panel.x;
-            packet.reply.buffersz_y = console.panel.y;
+            packet.reply.buffersz_x = (si16)console.panel.x;
+            packet.reply.buffersz_y = (si16)console.panel.y;
         }
         else
         {
             auto viewport = os::ttysize;
-            packet.reply.buffersz_x = viewport.x;
-            packet.reply.buffersz_y = viewport.y;
+            packet.reply.buffersz_x = (si16)(viewport.x);
+            packet.reply.buffersz_y = (si16)(viewport.y);
         }
         log("\tinput.flags: ", packet.input.flags,
           "\n\treply.buffer size: ", twod{ packet.reply.buffersz_x, packet.reply.buffersz_y });
@@ -4855,7 +4926,6 @@ struct impl : consrv
     using apis = std::vector<void(impl::*)()>;
     using list = std::list<clnt>;
     using face = ui::face;
-    using fire = netxs::os::fire;
     using xlat = netxs::sptr<decoder>;
 
     Term&       uiterm; // consrv: Terminal reference.
@@ -4883,13 +4953,10 @@ struct impl : consrv
     para        celler; // consrv: Buffer for converting raw text to cells.
     xlat        inpenc; // consrv: Current code page decoder for input stream.
     xlat        outenc; // consrv: Current code page decoder for output stream.
+    bool        unsync; // consrv: The terminal must be updated.
 
-    auto& create_window()
+    auto create_window()
     {
-        if (os::dtvt::isolated)
-        {
-            return os::clipboard::winhndl;
-        }
         window = std::thread{ [&]
         {
             auto wndname = text{ "vtmConsoleWindowClass" };
@@ -4911,8 +4978,13 @@ struct impl : consrv
                 .lpfnWndProc   = wndproc,
                 .lpszClassName = wndname.c_str(),
             };
-            if (ok(::RegisterClassExA(&wnddata) || os::error() == ERROR_CLASS_ALREADY_EXISTS, "unexpected result from ::RegisterClassExA()")
-               && (winhnd = ::CreateWindowExA(0, wndname.c_str(), 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)))
+            auto create_window = [&]
+            {
+                winhnd = ::CreateWindowExA(0, wndname.c_str(), 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+                return winhnd;
+            };
+            if (ok(::RegisterClassExA(&wnddata) || os::error() == ERROR_CLASS_ALREADY_EXISTS, "::RegisterClassExA()", os::unexpected)
+               && create_window())
             {
                 auto next = MSG{};
                 while (next.message != WM_QUIT)
@@ -4937,19 +5009,17 @@ struct impl : consrv
                 return;
             }
         }};
-        return winhnd;
+        while (!winhnd) // Waiting for a win32 window to be created.
+        {
+            std::this_thread::yield();
+        }
     }
     void start()
     {
         reset();
         events.reset();
         signal.flush();
-        auto& nominal_window = create_window();
-        while (!nominal_window) // Waiting for a win32 window to be created.
-        {
-            std::this_thread::yield();
-        }
-        winhnd = nominal_window;
+        create_window();
         server = std::thread{ [&]
         {
             while (condrv != os::invalid_fd)
@@ -4971,12 +5041,18 @@ struct impl : consrv
                         {
                             auto lock = std::lock_guard{ events.locker };
                             (this->*proc)();
+                            if (unsync)
+                            {
+                                unsync = faux;
+                                return true;
+                            }
+                            else return faux;
                         });
                         break;
                     }
                     case ERROR_IO_PENDING:         log(prompt, "Operation has not completed"); ::WaitForSingleObject(condrv, 0); break;
                     case ERROR_PIPE_NOT_CONNECTED: log(prompt, "Client disconnected"); return;
-                    default:                       log(prompt, "Unexpected nt::ioctl result ", rc); break;
+                    default:                       log(prompt, "nt::ioctl()", os::unexpected, " ", rc); break;
                 }
             }
             log(prompt, "Server thread ended");
@@ -5044,16 +5120,16 @@ struct impl : consrv
             }
         }
     }
-    void mouse(input::hids& gear, bool moved, twod coord,
-        input::mouse::prot encod, input::mouse::mode state) { events.mouse(gear, moved, coord); }
-    void keybd(input::hids& gear, bool decckm)              { events.keybd(gear, decckm);       }
-    void paste(view block)                                  { events.paste(block);              }
-    void focus(bool state)                                  { events.focus(state);              }
-    void winsz(twod newsz)                                  { events.winsz(newsz);              }
-    void style(ui32 style)                                  { events.style(style);              }
-    bool  send(view utf8)                                   { events.write(utf8); return true;  }
-    void  undo(bool undo_redo)                              { events.undo(undo_redo);           }
-    fd_t watch()                                            { return events.ondata;             }
+    void mouse(input::hids& gear, bool /*moved*/, twod coord, input::mouse::prot /*encod*/,
+                 input::mouse::mode /*state*/) { events.mouse(gear, coord);        }
+    void keybd(input::hids& gear, bool decckm) { events.keybd(gear, decckm);       }
+    void paste(view block)                     { events.paste(block);              }
+    void focus(bool state)                     { events.focus(state);              }
+    void winsz(twod newsz)                     { events.winsz(newsz);              }
+    void style(si32 style)                     { events.style(style);              }
+    bool  send(view utf8)                      { events.write(utf8); return true;  }
+    void  undo(bool undo_redo)                 { events.undo(undo_redo);           }
+    fd_t watch()                               { return events.ondata;             }
 
     impl(Term& uiterm)
         : uiterm{ uiterm                                         },
@@ -5066,8 +5142,9 @@ struct impl : consrv
           outmod{                                                },
           altmod{ faux                                           },
           prompt{ utf::concat(win32prompt)                       },
-          inpenc{ std::make_shared<decoder>(*this, os::codepage) },
-          outenc{ inpenc                                         }
+          inpenc{ std::make_shared<decoder>(*this, ::GetOEMCP()) },
+          outenc{ inpenc                                         },
+          unsync{ faux                                           }
     {
         apimap.resize(0xFF, &impl::api_unsupported);
         apimap[0x38] = &impl::api_system_langid_get;
@@ -5190,24 +5267,24 @@ struct consrv : ipc::stdcon
         return ptr::shared<consrv>(terminal);
     }
     template<class Term, class Proc>
-    auto attach(Term& terminal, text cmd, text cwd, text env, twod win, Proc trailer, fdrw fdlink)
+    auto attach(Term& terminal, eccc cfg, Proc trailer, fdrw fdlink)
     {
         auto fdm = os::syscall{ ::posix_openpt(O_RDWR | O_NOCTTY) }; // Get master TTY.
         auto rc1 = os::syscall{ ::grantpt(fdm.value)              }; // Grant master TTY file access.
         auto rc2 = os::syscall{ ::unlockpt(fdm.value)             }; // Unlock master TTY.
         stdcon::start(fdm.value);
-        stdinput = std::thread([&, trailer]
+        stdinput = std::thread{ [&, trailer]
         {
             read_socket_thread(terminal);
             trailer();
-        });
+        }};
         auto pid = os::syscall{ os::process::sysfork() };
         if (pid.value == 0) // Child branch.
         {
             auto rc3 = os::syscall{ ::setsid() }; // Open new session and new process group in it.
             auto fds = os::syscall{ ::open(::ptsname(fdm.value), O_RDWR | O_NOCTTY) }; // Open slave TTY via string ptsname(fdm) (BSD doesn't auto assign controlling terminal: we should assign it explicitly).
             auto rc4 = os::syscall{ ::ioctl(fds.value, TIOCSCTTY, 0) }; // Assign it as a controlling TTY (in order to receive WINCH and other signals).
-            winsz(win); // TTY resize can be done only after assigning a controlling TTY (BSD-requirement).
+            winsz(cfg.win); // TTY resize can be done only after assigning a controlling TTY (BSD-requirement).
             os::dtvt::active = faux; // Logger update.
             os::dtvt::client = {};   //
             if (fdlink)
@@ -5234,11 +5311,11 @@ struct consrv : ipc::stdcon
                     "rc4: ", rc4.value, " errcode: ", rc4.error, "\n"
                     "fds: ", fds.value, " errcode: ", fds.error);
             }
-            env +=  "VTM=1\0"
-                    "TERM=xterm-256color\0"
-                    "COLORTERM=truecolor\0"sv;
-            env = os::env::add(env);
-            os::process::spawn(cmd, cwd, env);
+            cfg.env += "VTM=1\0"
+                       "TERM=xterm-256color\0"
+                       "COLORTERM=truecolor\0"sv;
+            cfg.env = os::env::add(cfg.env);
+            os::process::spawn(cfg.cmd, cfg.cwd, cfg.env);
         }
         // Parent branch.
         auto err_code = 0;
@@ -5257,27 +5334,27 @@ struct consrv : ipc::stdcon
     {
         //todo
     }
-    void focus(bool state)
+    void focus(bool /*state*/)
     {
         //todo win32-input-mode
     }
-    void mouse(input::hids& gear, bool moved, twod coord, input::mouse::prot encod, input::mouse::mode state)
+    void mouse(input::hids& /*gear*/, bool /*moved*/, twod /*coord*/, input::mouse::prot /*encod*/, input::mouse::mode /*state*/)
     {
         //todo win32-input-mode
     }
-    void keybd(input::hids& gear, bool decckm)
+    void keybd(input::hids& /*gear*/, bool /*decckm*/)
     {
         //todo win32-input-mode
     }
-    void paste(view block)
+    void paste(view /*block*/)
     {
         //todo win32-input-mode
     }
-    void style(ui32 format)
+    void style(si32 /*format*/)
     {
         //todo win32-input-mode
     }
-    void undo(bool undoredo)
+    void undo(bool /*undoredo*/)
     {
         //todo
     }

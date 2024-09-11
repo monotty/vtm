@@ -1,4 +1,4 @@
-// Copyright (c) NetXS Group.
+// Copyright (c) Dmitry Sapozhnikov
 // Licensed under the MIT license.
 
 #pragma once
@@ -7,32 +7,28 @@
 namespace netxs::app::desk
 {
     static constexpr auto id = "desk";
-    static constexpr auto desc = "Taskbar menu";
+    static constexpr auto name = "Taskbar menu";
 
     struct spec
     {
         text   menuid{};
         text    alias{};
-        bool   hidden{};
+        bool   hidden{}; // Hide existing item on taskbar.
+        bool    fixed{}; // Item can't be updated by the new instance (see desk::events::exec).
         text    label{};
         text    notes{};
         text    title{};
         text   footer{};
-        rgba      bgc{};
-        rgba      fgc{};
         twod  winsize{};
         twod  wincoor{};
-        shared::winform::form winform{};
-        bool slimmenu{};
+        si32  winform{};
         bool splitter{};
         text   hotkey{};
-        text      env{}; // Environment var list delimited by \0.
-        text      cwd{};
+        eccc   appcfg{};
         text     type{};
-        text    param{};
-        text    patch{};
         bool   folded{};
         bool notfound{};
+        id_t   gearid{};
     };
 
     using menu = std::unordered_map<text, spec>;
@@ -43,10 +39,11 @@ namespace netxs::app::desk
     {
         EVENTPACK( events, ui::e2::extra::slot2 )
         {
-            EVENT_XS( usrs, netxs::sptr<desk::usrs> ), // list of connected users.
-            EVENT_XS( apps, netxs::sptr<desk::apps> ), // list of running apps.
-            EVENT_XS( menu, netxs::sptr<desk::menu> ), // list of registered apps.
-            EVENT_XS( quit, bool                    ), // request to close all instances.
+            EVENT_XS( usrs, netxs::sptr<desk::usrs> ), // List of connected users.
+            EVENT_XS( apps, netxs::sptr<desk::apps> ), // List of running apps.
+            EVENT_XS( menu, netxs::sptr<desk::menu> ), // List of registered apps.
+            EVENT_XS( exec, spec                    ), // Request to run app.
+            EVENT_XS( quit, bool                    ), // Request to close all instances.
             GROUP_XS( ui  , text                    ),
 
             SUBSET_XS( ui )
@@ -73,7 +70,7 @@ namespace netxs::app::desk
         {
             auto tall = si32{ skin::globals().menuwide };
             auto danger_color    = skin::globals().danger;
-            auto highlight_color = skin::globals().highlight;
+            //auto highlight_color = skin::globals().highlight;
             auto focused_color   = skin::globals().focused;
             auto active_color    = skin::globals().active;
             auto cE = active_color;
@@ -97,15 +94,18 @@ namespace netxs::app::desk
                         boss.SIGNAL(tier::release, e2::form::state::disabled, disabled);
                         auto& notes = boss.template plugins<pro::notes>();
                         notes.update(disabled ? " Window is locked by another user "
-                                              : " Application window:              \n"
-                                                "   Left click to go to the window \n"
-                                                "   Right click to pull the window ");
+                                              : " Application window:                   \n"
+                                                "   LeftClick to set exclusive focus    \n"
+                                                "   Ctrl+LeftClick to set group focus   \n"
+                                                "   DoubleLeftClick to go to the window \n"
+                                                "   Alt+DblLeftClick to pull the window \n"
+                                                "   LeftDrag to move desktop viewport   ");
                         return disabled;
                     };
                     data_src->SIGNAL(tier::request, e2::form::state::maximized, gear_id, ());
                     boss.LISTEN(tier::release, e2::form::upon::vtree::attached, parent, -, (gear_id))
                     {
-                        disabled = check_id(boss, gear_id); // On tittle update.
+                        disabled = check_id(boss, gear_id); // On title update.
                     };
                     auto oneshot = ptr::shared(hook{});
                     boss.LISTEN(tier::anycast, events::ui::recalc, state, *oneshot, (oneshot, gear_id, data_src_shadow)) // On session start.
@@ -117,52 +117,72 @@ namespace netxs::app::desk
                     {
                         disabled = check_id(boss, gear_id);
                     };
+                    boss.LISTEN(tier::release, hids::events::mouse::button::dblclick::left, gear, -, (data_src_shadow, disabled_ptr/*owns*/))
+                    {
+                        if (disabled) { gear.dismiss(true); return; }
+                        if (auto data_src = data_src_shadow.lock())
+                        {
+                            auto& window = *data_src;
+                            if (gear.meta(hids::anyAlt)) // Pull window.
+                            {
+                                window.RISEUP(tier::preview, e2::form::layout::expose, area, ());
+                                gear.owner.SIGNAL(tier::request, e2::form::prop::viewport, viewport, ());
+                                window.SIGNAL(tier::preview, e2::form::layout::appear, viewport.center()); // Pull window.
+                                if (window.hidden) // Restore if minimized.
+                                {
+                                    window.SIGNAL(tier::release, e2::form::size::minimize, gear);
+                                }
+                                else pro::focus::set(data_src, gear.id, pro::focus::solo::on, pro::focus::flip::off);
+                            }
+                            else // Jump to window.
+                            {
+                                gear.owner.SIGNAL(tier::release, e2::form::layout::jumpto, window);
+                            }
+                            gear.dismiss();
+                        }
+                    };
                     boss.LISTEN(tier::release, hids::events::mouse::button::click::left, gear, -, (data_src_shadow, disabled_ptr/*owns*/))
                     {
                         if (disabled) { gear.dismiss(true); return; }
                         if (auto data_src = data_src_shadow.lock())
                         {
                             auto& window = *data_src;
-                            auto  center = window.base::area().center();
-                            gear.owner.SIGNAL(tier::request, e2::form::prop::viewport, viewport, ());
-
-                            if (viewport.hittest(center)        // Minimize if visible,
-                             && !window.hidden                  // not minimized,
-                             && pro::focus::test(window, gear)) // and focused.
+                            if (gear.meta(hids::anyCtrl)) // Toggle group focus.
                             {
-                                if (gear.meta(hids::anyCtrl)) pro::focus::off(data_src, gear.id); // Remove focus if Ctrl pressed.
-                                else                          window.SIGNAL(tier::release, e2::form::size::minimize, gear);
+                                if (pro::focus::test(window, gear))
+                                {
+                                    pro::focus::off(data_src, gear.id); // Remove focus if focused.
+                                }
+                                else // Expose and set group focus.
+                                {
+                                    window.RISEUP(tier::preview, e2::form::layout::expose, area, ());
+                                    if (window.hidden) // Restore if minimized.
+                                    {
+                                        window.SIGNAL(tier::release, e2::form::size::minimize, gear);
+                                    }
+                                    pro::focus::set(data_src, gear.id, pro::focus::solo::off, pro::focus::flip::off);
+                                }
+                                gear.dismiss(true); // Suppress double click.
                             }
-                            else
+                            else if (gear.meta(hids::anyAlt)) // Skip it and wait for Alt+Dblclick.
+                            {
+                                gear.dismiss();
+                            }
+                            else // Set unique focus.
                             {
                                 window.RISEUP(tier::preview, e2::form::layout::expose, area, ());
-                                gear.owner.SIGNAL(tier::release, e2::form::layout::jumpto, window);
-                                if (window.hidden) // Restore if hidden.
+                                if (window.hidden) // Restore if minimized.
                                 {
                                     window.SIGNAL(tier::release, e2::form::size::minimize, gear);
                                 }
-                                else pro::focus::set(data_src, gear.id, gear.meta(hids::anyCtrl) ? pro::focus::solo::off
-                                                                                                 : pro::focus::solo::on, pro::focus::flip::off);
+                                else pro::focus::set(data_src, gear.id, pro::focus::solo::on, pro::focus::flip::off);
+                                gear.dismiss();
                             }
-                            gear.dismiss(true);
                         }
                     };
                     boss.LISTEN(tier::release, hids::events::mouse::button::click::right, gear, -, (data_src_shadow))
                     {
-                        if (disabled) { gear.dismiss(true); return; }
-                        if (auto data_src = data_src_shadow.lock())
-                        {
-                            auto& window = *data_src;
-                            window.RISEUP(tier::preview, e2::form::layout::expose, area, ());
-                            gear.owner.SIGNAL(tier::request, e2::form::prop::viewport, viewport, ());
-                            window.SIGNAL(tier::preview, e2::form::layout::appear, viewport.center()); // Pull window.
-                            if (window.hidden) // Restore if minimized.
-                            {
-                                window.SIGNAL(tier::release, e2::form::size::minimize, gear);
-                            }
-                            else pro::focus::set(data_src, gear.id, pro::focus::solo::on, pro::focus::flip::off);
-                            gear.dismiss();
-                        }
+                        // Reserved for context menu.
                     };
                     boss.LISTEN(tier::release, e2::form::state::mouse, state, -, (data_src_shadow))
                     {
@@ -187,7 +207,7 @@ namespace netxs::app::desk
                 {
                     boss.base::hidden = true;
                     auto data_src_shadow = ptr::shadow(data_src);
-                    auto& item_area_inst = *item_area;
+                    //auto& item_area_inst = *item_area;
                     item_area->LISTEN(tier::release, e2::form::state::mouse, hover, -)
                     {
                         if (disabled) return;
@@ -228,12 +248,12 @@ namespace netxs::app::desk
         auto apps_template = [](auto& data_src, auto& apps_map_ptr)
         {
             auto tall = si32{ skin::globals().menuwide };
-            auto highlight_color = skin::globals().highlight;
+            //auto highlight_color = skin::globals().highlight;
             auto inactive_color  = skin::globals().inactive;
             auto selected_color  = skin::globals().selected;
             auto danger_color    = skin::globals().danger;
             auto c1 = danger_color;
-            auto c3 = highlight_color;
+            //auto c3 = highlight_color;
             auto c9 = selected_color;
             auto cA = inactive_color;
 
@@ -250,9 +270,10 @@ namespace netxs::app::desk
                     };
                 });
 
-            auto def_note = text{" Application:                                   \n"
-                                 "   Left click to start the application instance \n"
-                                 "   Right click to set as default                "};
+            auto def_note = text{" Application:                                  \n"
+                                 "   LeftClick to start the application instance \n"
+                                 "   RightClick to set it as default             \n"
+                                 "   LeftDrag to move desktop viewport           "};
             data_src->RISEUP(tier::request, desk::events::menu, conf_list_ptr, ());
             if (!conf_list_ptr || !apps_map_ptr) return apps;
             auto& conf_list = *conf_list_ptr;
@@ -262,7 +283,15 @@ namespace netxs::app::desk
             {
                 auto& [state, inst_ptr_list] = stat_inst_ptr_list;
                 auto inst_id = class_id;
-                auto& conf = conf_list[class_id];
+                auto conf_it = conf_list.find(class_id);
+                if (conf_it == conf_list.end()) conf_it = conf_list.insert({ class_id, { .menuid = class_id }}).first; // Empty menu case (vtm.del()).
+                if (conf_it->second.label.empty()) // Avoid using empty groups.
+                {
+                    auto& conf = conf_it->second;
+                    conf.label = ansi::err(ansi::stk(1), class_id, ansi::stk(0));
+                    conf.hidden = true;
+                }
+                auto& conf = conf_it->second;
                 auto& obj_desc = conf.label;
                 auto& obj_note = conf.notes;
                 if (conf.splitter)
@@ -306,7 +335,7 @@ namespace netxs::app::desk
                             }
                             boss.SIGNAL(tier::anycast, events::ui::selected, inst_id);
                             gear.owner.SIGNAL(tier::request, e2::form::prop::viewport, viewport, ());
-                            offset = (offset + dot_21 * 2) % (viewport.size * 7 / 32);
+                            offset = (offset + dot_21 * 2) % std::max(dot_11, viewport.size * 7 / 32);
                             gear.slot.coor = viewport.coor + offset + viewport.size * 1 / 32 + dot_11;
                             gear.slot.size = viewport.size * 3 / 4;
                             gear.slot_forced = faux;
@@ -332,7 +361,7 @@ namespace netxs::app::desk
                 {
                     auto& isfolded = conf.folded;
                     auto insts = block->attach(ui::list::ctor())
-                        ->setpad({ 0, 0, tall, -tall }, { 0, 0, -tall, 0 });
+                        ->setpad({ 0, 0, tall, 0 }, { 0, 0, -tall * 2, 0 });
                     auto bttn_rail = head_fork->attach(slot::_2, ui::rail::ctor(axes::X_only, axes::all, axes::none))
                         ->limits({ 5, -1 }, { 5, -1 })
                         ->invoke([&](auto& boss)
@@ -350,8 +379,9 @@ namespace netxs::app::desk
                         ->setpad({ 2, 2, tall, tall })
                         ->active()
                         ->shader(cell::shaders::xlight, e2::form::state::hover)
-                        ->template plugin<pro::notes>(" Hide active window list.               \n"
-                                                      " Use mouse wheel to switch it to close. ")
+                        ->template plugin<pro::notes>(" Window list disclosure toggle                  \n"
+                                                      "   LeftClick to expand/collapse the window list \n"
+                                                      "   MouseWheel to switch to list closing mode    ")
                         ->invoke([&](auto& boss)
                         {
                             insts->base::hidden = isfolded;
@@ -405,7 +435,7 @@ namespace netxs::app::desk
             auto highlight_color = skin::color(tone::highlight);
             auto c8 = cell{}.bgc(0x00).fgc(highlight_color.bgc());
             auto ver_label = ui::item::ctor(utf::concat(app::shared::version))
-                ->active()
+                ->active(cell{}.fgc(whitedk))
                 ->shader(c8, e2::form::state::hover)
                 ->limits({}, { -1, 1 })
                 ->alignment({ snap::tail, snap::tail });
@@ -414,57 +444,26 @@ namespace netxs::app::desk
                 ->template plugin<pro::notes>(" Info ")
                 ->invoke([&](auto& boss)
                 {
-                    boss.LISTEN(tier::release, hids::events::mouse::button::click::left, gear, -, (appid, label, title))
+                    auto infospec = spec{ .hidden = true, .label = label, .title = title, .type = appid };
+                    boss.LISTEN(tier::release, hids::events::mouse::button::click::left, gear, -, (infospec))
                     {
-                        static auto offset = dot_00;
-                        auto& gate = gear.owner;
-                        gear.owner.SIGNAL(tier::request, e2::form::prop::viewport, viewport, ());
-                        offset = (offset + dot_21 * 2) % (viewport.size * 7 / 32);
-                        gear.slot.coor = viewport.coor + offset + viewport.size * 1 / 32;
-                        gear.slot.size = viewport.size * 3 / 4;
-                        gear.slot_forced = faux;
-
-                        gate.RISEUP(tier::request, desk::events::apps, menu_list_ptr, ());
-                        gate.RISEUP(tier::request, desk::events::menu, conf_list_ptr, ());
-                        auto& menu_list = *menu_list_ptr;
-                        auto& conf_list = *conf_list_ptr;
-
-                        auto menuid = label;
-                        if (conf_list.contains(menuid) && !conf_list[menuid].hidden) // Check for id availability.
-                        {
-                            auto i = 1;
-                            auto testid = text{};
-                            do testid = menuid + " (" + std::to_string(++i) + ")";
-                            while (conf_list.contains(testid) && !conf_list[menuid].hidden);
-                            std::swap(testid, menuid);
-                        }
-                        auto& m = conf_list[menuid];
-                        m.type = appid;
-                        m.label = label;
-                        m.title = title;
-                        m.param = {};
-                        m.hidden = true;
-                        menu_list[menuid];
-
-                        gate.SIGNAL(tier::request, e2::data::changed, lastid, ());
-                        gate.SIGNAL(tier::release, e2::data::changed, menuid);
-                        gate.RISEUP(tier::request, e2::form::proceed::createby, gear);
-                        gate.SIGNAL(tier::release, e2::data::changed, lastid);
+                        infospec.gearid = gear.id;
+                        gear.owner.RISEUP(tier::request, desk::events::exec, infospec);
                         gear.dismiss(true);
                     };
                 });
         };
 
-        auto build = [](text env, text cwd, text v, xmls& config, text patch)
+        auto build = [](eccc usrcfg, xmls& config)
         {
             auto tall = si32{ skin::globals().menuwide };
-            auto highlight_color = skin::globals().highlight;
+            //auto highlight_color = skin::globals().highlight;
             auto inactive_color  = skin::globals().inactive;
-            auto warning_color   = skin::globals().warning;
+            //auto warning_color   = skin::globals().warning;
             auto danger_color    = skin::globals().danger;
             auto cA = inactive_color;
-            auto c3 = highlight_color;
-            auto c2 = warning_color;
+            //auto c3 = highlight_color;
+            //auto c2 = warning_color;
             auto c1 = danger_color;
 
             auto menu_bg_color = config.take("/config/menu/color", cell{}.fgc(whitedk).bgc(0x60202020));
@@ -481,16 +480,19 @@ namespace netxs::app::desk
             auto panel = window->attach(slot::_1, ui::cake::ctor());
             if (panel_cmd.size())
             {
+                auto panel_cfg = eccc{ .env = panel_env,
+                                       .cwd = panel_cwd,
+                                       .cmd = panel_cmd };
                 panel_top = std::max(1, panel_top);
                 panel->limits({ -1, panel_top }, { -1, panel_top })
-                     ->attach(app::shared::builder(app::headless::id)(panel_env, panel_cwd, panel_cmd, config, ""s));
+                     ->attach(app::shared::builder(app::vtty::id)(panel_cfg, config));
             }
             auto my_id = id_t{};
 
-            auto user_info = utf::divide(v, ";");
+            auto user_info = utf::split(usrcfg.cfg, ";");
             if (user_info.size() < 2)
             {
-                log(prompt::desk, "Bad window arguments: args=", utf::debase(v));
+                log(prompt::desk, "Bad window arguments: args=", utf::debase(usrcfg.cfg));
                 return window;
             }
             auto& user_id__view = user_info[0];
@@ -505,7 +507,7 @@ namespace netxs::app::desk
                 return window;
             }
 
-            auto client = bell::getref(my_id);
+            auto client = window->bell::getref(my_id);
             if (!client)
             {
                 log(prompt::desk, "Non-existent user ID=", my_id);
@@ -515,12 +517,12 @@ namespace netxs::app::desk
             auto user_template = [my_id](auto& data_src, auto const& utf8)
             {
                 auto tall = si32{ skin::globals().menuwide };
-                auto highlight_color = skin::color(tone::highlight);
+                //auto highlight_color = skin::color(tone::highlight);
                 auto active_color    = skin::globals().active;
                 auto cE = active_color;
-                auto c3 = highlight_color;
+                //auto c3 = highlight_color;
                 auto user = ui::item::ctor(escx(" &").nil().add(" ").wrp(wrap::off)
-                        .fgx(data_src->id == my_id ? cE.fgc() : rgba{}).add(utf8).nil())
+                        .fgx(data_src->id == my_id ? cE.fgc() : argb{}).add(utf8).nil())
                     ->flexible()
                     ->setpad({ 1, 0, tall, tall }, { 0, 0, -tall, 0 })
                     ->active()
@@ -528,11 +530,11 @@ namespace netxs::app::desk
                     ->template plugin<pro::notes>(" Connected user ");
                 return user;
             };
-            auto branch_template = [user_template](auto& data_src, auto& usr_list)
+            auto branch_template = [user_template](auto& /*data_src*/, auto& usr_list)
             {
                 auto tall = si32{ skin::globals().menuwide };
                 auto users = ui::list::ctor()
-                    ->setpad({ 0, 0, tall, -tall }, { 0, 0, 0, 0 })
+                    ->setpad({ 0, 0, tall, 0 }, { 0, 0, -tall, 0 })
                     ->attach_collection(e2::form::prop::name, *usr_list, user_template);
                 return users;
             };
@@ -551,7 +553,7 @@ namespace netxs::app::desk
                 auto label = "Info"s;
                 auto title = ansi::jet(bias::right).add(label);
                 auto ground = background(appid, label, title); // It can't be a child - it has exclusive rendering (first of all).
-                boss.LISTEN(tier::release, e2::form::upon::vtree::attached, parent_ptr, -, (size_config_ptr/*owns ptr*/, ground, current_default = text{}, previous_default = text{}, selected = text{ menu_selected }))
+                boss.LISTEN(tier::release, e2::form::upon::vtree::attached, parent_ptr, -, (size_config_ptr/*owns ptr*/, ground, current_default = text{}, previous_default = text{}, selected = text{ menu_selected }, usrcfg))
                 {
                     if (!parent_ptr) return;
                     auto& parent = *parent_ptr;
@@ -604,13 +606,21 @@ namespace netxs::app::desk
                     {
                         owner_id = parent.id;
                     };
+                    auto oneshot = ptr::shared(hook{});
+                    parent.LISTEN(tier::release, hids::events::focus::any, gear, *oneshot, (oneshot, usrcfg))
+                    {
+                        usrcfg.win = {};
+                        usrcfg.hid = gear.id;
+                        boss.RISEUP(tier::release, scripting::events::invoke, usrcfg);
+                        oneshot->reset();
+                    };
                 };
             });
             auto taskbar_viewport = window->attach(slot::_2, ui::fork::ctor(axis::X));
             auto taskbar_grips = taskbar_viewport->attach(slot::_1, ui::fork::ctor(axis::X))
                 ->limits({ menu_min_size, -1 }, { menu_min_size, -1 })
                 ->plugin<pro::timer>()
-                ->plugin<pro::acryl>(10)
+                ->plugin<pro::acryl>()
                 ->plugin<pro::cache>()
                 ->active(menu_bg_color)
                 ->invoke([&](auto& boss)
@@ -653,23 +663,31 @@ namespace netxs::app::desk
                 });
             auto grips = taskbar_grips->attach(slot::_2, ui::mock::ctor())
                 ->limits({ 1, -1 }, { 1, -1 })
-                ->template plugin<pro::notes>(" Use LeftDrag to adjust taskbar width ")
+                ->template plugin<pro::notes>(" LeftDrag to adjust taskbar width ")
                 //->template plugin<pro::focus>(pro::focus::mode::focusable)
                 //->shader(c3, e2::form::state::keybd::focus::count)
                 ->shader(cell::shaders::xlight, e2::form::state::hover)
                 ->active()
                 ->invoke([&](auto& boss)
                 {
+                    auto drag_origin = ptr::shared<fp2d>();
                     boss.mouse.template draggable<hids::buttons::left>(true);
-                    boss.LISTEN(tier::release, e2::form::drag::pull::_<hids::buttons::left>, gear)
+                    boss.LISTEN(tier::release, e2::form::drag::start::_<hids::buttons::left>, gear, -, (drag_origin))
+                    {
+                        *drag_origin = gear.coord;
+                    };
+                    boss.LISTEN(tier::release, e2::form::drag::pull::_<hids::buttons::left>, gear, -, (drag_origin))
                     {
                         if (auto taskbar_grips = boss.base::parent())
                         {
-                            taskbar_grips->base::min_sz.x = std::max(1, taskbar_grips->base::min_sz.x + gear.delta.get().x);
-                            taskbar_grips->base::max_sz.x = taskbar_grips->base::min_sz.x;
-                            active ? menu_max_size = taskbar_grips->base::min_sz.x
-                                   : menu_min_size = taskbar_grips->base::min_sz.x;
-                            taskbar_grips->base::reflow();
+                            if (auto delta = (twod{ gear.coord } - twod{ *drag_origin })[axis::X])
+                            {
+                                taskbar_grips->base::min_sz.x = std::max(1, taskbar_grips->base::min_sz.x + delta);
+                                taskbar_grips->base::max_sz.x = taskbar_grips->base::min_sz.x;
+                                active ? menu_max_size = taskbar_grips->base::min_sz.x
+                                       : menu_min_size = taskbar_grips->base::min_sz.x;
+                                taskbar_grips->base::reflow();
+                            }
                         }
                     };
                     boss.LISTEN(tier::release, events::ui::sync, state)
@@ -680,21 +698,24 @@ namespace netxs::app::desk
                                    : menu_max_size = menu_min_size;
                         }
                     };
-                    boss.LISTEN(tier::release, e2::form::drag::cancel::_<hids::buttons::left>, gear, -, (size_config))
+                    boss.LISTEN(tier::release, e2::form::drag::cancel::_<hids::buttons::left>, gear)
                     {
                         boss.SIGNAL(tier::release, events::ui::sync, true);
                     };
-                    boss.LISTEN(tier::release, e2::form::drag::stop::_<hids::buttons::left>, gear, -, (size_config))
+                    boss.LISTEN(tier::release, e2::form::drag::stop::_<hids::buttons::left>, gear)
                     {
                         boss.SIGNAL(tier::release, events::ui::sync, true);
                     };
                 });
             auto taskbar_park = taskbar_grips->attach(slot::_1, ui::cake::ctor());
             auto taskbar = taskbar_park->attach(ui::fork::ctor(axis::Y)->alignment({ snap::head, snap::head }, { snap::head, snap::tail }));
-            auto apps_users = taskbar->attach(slot::_1, ui::fork::ctor(axis::Y, 0, 100));
+            auto apps_users = taskbar->attach(slot::_1, ui::fork::ctor(axis::Y, 0, 100))
+                ->setpad({}, { 0, 0, 0, -tall }); // To place above Disconnect button.
             auto applist_area = apps_users->attach(slot::_1, ui::cake::ctor());
             auto tasks_scrl = applist_area->attach(ui::rail::ctor(axes::Y_only))
-                ->plugin<pro::notes>(" Use RightDrag or scroll wheel to slide up/down ")
+                ->plugin<pro::notes>(" Desktop Taskbar                     \n"
+                                     "   RightDrag to scroll menu up/down  \n"
+                                     "   LeftDrag to move desktop viewport ")
                 ->active()
                 ->invoke([&](auto& boss)
                 {
@@ -723,6 +744,7 @@ namespace netxs::app::desk
                 ->plugin<pro::notes>(" Show/hide user list ")
                 ->setpad({ 2, 2, tall, tall });
             auto userlist_area = users_area->attach(ui::cake::ctor())
+                ->setpad({}, { 0, 0, -tall, 0 }) // To place above the admins/users label.
                 ->invoke([&](auto& boss)
                 {
                     boss.base::hidden = userlist_hidden;
@@ -770,7 +792,7 @@ namespace netxs::app::desk
                 ->limits(bttn_min_size, bttn_max_size);
             auto disconnect_park = bttns->attach(slot::_1, ui::cake::ctor())
                 ->active()
-                ->shader(c2, e2::form::state::hover)
+                ->shader(cell::shaders::xlight, e2::form::state::hover)
                 ->plugin<pro::notes>(" Leave current session ")
                 ->invoke([&, name = text{ username_view }](auto& boss)
                 {

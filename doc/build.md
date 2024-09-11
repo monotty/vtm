@@ -1,6 +1,6 @@
-# Text Mode Desktop
+# Text-based Desktop Environment
 
-## Building from Source
+## Building from source
 
 ### Unix
 
@@ -35,5 +35,6 @@ git clone https://github.com/directvt/vtm.git
 cd vtm
 cmake . -B bin
 cmake --build bin --config Release
-bin\Release\vtm.exe
+bin\Release\vtm.exe --install
+vtm
 ```

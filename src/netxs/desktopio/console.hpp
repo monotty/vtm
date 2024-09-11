@@ -1,4 +1,4 @@
-// Copyright (c) NetXS Group.
+// Copyright (c) Dmitry Sapozhnikov
 // Licensed under the MIT license.
 
 #pragma once
@@ -11,14 +11,15 @@ namespace netxs::ui
     {
         static auto id = std::pair<ui32, time>{};
         static constexpr auto mouse   = 1 << 0;
-        static constexpr auto nt      = 1 << 5;
-        static constexpr auto onlylog = 1 << 6;
+        static constexpr auto nt      = 1 << 6; // Use win32 console api for input.
+        static constexpr auto redirio = 1 << 7;
         //todo make 3-bit field for color mode
         static constexpr auto vtrgb   = 0;
         static constexpr auto nt16    = 1 << 1;
         static constexpr auto vt16    = 1 << 2;
         static constexpr auto vt256   = 1 << 3;
         static constexpr auto direct  = 1 << 4;
+        static constexpr auto gui     = 1 << 5;
 
         template<class T>
         auto str(T mode)
@@ -31,7 +32,6 @@ namespace netxs::ui
                 if (mode & vt16   ) result += "vt16 ";
                 if (mode & vt256  ) result += "vt256 ";
                 if (mode & direct ) result += "direct ";
-                if (mode & onlylog) result += "onlylog ";
                 if (result.size()) result.pop_back();
             }
             else result = "vtrgb";
@@ -106,7 +106,7 @@ namespace netxs::ui
             : public s11n
         {
             pipe& canal; // link: Data highway.
-            base& owner; // link: Link owner.
+            gate& owner; // link: Link owner.
             flag  alive; // link: sysclose isn't sent.
 
             // link: Send data outside.
@@ -126,7 +126,7 @@ namespace netxs::ui
                 }
             }
 
-            link(pipe& canal, base& owner)
+            link(pipe& canal, gate& owner)
                 : s11n{ *this },
                  canal{ canal },
                  owner{ owner },
@@ -137,7 +137,7 @@ namespace netxs::ui
             template<tier Tier = tier::release, class E, class T>
             void notify(E, T&& data)
             {
-                netxs::events::enqueue(owner.This(), [d = data](auto& boss) mutable
+                owner.bell::enqueue(owner.This(), [d = data](auto& boss) mutable
                 {
                     //boss.SIGNAL(Tier, E{}, d); // VS2022 17.4.1 doesn't get it for some reason (nested lambdas + static_cast + decltype(...)::type).
                     boss.bell::template signal<Tier>(E::id, static_cast<typename E::type &&>(d));
@@ -148,10 +148,22 @@ namespace netxs::ui
                 auto& focus = lock.thing;
                 auto deed = netxs::events::makeid(hids::events::keybd::focus::bus::any.id, focus.cause);
                 if (focus.guid != ui::console::id.second || deed != hids::events::keybd::focus::bus::copy.id) // To avoid focus tree infinite looping.
-                netxs::events::enqueue(owner.This(), [d = focus, deed](auto& boss) mutable
+                owner.bell::enqueue(owner.This(), [d = focus, deed](auto& boss) mutable
                 {
                     auto seed = hids::events::keybd::focus::bus::on.param({ .id = d.gear_id });
                     boss.bell::template signal<tier::release>(deed, seed);
+                });
+            }
+            void handle(s11n::xs::req_input_fields lock)
+            {
+                owner.bell::enqueue(owner.This(), [&, item = lock.thing](auto& /*boss*/) mutable
+                {
+                    auto ext_gear_id = item.gear_id;
+                    auto int_gear_id = owner.get_int_gear_id(ext_gear_id);
+                    owner.SIGNAL(tier::general, ui::e2::command::request::inputfields, inputfield_request, ({ .gear_id = int_gear_id, .acpStart = item.acpStart, .acpEnd = item.acpEnd })); // pro::focus retransmits as a tier::release for focused objects.
+                    auto field_list = inputfield_request.wait_for();
+                    for (auto& f : field_list) f.coor -= owner.coor();
+                    s11n::ack_input_fields.send(canal, ext_gear_id, field_list);
                 });
             }
             void handle(s11n::xs::sysfocus    lock)
@@ -164,6 +176,15 @@ namespace netxs::ui
                 auto& item = lock.thing;
                 notify(e2::conio::winsz, item.winsize);
             }
+            //todo use s11n::xs::screenmode:  normal/fullscreen/maximized/mnimized
+            void handle(s11n::xs::fullscrn  /*lock*/)
+            {
+                owner.fullscreen = true;
+            }
+            void handle(s11n::xs::restored  /*lock*/)
+            {
+                owner.fullscreen = faux;
+            }
             void handle(s11n::xs::sysboard    lock)
             {
                 auto& item = lock.thing;
@@ -171,20 +192,20 @@ namespace netxs::ui
             }
             void handle(s11n::xs::logs        lock)
             {
-                auto& logs = lock.thing;
-                if (ui::console::id.first == lock.thing.id)
+                auto& item = lock.thing;
+                if (ui::console::id.first == item.id)
                 {
-                    notify<tier::general>(e2::conio::logs, logs.data);
+                    notify<tier::general>(e2::conio::logs, item.data);
                 }
                 else
                 {
-                    if (logs.data.size() && logs.data.back() == '\n') logs.data.pop_back();
-                    if (logs.data.size())
+                    if (item.data.size() && item.data.back() == '\n') item.data.pop_back();
+                    if (item.data.size())
                     {
                         auto data = escx{};
-                        utf::divide(logs.data, '\n', [&](auto line)
+                        utf::split(item.data, '\n', [&](auto line)
                         {
-                            data.add(netxs::prompt::pads, logs.id, ": ", line, '\n');
+                            data.add(netxs::prompt::pads, item.id, ": ", line, '\n');
                         });
                         notify<tier::general>(e2::conio::logs, data);
                     }
@@ -195,16 +216,10 @@ namespace netxs::ui
                 auto& keybd = lock.thing;
                 notify(e2::conio::keybd, keybd);
             }
-            void handle(s11n::xs::syspaste    lock)
-            {
-                auto& paste = lock.thing;
-                //log("syspaste: ", ansi::hi(paste.txtdata));
-                notify(e2::conio::paste, paste);
-            }
             void handle(s11n::xs::sysmouse    lock)
             {
-                auto& mouse = lock.thing;
-                notify(e2::conio::mouse, mouse);
+                auto& item = lock.thing;
+                notify(e2::conio::mouse, item);
             }
             void handle(s11n::xs::mousebar    lock)
             {
@@ -215,10 +230,16 @@ namespace netxs::ui
             {
                 auto& items = lock.thing;
                 auto list = s11n::jgc_list.freeze();
-                for (auto& gc : items)
                 {
-                    auto cluster = cell::gc_get_data(gc.token);
-                    list.thing.push(gc.token, cluster);
+                    auto jumbos = cell::glyf::jumbos();
+                    for (auto& gc : items)
+                    {
+                        auto& cluster = jumbos.get(gc.token);
+                        if (cluster.length())
+                        {
+                            list.thing.push(gc.token, cluster);
+                        }
+                    }
                 }
                 list.thing.sendby(canal);
             }
@@ -227,20 +248,10 @@ namespace netxs::ui
                 auto& item = lock.thing;
                 notify(e2::config::fps, item.frame_rate);
             }
-            void handle(s11n::xs::bgc         lock)
+            void handle(s11n::xs::cwd         lock)
             {
-                auto& item = lock.thing;
-                notify<tier::anycast>(e2::form::prop::colors::bg, item.color);
-            }
-            void handle(s11n::xs::fgc         lock)
-            {
-                auto& item = lock.thing;
-                notify<tier::anycast>(e2::form::prop::colors::fg, item.color);
-            }
-            void handle(s11n::xs::slimmenu    lock)
-            {
-                auto& item = lock.thing;
-                notify<tier::anycast>(e2::form::prop::ui::slimmenu, item.menusize);
+                auto& path = lock.thing.path;
+                notify<tier::anycast>(e2::form::prop::cwd, path);
             }
             void handle(s11n::xs::sysclose    lock)
             {
@@ -364,7 +375,7 @@ namespace netxs::ui
             void stop()
             {
                 if (!alive.exchange(faux)) return;
-                auto id = paint.get_id();
+                auto thread_id = paint.get_id();
                 while (true)
                 {
                     auto guard = std::unique_lock{ mutex, std::try_to_lock };
@@ -381,7 +392,7 @@ namespace netxs::ui
                 canal.isbusy = faux;
                 canal.isbusy.notify_all();
                 paint.join();
-                if constexpr (debugmode) log(prompt::diff, "Rendering thread joined", ' ', utf::to_hex_0x(id));
+                if constexpr (debugmode) log(prompt::diff, "Rendering thread joined", ' ', utf::to_hex_0x(thread_id));
             }
         };
 
@@ -418,8 +429,8 @@ namespace netxs::ui
                 config.cd("/config/client/");
                 clip_preview_clrs = config.take("clipboard/preview"        , cell{}.bgc(bluedk).fgc(whitelt));
                 clip_preview_time = config.take("clipboard/preview/timeout", span{ 3s });
-                clip_preview_alfa = config.take("clipboard/preview/alpha"  , 0xFF);
-                clip_preview_glow = config.take("clipboard/preview/shadow" , 7);
+                clip_preview_alfa = config.take("clipboard/preview/alpha"  , byte{ 0xFF });
+                clip_preview_glow = config.take("clipboard/preview/shadow" , 3);
                 clip_preview_show = config.take("clipboard/preview/enabled", true);
                 clip_preview_size = config.take("clipboard/preview/size"   , twod{ 80,25 });
                 clip_prtscrn_mime = config.take("clipboard/format"         , mime::htmltext, xml::options::format);
@@ -430,10 +441,10 @@ namespace netxs::ui
                 debug_overlay     = config.take("debug/overlay"            , faux);
                 debug_toggle      = config.take("debug/toggle"             , "🐞"s);
                 show_regions      = config.take("regions/enabled"          , faux);
-                clip_preview_glow = std::clamp(clip_preview_glow, 0, 10);
+                clip_preview_glow = std::clamp(clip_preview_glow, 0, 5);
             }
 
-            props_t(pipe& canal, view userid, si32 mode, bool isvtm, si32 session_id, xmls& config)
+            props_t(pipe& /*canal*/, view userid, si32 mode, bool isvtm, si32 session_id, xmls& config)
             {
                 read(config);
                 legacy_mode = mode;
@@ -443,8 +454,8 @@ namespace netxs::ui
                     os_user_id        = utf::concat("[", userid, ":", session_id, "]");
                     title             = os_user_id;
                     selected          = config.take("/config/menu/selected", ""s);
-                    background_color  = cell{}.fgc(config.take("background/fgc", rgba{ whitedk }))
-                                              .bgc(config.take("background/bgc", rgba{ 0xFF000000 }));
+                    background_color  = cell{}.fgc(config.take("background/fgc", argb{ whitedk }))
+                                              .bgc(config.take("background/bgc", argb{ 0xFF000000 }));
                     auto utf8_tile = config.take("background/tile", ""s);
                     if (utf8_tile.size())
                     {
@@ -462,6 +473,7 @@ namespace netxs::ui
                 vtmode = legacy_mode & ui::console::nt16   ? svga::nt16
                        : legacy_mode & ui::console::vt16   ? svga::vt16
                        : legacy_mode & ui::console::vt256  ? svga::vt256
+                       : legacy_mode & ui::console::gui    ? svga::dtvt
                        : legacy_mode & ui::console::direct ? svga::dtvt
                                                            : svga::vtrgb;
             }
@@ -485,7 +497,7 @@ namespace netxs::ui
                 auto gear_it = gears.find(device.gear_id);
                 if (gear_it == gears.end())
                 {
-                    gear_it = gears.emplace(device.gear_id, bell::create<hids>(boss.props, boss, xmap)).first;
+                    gear_it = gears.emplace(device.gear_id, boss.bell::create<hids>(boss.props, boss, xmap)).first;
                 }
                 auto& [_id, gear_ptr] = *gear_it;
                 gear_ptr->hids::take(device);
@@ -516,14 +528,14 @@ namespace netxs::ui
                         }
                     }
                 };
-                boss.LISTEN(tier::release, e2::form::prop::filler, filler, memo)
+                boss.LISTEN(tier::release, e2::form::prop::filler, new_filler, memo)
                 {
-                    auto guard = std::lock_guard{ sync }; // Syncing with diff::render thread.
-                    xmap.mark(filler);
+                    auto guard = std::lock_guard{ sync }; // Sync with diff::render thread.
+                    xmap.mark(new_filler);
                 };
                 boss.LISTEN(tier::release, e2::area, new_area, memo)
                 {
-                    auto guard = std::lock_guard{ sync }; // Syncing with diff::render thread.
+                    auto guard = std::lock_guard{ sync }; // Sync with diff::render thread.
                     xmap.face::area(new_area);
                 };
                 boss.LISTEN(tier::release, e2::conio::mouse, m, memo)
@@ -548,10 +560,6 @@ namespace netxs::ui
                 {
                     forward(k);
                 };
-                boss.LISTEN(tier::release, e2::conio::paste, p, memo)
-                {
-                    forward(p);
-                };
                 boss.LISTEN(tier::release, e2::conio::focus, f, memo)
                 {
                     forward(f);
@@ -563,11 +571,14 @@ namespace netxs::ui
             }
             void fire(hint event_id)
             {
-                for (auto& [id, gear_ptr] : gears)
+                for (auto& [gear_id, gear_ptr] : gears)
                 {
-                    auto& gear = *gear_ptr;
-                    gear.fire_fast();
-                    gear.fire(event_id);
+                    if (gear_id)
+                    {
+                        auto& gear = *gear_ptr;
+                        gear.fire_fast();
+                        gear.fire(event_id);
+                    }
                 }
             }
             auto get_foreign_gear_id(id_t gear_id)
@@ -593,10 +604,13 @@ namespace netxs::ui
             X(win_size     , "win size"         ) \
             X(key_code     , "key virt"         ) \
             X(key_scancode , "key scan"         ) \
-            X(key_character, "key char"         ) \
+            X(key_character, "key data"         ) \
             X(key_pressed  , "key push"         ) \
+            X(key_payload  , "key type"         ) \
             X(ctrl_state   , "controls"         ) \
+            X(k            , "k"                ) \
             X(mouse_pos    , "mouse coord"      ) \
+            X(mouse_wheelsi, "wheel steps"      ) \
             X(mouse_wheeldt, "wheel delta"      ) \
             X(mouse_hzwheel, "H wheel"          ) \
             X(mouse_vtwheel, "V wheel"          ) \
@@ -708,7 +722,7 @@ namespace netxs::ui
             {
                 //todo use skin
                 stress = cell{}.fgc(whitelt);
-                alerts = cell{}.fgc(rgba{ 0xFFd0d0FFu });
+                alerts = cell{}.fgc(argb{ 0xFF'ff'd0'd0 });
 
                 status.style.wrp(wrap::on).jet(bias::left).rlf(feed::rev).mgl(4);
                 status.current().locus.cup(dot_00).cnl(2);
@@ -756,9 +770,17 @@ namespace netxs::ui
                         state = m_buttons[i] ? "pressed" : "idle   ";
                     }
 
-                    status[prop::mouse_wheeldt].set(stress) = m.wheeldt ? std::to_string(m.wheeldt) :  " -- "s;
+                    if constexpr (debugmode)
+                    {
+                        status[prop::k].set(stress) = std::to_string(netxs::_k0) + " "
+                                                    + std::to_string(netxs::_k1) + " "
+                                                    + std::to_string(netxs::_k2) + " "
+                                                    + std::to_string(netxs::_k3);
+                    }
+                    status[prop::mouse_wheeldt].set(stress) = m.wheelfp ? (m.wheelfp < 0 ? ""s : " "s) + std::to_string(m.wheelfp) : " -- "s;
+                    status[prop::mouse_wheelsi].set(stress) = m.wheelsi ? (m.wheelsi < 0 ? ""s : " "s) + std::to_string(m.wheelsi) : m.wheelfp ? " 0 "s : " -- "s;
                     status[prop::mouse_hzwheel].set(stress) = m.hzwheel ? "active" : "idle  ";
-                    status[prop::mouse_vtwheel].set(stress) = m.wheeled ? "active" : "idle  ";
+                    status[prop::mouse_vtwheel].set(stress) = (m.wheelfp && !m.hzwheel) ? "active" : "idle  ";
                     status[prop::ctrl_state   ].set(stress) = "0x" + utf::to_hex(m.ctlstat);
                 };
                 boss.LISTEN(tier::release, e2::conio::keybd, k, tokens)
@@ -769,20 +791,25 @@ namespace netxs::ui
                     status[prop::ctrl_state   ].set(stress) = "0x" + utf::to_hex(k.ctlstat );
                     status[prop::key_code     ].set(stress) = "0x" + utf::to_hex(k.virtcod );
                     status[prop::key_scancode ].set(stress) = "0x" + utf::to_hex(k.scancod );
-
+                    status[prop::key_payload  ].set(stress) = k.payload == keybd::type::keypress ? "keypress"
+                                                            : k.payload == keybd::type::keypaste ? "keypaste"
+                                                            : k.payload == keybd::type::imeanons ? "IME composition"
+                                                            : k.payload == keybd::type::imeinput ? "IME input"
+                                                            : k.payload == keybd::type::kblayout ? "keyboard layout" : "unknown payload";
                     if (k.cluster.length())
                     {
-                        auto t = k.cluster;
-                        for (auto i = 0; i < 0x20; i++)
+                        auto t = text{};
+                        for (byte c : k.cluster)
                         {
-                            utf::change(t, text{ (char)i }, "^" + utf::to_utf_from_code(i + 0x40));
+                                 if (c <  0x20) t += "^" + utf::to_utf_from_code(c + 0x40);
+                            else if (c == 0x7F) t += "\\x7F";
+                            else if (c == 0x20) t += "\\x20";
+                            else                t.push_back(c);
                         }
-                        utf::change(t, text{ (char)0x7f }, "\\x7F");
-                        utf::change(t, text{ (char)0x20 }, "\\x20");
                         status[prop::key_character].set(stress) = t;
                     }
                 };
-                boss.LISTEN(tier::release, e2::conio::error, e, tokens)
+                boss.LISTEN(tier::release, e2::conio::error, error, tokens)
                 {
                     shadow();
                     status[prop::last_event].set(stress) = "error";
@@ -793,18 +820,19 @@ namespace netxs::ui
 
     public:
         pipe&      canal; // gate: Channel to outside.
-        bool       yield; // gate: Indicator that the current frame has been successfully STDOUT'd.
-        para       uname; // gate: Client name.
-        text       uname_txt; // gate: Client name (original).
         props_t    props; // gate: Application properties.
         input_t    input; // gate: Input event handler.
         debug_t    debug; // gate: Statistics monitor.
-        sptr       applet; // gate: Standalone application.
         diff       paint; // gate: Render.
         link       conio; // gate: Input data parser.
-        subs       tokens; // gate: Subscription tokens.
         bool       direct; // gate: .
         bool       local; // gate: .
+        bool       yield; // gate: Indicator that the current frame has been successfully STDOUT'd.
+        bool       fullscreen; // gate: .
+        para       uname; // gate: Client name.
+        text       uname_txt; // gate: Client name (original).
+        sptr       applet; // gate: Standalone application.
+        subs       tokens; // gate: Subscription tokens.
         wptr       nexthop; // gate: .
         hook       oneoff_focus; // gate: .
 
@@ -812,11 +840,11 @@ namespace netxs::ui
         {
             auto& header = *uname.lyric;
             auto  half_x = header.size().x / 2;
-            for (auto& [id, gear_ptr] : input.gears)
+            for (auto& [gear_id, gear_ptr] : input.gears)
             {
                 auto& gear = *gear_ptr;
                 if (gear.disabled) continue;
-                auto coor = gear.coord;
+                auto coor = twod{ gear.coord };
                 coor.y -= 1;
                 coor.x -= half_x;
                 header.move(coor);
@@ -828,19 +856,19 @@ namespace netxs::ui
             static const auto idle = cell{}.txt("\xE2\x96\x88"/*\u2588 █ */).bgc(0x00).fgc(0xFF00ff00);
             static const auto busy = cell{}.bgc(reddk).fgc(0xFFffffff);
             auto area = rect_11;
-            for (auto& [id, gear_ptr] : input.gears)
+            for (auto& [gear_id, gear_ptr] : input.gears)
             {
                 auto& gear = *gear_ptr;
                 if (gear.disabled) continue;
                 area.coor = gear.coord;
-                auto brush = gear.m.buttons ? cell{ busy }.txt(64 + gear.m.buttons/*A-Z*/)
-                                            : idle;
+                auto brush = gear.m_sys.buttons ? cell{ busy }.txt(64 + (char)gear.m_sys.buttons/*A-Z*/)
+                                                : idle;
                 canvas.fill(area, cell::shaders::fuse(brush));
             }
         }
         void draw_clipboard_preview(face& canvas, time const& stamp)
         {
-            for (auto& [id, gear_ptr] : input.gears)
+            for (auto& [gear_id, gear_ptr] : input.gears)
             {
                 auto& gear = *gear_ptr;
                 gear.board::shown = !gear.disabled &&
@@ -848,7 +876,7 @@ namespace netxs::ui
                                      props.clip_preview_time > stamp - gear.delta.stamp());
                 if (gear.board::shown)
                 {
-                    auto coor = gear.coord + dot_21 * 2;
+                    auto coor = twod{ gear.coord } + dot_21 * 2;
                     auto full = gear.board::image.full();
                     gear.board::image.move(coor - full.coor);
                     canvas.plot(gear.board::image, cell::shaders::mix);
@@ -861,7 +889,7 @@ namespace netxs::ui
             auto area = canvas.area();
             auto zero = rect{ dot_00, area.size };
             canvas.area(zero);
-            for (auto& [id, gear_ptr] : input.gears)
+            for (auto& [gear_id, gear_ptr] : input.gears)
             {
                 auto& gear = *gear_ptr;
                 if (gear.disabled) continue;
@@ -872,10 +900,10 @@ namespace netxs::ui
                     {
                         //todo optimize - cache tooltip_page
                         auto tooltip_page = page{ tooltip_data };
-                        auto area = full;
-                        area.coor = std::max(dot_00, gear.coord - twod{ 4, tooltip_page.size() + 1 });
-                        area.size.x = dot_mx.x; // Prevent line wrapping.
-                        canvas.full(area);
+                        auto full_area = full;
+                        full_area.coor = std::max(dot_00, twod{ gear.coord } - twod{ 4, tooltip_page.size() + 1 });
+                        full_area.size.x = dot_mx.x; // Prevent line wrapping.
+                        canvas.full(full_area);
                         canvas.cup(dot_00);
                         canvas.output(tooltip_page, cell::shaders::color(props.tooltip_colors));
                     }
@@ -911,6 +939,14 @@ namespace netxs::ui
             if (result) base::strike();
         }
 
+        // gate: .
+        id_t get_int_gear_id(id_t ext_gear_id)
+        {
+            auto int_gear_id = id_t{};
+            auto gear_it = input.gears.find(ext_gear_id);
+            if (gear_it != input.gears.end()) int_gear_id = gear_it->second->id;
+            return int_gear_id;
+        }
         // gate: Attach a new item.
         auto attach(sptr& item)
         {
@@ -941,12 +977,41 @@ namespace netxs::ui
                 if (debug)
                 {
                     debug.output(canvas);
+                    if constexpr (debugmode) // Red channel histogram.
+                    if (input.gears.size())
+                    {
+                        auto& [gear_id, gear_ptr] = *input.gears.begin();
+                        if (gear_ptr->meta(hids::ScrlLock)) 
+                        {
+                            auto hist = page{};
+                            hist.brush.bgc(0x80ffffff);
+                            auto full = canvas.full();
+                            auto area = canvas.area();
+                            canvas.area({ dot_00, area.size });
+                            auto coor = gear_ptr->coord;
+                            for (auto x = 0; x < area.size.y; x++)
+                            {
+                                auto xy = coor + twod{ x - area.size.y/2, 0 };
+                                auto has_value = xy.x > 0 && xy.x < canvas.size().x;
+                                if (has_value) utf::repeat(" ", canvas[xy].bgc().chan.r);
+                                hist += "\n"s;
+                            }
+                            auto full_area = full;
+                            full_area.coor = {};
+                            full_area.size.x = dot_mx.x; // Prevent line wrapping.
+                            canvas.full(full_area);
+                            canvas.cup(dot_00);
+                            canvas.output(hist, cell::shaders::blend);
+                            canvas.area(area);
+                            canvas.full(full);
+                        }
+                    }
                 }
                 if (props.show_regions)
                 {
                     canvas.each([](cell& c)
                     {
-                        auto mark = rgba{ rgba::vt256[c.link() % 256] };
+                        auto mark = argb{ argb::vt256[c.link() % 256] };
                         auto bgc = c.bgc();
                         mark.alpha(64);
                         bgc.mix(mark);
@@ -958,7 +1023,7 @@ namespace netxs::ui
             {
                 if (props.clip_preview_time != span::zero()) // Check clipboard preview timeout.
                 {
-                    for (auto& [id, gear_ptr] : input.gears)
+                    for (auto& [gear_id, gear_ptr] : input.gears)
                     {
                         auto& gear = *gear_ptr;
                         if (gear.board::shown && props.clip_preview_time < stamp - gear.delta.stamp())
@@ -1017,20 +1082,22 @@ namespace netxs::ui
             SIGNAL(tier::release, e2::form::upon::stopped, true);
         }
 
-    protected:
         //todo revise
         gate(xipc uplink, si32 vtmode, xmls& config, view userid = {}, si32 session_id = 0, bool isvtm = faux)
             : canal{ *uplink },
               props{ canal, userid, vtmode, isvtm, session_id, config },
               input{ props, *this },
+              debug{*this },
               paint{ canal, props.vtmode },
               conio{ canal, *this  },
-              debug{*this },
               direct{ props.vtmode == svga::dtvt },
-              local{ true }
+              local{ true },
+              yield{ faux },
+              fullscreen{ faux }
         {
-            auto isolated = config.take("/config/isolated", faux); // DTVT proxy console case.
-            config.set("/config/isolated", faux);
+            //todo revise
+            //auto simple = config.take("/config/simple", faux); // DirectVT Gateway console case.
+            config.set("/config/simple", faux);
 
             base::root(true);
             base::limits(dot_11);
@@ -1051,15 +1118,6 @@ namespace netxs::ui
                 if (auto target = nexthop.lock())
                 {
                     target->SIGNAL(tier::preview, hids::events::keybd::key::post, gear);
-                }
-            };
-            LISTEN(tier::preview, hids::events::paste, gear, tokens) // Start of paste event propagation.
-            {
-                if (gear)
-                //if (auto target = local ? applet : base::parent())
-                if (auto target = nexthop.lock())
-                {
-                    target->SIGNAL(tier::preview, hids::events::paste, gear);
                 }
             };
             if (!direct)
@@ -1152,6 +1210,7 @@ namespace netxs::ui
                             conio.keybd_event.send(canal, ext_gear_id,
                                                           gear.ctlstate,
                                                           gear.extflag,
+                                                          gear.payload,
                                                           gear.virtcod,
                                                           gear.scancod,
                                                           gear.pressed,
@@ -1180,10 +1239,10 @@ namespace netxs::ui
                 viewport = base::area();
             };
             //todo unify creation (delete simple create wo gear)
-            LISTEN(tier::preview, e2::form::proceed::create, region, tokens)
+            LISTEN(tier::preview, e2::form::proceed::create, dest_region, tokens)
             {
-                region.coor += base::coor();
-                this->RISEUP(tier::release, e2::form::proceed::create, region);
+                dest_region.coor += base::coor();
+                this->RISEUP(tier::release, e2::form::proceed::create, dest_region);
             };
             LISTEN(tier::release, e2::form::proceed::onbehalf, proc, tokens)
             {
@@ -1326,17 +1385,17 @@ namespace netxs::ui
                     check_tooltips(now);
                 };
             }
-            if (direct && !isolated) // Forward unhandled events outside.
+            if (direct /*&& !simple  todo: revise*/) // Forward unhandled events outside.
             {
                 LISTEN(tier::release, e2::form::size::minimize, gear, tokens)
                 {
                     auto [ext_gear_id, gear_ptr] = input.get_foreign_gear_id(gear.id);
                     if (gear_ptr) conio.minimize.send(canal, ext_gear_id);
                 };
-                LISTEN(tier::release, hids::events::mouse::scroll::any, gear, tokens, (isvtm))
+                LISTEN(tier::release, hids::events::mouse::scroll::any, gear, tokens)
                 {
                     auto [ext_gear_id, gear_ptr] = input.get_foreign_gear_id(gear.id);
-                    if (gear_ptr) conio.mouse_event.send(canal, ext_gear_id, gear.ctlstate, gear.mouse::cause, gear.coord, gear.delta.get(), gear.take_button_state());
+                    if (gear_ptr) conio.mouse_event.send(canal, ext_gear_id, gear.ctlstate, gear.mouse::cause, gear.coord, gear.delta.get(), gear.take_button_state(), gear.whlfp, gear.whlsi, gear.hzwhl);
                     gear.dismiss();
                 };
                 LISTEN(tier::release, hids::events::mouse::button::any, gear, tokens, (isvtm))
@@ -1344,9 +1403,16 @@ namespace netxs::ui
                     using button = hids::events::mouse::button;
                     auto forward = faux;
                     auto cause = gear.mouse::cause;
-                    if (isvtm && (gear.index == hids::leftright // Reserved for dragging nested vtm.
-                              ||  gear.index == hids::right)    // Reserved for creation inside nested vtm.
-                     && events::subevent(cause, button::drag::any.id)) return;
+                    if (isvtm && (gear.index == hids::leftright || // Reserved for dragging nested vtm.
+                                  gear.index == hids::right)       // Reserved for creation inside nested vtm.
+                              && events::subevent(cause, button::drag::any.id))
+                    {
+                        return; // Pass event to the hall.
+                    }
+                    if (fullscreen && events::subevent(cause, button::drag::any.id)) // Enable left drag in fullscreen mode.
+                    {
+                        return; // Pass event to the hall.
+                    }
                     if (events::subevent(cause, button::click     ::any.id)
                      || events::subevent(cause, button::dblclick  ::any.id)
                      || events::subevent(cause, button::tplclick  ::any.id)
@@ -1368,7 +1434,7 @@ namespace netxs::ui
                     if (forward)
                     {
                         auto [ext_gear_id, gear_ptr] = input.get_foreign_gear_id(gear.id);
-                        if (gear_ptr) conio.mouse_event.send(canal, ext_gear_id, gear.ctlstate, cause, gear.coord, gear.delta.get(), gear.take_button_state());
+                        if (gear_ptr) conio.mouse_event.send(canal, ext_gear_id, gear.ctlstate, cause, gear.coord, gear.delta.get(), gear.take_button_state(), gear.whlfp, gear.whlsi, gear.hzwhl);
                         gear.dismiss();
                     }
                 };
@@ -1379,6 +1445,10 @@ namespace netxs::ui
                 LISTEN(tier::preview, e2::config::fps, fps, tokens)
                 {
                     conio.fps.send(canal, fps);
+                };
+                LISTEN(tier::preview, e2::form::prop::cwd, path, tokens)
+                {
+                    conio.cwd.send(canal, path);
                 };
                 LISTEN(tier::preview, hids::events::mouse::button::click::any, gear, tokens)
                 {
@@ -1395,7 +1465,7 @@ namespace netxs::ui
                 LISTEN(tier::preview, e2::form::size::enlarge::fullscreen, gear, tokens)
                 {
                     auto [ext_gear_id, gear_ptr] = input.get_foreign_gear_id(gear.id);
-                    if (gear_ptr) conio.fullscreen.send(canal, ext_gear_id);
+                    if (gear_ptr) conio.fullscrn.send(canal, ext_gear_id);
                 };
                 LISTEN(tier::preview, e2::form::size::enlarge::maximize, gear, tokens)
                 {
@@ -1423,24 +1493,22 @@ namespace netxs::ui
         : public form<host>
     {
     public:
-        using tick = datetime::quartz<events::reactor<>, hint>;
-        using list = std::vector<rect>;
+        using tick = datetime::quartz<bell, tier::general, e2::timer::tick.id>;
 
         pro::focus focus; // host: Focus controller. Must be the first of all focus subscriptions.
 
         tick quartz; // host: Frame rate synchronizator.
         si32 maxfps; // host: Frame rate.
-        list debris; // host: Wrecked regions.
+        regs debris; // host: Wrecked regions.
         xmls config; // host: Resultant settings.
         subs tokens; // host: Subscription tokens.
         flag active; // host: Host is available for connections.
 
         std::vector<bool> user_numbering; // host: .
 
-    protected:
         host(xipc server, xmls config, pro::focus::mode m = pro::focus::mode::hub)
             :  focus{ *this, m, faux },
-              quartz{ bell::router<tier::general>(), e2::timer::tick.id },
+              quartz{ *this },
               config{ config },
               active{ true }
         {
@@ -1448,11 +1516,9 @@ namespace netxs::ui
             auto& canal = *server;
 
             auto& g = skin::globals();
-            g.wheel_dt       = config.take("wheel_dt"              , 3     );
             g.brighter       = config.take("brighter"              , cell{ whitespace });//120);
             g.kb_focus       = config.take("kb_focus"              , cell{ whitespace });//60
             g.shadower       = config.take("shadower"              , cell{ whitespace });//180);//60);//40);// 20);
-            g.shadow         = config.take("shadow"                , cell{ whitespace });//180);//5);
             g.selector       = config.take("selector"              , cell{ whitespace });//48);
             g.highlight      = config.take("highlight"             , cell{ whitespace });
             g.selected       = config.take("selected"              , cell{ whitespace });
@@ -1485,8 +1551,14 @@ namespace netxs::ui
             g.repeat_rate    = config.take("timings/repeat_rate"   , span{ 30ms  });
             g.fader_time     = config.take("timings/fader/duration", span{ 150ms });
             g.fader_fast     = config.take("timings/fader/fast"    , span{ 0ms   });
-            g.max_value      = config.take("limits/window/size"    , twod{ 2000, 1000  });
+            g.max_value      = config.take("limits/window/size"    , twod{ 3000, 2000  });
             g.menuwide       = config.take("/config/menu/wide"     , faux);
+
+            g.shadow_enabled = config.take("shadow/enabled", true);
+            g.shadow_bias    = config.take("shadow/bias"   , 0.37f);
+            g.shadow_blur    = config.take("shadow/blur"   , 3);
+            g.shadow_opacity = config.take("shadow/opacity", 105.5f);
+            g.shadow_offset  = config.take("shadow/offset" , dot_21);
 
             maxfps = config.take("fps");
             if (maxfps <= 0) maxfps = 60;
@@ -1549,7 +1621,6 @@ namespace netxs::ui
             log(prompt::host, "Rendering refresh rate: ", maxfps, " fps");
         }
 
-    public:
         // host: Mark dirty region.
         void denote(rect updateregion)
         {
@@ -1558,15 +1629,15 @@ namespace netxs::ui
                 debris.push_back(updateregion);
             }
         }
-        void deface(rect region) override
+        void deface(rect damaged_region) override
         {
-            base::deface(region);
-            denote(region);
+            base::deface(damaged_region);
+            denote(damaged_region);
         }
         // host: Create a new root of the specified subtype and attach it.
         auto invite(xipc uplink, sptr& applet, si32 vtmode, twod winsz)
         {
-            auto lock = events::unique_lock();
+            auto lock = bell::unique_lock();
             auto portal = ui::gate::ctor(uplink, vtmode, host::config);
             portal->SIGNAL(tier::release, e2::form::upon::vtree::attached, base::This());
             portal->attach(applet);
@@ -1584,13 +1655,13 @@ namespace netxs::ui
             };
             lock.unlock();
             portal->launch();
-            netxs::events::dequeue();
+            bell::dequeue();
             quartz.stop();
         }
         // host: Shutdown.
         void stop()
         {
-            auto lock = events::sync{};
+            auto lock = bell::sync();
             mouse.reset();
             tokens.reset();
         }

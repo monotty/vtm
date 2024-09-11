@@ -1,4 +1,4 @@
-// Copyright (c) NetXS Group.
+// Copyright (c) Dmitry Sapozhnikov
 // Licensed under the MIT license.
 
 #pragma once
@@ -40,7 +40,7 @@ namespace netxs::xml
             auto c = line.pop_front();
             if (c == '\\' && line)
             {
-                auto c = line.pop_front();
+                c = line.pop_front();
                 switch (c)
                 {
                     case 'e' : crop.push_back('\x1b'); break;
@@ -67,7 +67,14 @@ namespace netxs::xml
             utf8.remove_prefix(2);
             return utf::to_int<T, 16>(utf8);
         }
-        else return utf::to_int<T, 10>(utf8);
+        else return utf8 ? utf::to_int<T, 10>(utf8)
+                         : std::nullopt;
+    }
+    template<>
+    auto take<fp32>(qiew utf8) -> std::optional<fp32>
+    {
+        return utf8 ? utf::to_int<fp32>(utf8)
+                    : std::nullopt;
     }
     template<>
     auto take<text>(qiew utf8) -> std::optional<text>
@@ -78,6 +85,7 @@ namespace netxs::xml
     auto take<bool>(qiew utf8) -> std::optional<bool>
     {
         auto value = utf::to_low(utf8.str());
+        if (value.starts_with("undef")) return std::nullopt; // Use default.
         return value.empty() || value.starts_with("1")  // 1 - true
                              || value.starts_with("on") // on
                              || value.starts_with("y")  // yes
@@ -87,6 +95,7 @@ namespace netxs::xml
     auto take<twod>(qiew utf8) -> std::optional<twod>
     {
         utf::trim_front(utf8, " ({[\"\'");
+        if (utf8)
         if (auto x = utf::to_int(utf8))
         {
             utf::trim_front(utf8, " ,.x/:;");
@@ -102,6 +111,7 @@ namespace netxs::xml
     {
         using namespace std::chrono;
         utf::trim_front(utf8, " ({[\"\'");
+        if (utf8)
         if (auto x = utf::to_int(utf8))
         {
             auto v = x.value();
@@ -119,17 +129,17 @@ namespace netxs::xml
         return std::nullopt;
     }
     template<>
-    auto take<rgba>(qiew utf8) -> std::optional<rgba>
+    auto take<argb>(qiew utf8) -> std::optional<argb>
     {
+        if (!utf8) return std::nullopt;
         auto tobyte = [](auto c)
         {
-                 if (c >= '0' && c <= '9') return c - '0';
-            else if (c >= 'a' && c <= 'f') return c - 'a' + 10;
-            else                           return 0;
+                 if (c >= '0' && c <= '9') return (byte)(c - '0');
+            else if (c >= 'a' && c <= 'f') return (byte)(c - 'a' + 10);
+            else                           return (byte)(0);
         };
-
         auto value = utf::to_low(utf8.str());
-        auto result = rgba{};
+        auto result = argb{};
         auto shadow = view{ value };
         utf::trim_front(shadow, " ({[\"\'");
         if (shadow.starts_with('#')) // hex: #rrggbbaa
@@ -151,56 +161,56 @@ namespace netxs::xml
                 result.chan.a = 0xff;
                 return result;
             }
-            else log("%%Unknown hex rgba format: { %value% }, expected #rrggbbaa or #rrggbb rgba hex value", prompt::xml, value);
+            else log("%%Unknown hex color format: { %value% }, expected #rrggbbaa or #rrggbb color hex value", prompt::xml, value);
         }
-        else if (shadow.starts_with("0x")) // hex: 0xaabbggrr
+        else if (shadow.starts_with("0x")) // hex: 0xaarrggbb
         {
             shadow.remove_prefix(2);
-            if (shadow.size() >= 8) // hex: 0xaabbggrr
+            if (shadow.size() >= 8) // hex: 0xaarrggbb
             {
                 result.chan.a = (tobyte(shadow[0]) << 4) + tobyte(shadow[1]);
-                result.chan.b = (tobyte(shadow[2]) << 4) + tobyte(shadow[3]);
+                result.chan.r = (tobyte(shadow[2]) << 4) + tobyte(shadow[3]);
                 result.chan.g = (tobyte(shadow[4]) << 4) + tobyte(shadow[5]);
-                result.chan.r = (tobyte(shadow[6]) << 4) + tobyte(shadow[7]);
+                result.chan.b = (tobyte(shadow[6]) << 4) + tobyte(shadow[7]);
                 return result;
             }
-            else if (shadow.size() >= 6) // hex: 0xbbggrr
+            else if (shadow.size() >= 6) // hex: 0xrrggbb
             {
-                result.chan.b = (tobyte(shadow[0]) << 4) + tobyte(shadow[1]);
-                result.chan.g = (tobyte(shadow[2]) << 4) + tobyte(shadow[3]);
-                result.chan.r = (tobyte(shadow[4]) << 4) + tobyte(shadow[5]);
                 result.chan.a = 0xff;
+                result.chan.r = (tobyte(shadow[0]) << 4) + tobyte(shadow[1]);
+                result.chan.g = (tobyte(shadow[2]) << 4) + tobyte(shadow[3]);
+                result.chan.b = (tobyte(shadow[4]) << 4) + tobyte(shadow[5]);
                 return result;
             }
-            else log("%%Unknown hex rgba format: { %value% }, expected 0xaabbggrr or 0xbbggrr rgba hex value", prompt::xml, value);
+            else log("%%Unknown hex color format: { %value% }, expected 0xaarrggbb or 0xrrggbb color hex value", prompt::xml, value);
         }
         else if (utf::check_any(shadow, ",;/")) // dec: 000,000,000,000
         {
             if (auto r = utf::to_int(shadow))
             {
-                result.chan.r = r.value();
+                result.chan.r = (byte)r.value();
                 utf::trim_front(shadow, ",./:;");
                 if (auto g = utf::to_int(shadow))
                 {
-                    result.chan.g = g.value();
+                    result.chan.g = (byte)g.value();
                     utf::trim_front(shadow, ",./:;");
                     if (auto b = utf::to_int(shadow))
                     {
-                        result.chan.b = b.value();
+                        result.chan.b = (byte)b.value();
                         utf::trim_front(shadow, ",./:;");
-                        if (auto a = utf::to_int(shadow)) result.chan.a = a.value();
+                        if (auto a = utf::to_int(shadow)) result.chan.a = (byte)a.value();
                         else                              result.chan.a = 0xff;
                         return result;
                     }
                 }
             }
-            log("%%Unknown hex rgba format: { %value% }, expected 000,000,000,000 decimal rgba value", prompt::xml, value);
+            log("%%Unknown hex color format: { %value% }, expected 000,000,000,000 decimal (r,g,b,a) color value", prompt::xml, value);
         }
         else if (auto c = utf::to_int(shadow)) // Single ANSI color value
         {
             if (c.value() >=0 && c.value() <=255)
             {
-                result = rgba::vt256[c.value()];
+                result = argb::vt256[c.value()];
                 return result;
             }
             else log("%%Unknown ANSI 256-color value format: { %value% }, expected 0-255 decimal value", prompt::xml, value);
@@ -307,15 +317,15 @@ namespace netxs::xml
             }
             auto show()
             {
-                static constexpr auto top_token_fg = rgba{ 0xFFffd799 };
-                static constexpr auto end_token_fg = rgba{ 0xFFb3966a };
-                static constexpr auto token_fg     = rgba{ 0xFFdab883 };
-                static constexpr auto liter_fg     = rgba{ 0xFF808080 };
-                static constexpr auto comment_fg   = rgba{ 0xFF4e4e4e };
-                static constexpr auto defaults_fg  = rgba{ 0xFF9e9e9e };
-                static constexpr auto quotes_fg    = rgba{ 0xFFBBBBBB };
-                static constexpr auto value_fg     = rgba{ 0xFFf09690 };
-                static constexpr auto value_bg     = rgba{ 0xFF202020 };
+                static constexpr auto top_token_fg = argb{ 0xFF'99'd7'ff };
+                static constexpr auto end_token_fg = argb{ 0xFF'6a'96'b3 };
+                static constexpr auto token_fg     = argb{ 0xFF'83'b8'da };
+                static constexpr auto liter_fg     = argb{ 0xFF'80'80'80 };
+                static constexpr auto comment_fg   = argb{ 0xFF'4e'4e'4e };
+                static constexpr auto defaults_fg  = argb{ 0xFF'9e'9e'9e };
+                static constexpr auto quotes_fg    = argb{ 0xFF'BB'BB'BB };
+                static constexpr auto value_fg     = argb{ 0xFF'90'96'f0 };
+                static constexpr auto value_bg     = argb{ 0xFF'20'20'20 };
     
                 //test
                 //auto tmp = page.data.front().upto;
@@ -326,7 +336,7 @@ namespace netxs::xml
                 while (next)
                 {
                     auto& item = *next;
-                    auto& data = item.utf8;
+                    auto& utf8 = item.utf8;
                     auto  kind = item.kind;
                     next = next->next;
     
@@ -337,8 +347,8 @@ namespace netxs::xml
                     //    tmp = item.upto;
                     //}
     
-                    auto fgc = rgba{};
-                    auto bgc = rgba{};
+                    auto fgc = argb{};
+                    auto bgc = argb{};
                     switch (kind)
                     {
                         case eof:           fgc = redlt;        break;
@@ -368,11 +378,11 @@ namespace netxs::xml
                     //test
                     //yield.bgc((tint)(clr % 8));
 
-                    if (data.size())                        
+                    if (utf8.size())
                     {
-                             if (bgc) yield.fgc(fgc).bgc(bgc).add(data).nil();
-                        else if (fgc) yield.fgc(fgc)         .add(data).nil();
-                        else          yield                  .add(data);
+                             if (bgc) yield.fgc(fgc).bgc(bgc).add(utf8).nil();
+                        else if (fgc) yield.fgc(fgc)         .add(utf8).nil();
+                        else          yield                  .add(utf8);
                     }
                 }
     
@@ -443,10 +453,10 @@ namespace netxs::xml
             auto list(qiew path_str)
             {
                 path_str = utf::trim(path_str, '/');
-                auto root = this;
+                auto anchor = this;
                 auto crop = vect{}; //auto& items = config.root->hive["menu"][0]->hive["item"]...;
                 auto temp = text{};
-                auto path = utf::divide(path_str, '/');
+                auto path = utf::split(path_str, '/');
                 if (path.size())
                 {
                     auto head = path.begin();
@@ -454,8 +464,8 @@ namespace netxs::xml
                     while (head != tail)
                     {
                         temp = *head++;
-                        if (auto iter = root->hive.find(temp);
-                                 iter!= root->hive.end())
+                        if (auto iter = anchor->hive.find(temp);
+                                 iter!= anchor->hive.end())
                         {
                             auto& i = iter->second;
                             crop.reserve(i.size());
@@ -469,7 +479,7 @@ namespace netxs::xml
                             }
                             else if (i.size() && i.front())
                             {
-                                root = &(*(i.front()));
+                                anchor = &(*(i.front()));
                             }
                             else break;
                         }
@@ -603,11 +613,10 @@ namespace netxs::xml
                 if (crop.starts_with('\n')
                  || crop.starts_with('\r'))
                 {
-                    auto size = crop.size();
                     auto temp = view{ crop };
                     auto dent = text{ utf::trim_front(temp, whitespaces) };
                     crop = temp;
-                    utf::change(crop, dent, "\n");
+                    utf::replace_all(crop, dent, "\n");
                 }
                 return crop;
             }
@@ -836,9 +845,8 @@ namespace netxs::xml
         }
         auto diff(view& data, view& temp, type kind = type::spaces)
         {
-            auto delta = temp.size() - data.size();
-                 if (delta > 0) page.append(kind, temp.substr(0, delta));
-            else if (delta < 0) fail("Unexpected data");
+                 if (temp.size() > data.size()) page.append(kind, temp.substr(0, temp.size() - data.size()));
+            else if (temp.size() < data.size()) fail("Unexpected data");
         }
         auto pair(sptr& item, view& data, type& what, type& last, type kind)
         {
@@ -1066,7 +1074,6 @@ namespace netxs::xml
                             {
                                 auto skip_frag = skip(temp, what);
                                 auto trim_frag = utf::trim_front(temp, whitespaces);
-                                auto spaced = last == type::spaces;
                                 peek(temp, what, last);
                                 if (what == type::token)
                                 {
@@ -1076,9 +1083,9 @@ namespace netxs::xml
                                     {
                                         item->insB = spaced ? page.back
                                                             : page.append(type::spaces);
-                                                              page.append(type::close_tag, skip_frag);
-                                        if (trim_frag.size()) page.append(type::spaces, trim_frag);
-                                                              page.append(type::end_token, item->name->utf8);
+                                        page.append(                      type::close_tag, skip_frag);
+                                        if (trim_frag.size()) page.append(type::spaces,    trim_frag);
+                                        page.append(                      type::end_token, item->name->utf8);
                                         data = temp;
                                         auto tail = data.find('>');
                                         if (tail != view::npos) data.remove_prefix(tail + 1);
@@ -1089,9 +1096,9 @@ namespace netxs::xml
                                     else
                                     {
                                         what = type::unknown;
-                                                              page.append(what, skip_frag);
+                                        page.append(                      what, skip_frag);
                                         if (trim_frag.size()) page.append(what, trim_frag);
-                                                              page.append(what, object);
+                                        page.append(                      what, object);
                                         data = temp;
                                         auto tail = data.find('>');
                                         if (tail != view::npos) data.remove_prefix(tail + 1);
@@ -1144,7 +1151,6 @@ namespace netxs::xml
             auto temp = data;
             auto what = type::na;
             auto last = type::na;
-            auto deep = si32{};
             auto idle = utf::trim_front(temp, whitespaces);
             peek(temp, what, last);
             while (what != type::begin_tag && what != type::eof) // Skip all non-xml data.
@@ -1166,6 +1172,7 @@ namespace netxs::xml
         using vect = xml::document::vect;
         using sptr = netxs::sptr<xml::document>;
         using hist = std::list<std::pair<text, text>>;
+        //using sync = std::recursive_mutex;
 
         sptr document; // settings: XML document.
         vect tempbuff; // settings: Temp buffer.
@@ -1173,6 +1180,7 @@ namespace netxs::xml
         text homepath; // settings: Current working directory.
         text backpath; // settings: Fallback path.
         hist cwdstack; // settings: Stack for saving current cwd.
+        //sync xs_mutex; // settings: Access mutex.
 
         settings() = default;
         settings(settings const&) = default;
@@ -1183,6 +1191,11 @@ namespace netxs::xml
             homelist = document->take(homepath);
         }
 
+        //todo make it thread-safe
+        //auto lock()
+        //{
+        //    return std::unique_lock{ xs_mutex };
+        //}
         auto cd(text gotopath, view fallback = {})
         {
             backpath = utf::trim(fallback, '/');
@@ -1287,14 +1300,14 @@ namespace netxs::xml
             crop.bgc(take<true>(bgc_path, defval.bgc()));
             crop.itc(take<true>(itc_path, defval.itc()));
             crop.bld(take<true>(bld_path, defval.bld()));
-            crop.und(take<true>(und_path, (bool)defval.und()));
+            crop.und(take<true>(und_path, defval.und()));
             crop.inv(take<true>(inv_path, defval.inv()));
             crop.ovr(take<true>(ovr_path, defval.ovr()));
             crop.blk(take<true>(blk_path, defval.blk()));
             auto t = take<true>(txt_path, ""s);
             auto a = take<true>(fba_path, -1);
             if (t.size()) crop.txt(t);
-            if (a != -1)  crop.alpha(std::clamp(a, 0, 255));
+            if (a != -1)  crop.alpha((byte)std::clamp(a, 0, 255));
             return crop;
         }
         template<bool WithTemplate = faux>
@@ -1401,9 +1414,11 @@ namespace netxs::xml
             { "html",      mime::htmltext },
             { "protected", mime::safetext }};
 
-        static auto cursor = std::unordered_map<text, bool>
-           {{ "underline", faux },
-            { "block"    , true }};
+        static auto cursor = std::unordered_map<text, si32>
+           {{ "underline",  text_cursor::underline },
+            { "block",      text_cursor::block     },
+            { "bar",        text_cursor::I_bar     },
+            { "I_bar",      text_cursor::I_bar     }};
 
         static auto align = std::unordered_map<text, bias>
            {{ "left",   bias::left   },

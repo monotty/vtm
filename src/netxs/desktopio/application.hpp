@@ -1,4 +1,4 @@
-// Copyright (c) NetXS Group.
+// Copyright (c) Dmitry Sapozhnikov
 // Licensed under the MIT license.
 
 #pragma once
@@ -11,6 +11,7 @@
 #include "console.hpp"
 #include "system.hpp"
 #include "scripting.hpp"
+#include "gui.hpp"
 
 #include <fstream>
 
@@ -23,10 +24,8 @@ namespace netxs::app
 
 namespace netxs::app::shared
 {
-    static const auto version = "v0.9.44";
+    static const auto version = "v0.9.99.07";
     static const auto repository = "https://github.com/directvt/vtm";
-    static const auto ipc_prefix = "vtm";
-    static const auto log_suffix = "_log";
     static const auto usr_config = "~/.config/vtm/settings.xml"s;
     static const auto sys_config = "/etc/vtm/settings.xml"s;
 
@@ -54,11 +53,11 @@ namespace netxs::app::shared
     };
     const auto scroll_bars = [](auto master)
     {
-        auto scroll_bars = ui::fork::ctor();
-        auto scroll_bttm = scroll_bars->attach(slot::_1, ui::fork::ctor(axis::Y));
-        auto hz = scroll_bttm->attach(slot::_2, ui::grip<axis::X>::ctor(master));
-        auto vt = scroll_bars->attach(slot::_2, ui::grip<axis::Y>::ctor(master));
-        return scroll_bars;
+        auto sb = ui::fork::ctor();
+        auto bt = sb->attach(slot::_1, ui::fork::ctor(axis::Y));
+        auto hz = bt->attach(slot::_2, ui::grip<axis::X>::ctor(master));
+        auto vt = sb->attach(slot::_2, ui::grip<axis::Y>::ctor(master));
+        return sb;
     };
     const auto underlined_hz_scrollbar = [](auto scrlrail)
     {
@@ -109,31 +108,27 @@ namespace netxs::app::shared
                 gear.set_clipboard(dot_00, old_title, mime::ansitext);
             }
         }
-        gear.dismiss(true);
     };
 
-    using builder_t = std::function<ui::sptr(text, text, text, xmls&, text)>;
+    using builder_t = std::function<ui::sptr(eccc, xmls&)>;
 
-    namespace winform
+    namespace win
     {
+        using state = gui::window::state;
+
         namespace type
         {
             static const auto undefined = "undefined"s;
+            static const auto normal    = "normal"s;
             static const auto minimized = "minimized"s;
             static const auto maximized = "maximized"s;
         }
 
-        enum form
-        {
-            undefined,
-            minimized,
-            maximized,
-        };
-
-        static auto options = std::unordered_map<text, form>
-           {{ type::undefined, form::undefined },
-            { type::minimized, form::minimized },
-            { type::maximized, form::maximized }};
+        static auto options = std::unordered_map<text, si32>
+           {{ type::undefined, state::normal    },
+            { type::normal,    state::normal    },
+            { type::minimized, state::minimized },
+            { type::maximized, state::maximized }};
     }
 
     namespace menu
@@ -208,13 +203,13 @@ namespace netxs::app::shared
 
         static auto mini(bool autohide, bool menushow, bool slimsize, si32 custom, list menu_items) // Menu bar (shrinkable on right-click).
         {
-            auto highlight_color = skin::color(tone::highlight);
+            //auto highlight_color = skin::color(tone::highlight);
             auto danger_color    = skin::color(tone::danger);
-            auto action_color    = skin::color(tone::action);
-            auto warning_color   = skin::color(tone::warning);
-            auto c6 = action_color;
-            auto c3 = highlight_color;
-            auto c2 = warning_color;
+            //auto action_color    = skin::color(tone::action);
+            //auto warning_color   = skin::color(tone::warning);
+            //auto c6 = action_color;
+            //auto c3 = highlight_color;
+            //auto c2 = warning_color;
             auto c1 = danger_color;
             auto macstyle = skin::globals().macstyle;
             auto menuveer = ui::veer::ctor();
@@ -234,7 +229,7 @@ namespace netxs::app::shared
                 button->active(); // Always active for tooltips.
                 if (alive)
                 {
-                    if (hover.set()) button->shader(hover                , e2::form::state::hover);
+                    if (hover.clr()) button->shader(hover                , e2::form::state::hover);
                     else             button->shader(cell::shaders::xlight, e2::form::state::hover);
                 }
                 button->template plugin<pro::notes>(notes)
@@ -267,7 +262,7 @@ namespace netxs::app::shared
                 auto control = std::vector<link>
                 {
                     { menu::item{ menu::item::type::Command, true, 0, std::vector<menu::item::look>{{ .label = "—", .notes = " Minimize " }}},//, .hover = c2 }}}, //toto too funky
-                    [](auto& boss, auto& item)
+                    [](auto& boss, auto& /*item*/)
                     {
                         boss.LISTEN(tier::release, hids::events::mouse::button::click::left, gear)
                         {
@@ -276,7 +271,7 @@ namespace netxs::app::shared
                         };
                     }},
                     { menu::item{ menu::item::type::Command, true, 0, std::vector<menu::item::look>{{ .label = "□", .notes = " Maximize " }}},//, .hover = c6 }}},
-                    [](auto& boss, auto& item)
+                    [](auto& boss, auto& /*item*/)
                     {
                         boss.LISTEN(tier::release, hids::events::mouse::button::click::left, gear)
                         {
@@ -285,7 +280,7 @@ namespace netxs::app::shared
                         };
                     }},
                     { menu::item{ menu::item::type::Command, true, 0, std::vector<menu::item::look>{{ .label = "×", .notes = " Close ", .hover = c1 }}},
-                    [](auto& boss, auto& item)
+                    [](auto& boss, auto& /*item*/)
                     {
                         boss.LISTEN(tier::release, hids::events::mouse::button::click::left, gear)
                         {
@@ -390,15 +385,15 @@ namespace netxs::app::shared
         };
         const auto demo = [](xmls& config)
         {
-            auto highlight_color = skin::color(tone::highlight);
-            auto c3 = highlight_color;
+            //auto highlight_color = skin::color(tone::highlight);
+            //auto c3 = highlight_color;
             auto items = list
             {
-                { item{ item::type::Command, true, 0, std::vector<item::look>{{ .label = ansi::und(true).add("F").nil().add("ile"), .notes = " File menu item " }}}, [&](auto& boss, auto& item){ }},
-                { item{ item::type::Command, true, 0, std::vector<item::look>{{ .label = ansi::und(true).add("E").nil().add("dit"), .notes = " Edit menu item " }}}, [&](auto& boss, auto& item){ }},
-                { item{ item::type::Command, true, 0, std::vector<item::look>{{ .label = ansi::und(true).add("V").nil().add("iew"), .notes = " View menu item " }}}, [&](auto& boss, auto& item){ }},
-                { item{ item::type::Command, true, 0, std::vector<item::look>{{ .label = ansi::und(true).add("D").nil().add("ata"), .notes = " Data menu item " }}}, [&](auto& boss, auto& item){ }},
-                { item{ item::type::Command, true, 0, std::vector<item::look>{{ .label = ansi::und(true).add("H").nil().add("elp"), .notes = " Help menu item " }}}, [&](auto& boss, auto& item){ }},
+                { item{ item::type::Command, true, 0, std::vector<item::look>{{ .label = ansi::und(true).add("F").nil().add("ile"), .notes = " File menu item " }}}, [&](auto& /*boss*/, auto& /*item*/){ }},
+                { item{ item::type::Command, true, 0, std::vector<item::look>{{ .label = ansi::und(true).add("E").nil().add("dit"), .notes = " Edit menu item " }}}, [&](auto& /*boss*/, auto& /*item*/){ }},
+                { item{ item::type::Command, true, 0, std::vector<item::look>{{ .label = ansi::und(true).add("V").nil().add("iew"), .notes = " View menu item " }}}, [&](auto& /*boss*/, auto& /*item*/){ }},
+                { item{ item::type::Command, true, 0, std::vector<item::look>{{ .label = ansi::und(true).add("D").nil().add("ata"), .notes = " Data menu item " }}}, [&](auto& /*boss*/, auto& /*item*/){ }},
+                { item{ item::type::Command, true, 0, std::vector<item::look>{{ .label = ansi::und(true).add("H").nil().add("elp"), .notes = " Help menu item " }}}, [&](auto& /*boss*/, auto& /*item*/){ }},
             };
             config.cd("/config/defapp/");
             auto [menu, cover, menu_data] = create(config, items);
@@ -416,7 +411,7 @@ namespace netxs::app::shared
     auto& builder(text app_typename)
     {
         static builder_t empty =
-        [&](text, text, text, xmls&, text) -> ui::sptr
+        [&](eccc, xmls&) -> ui::sptr
         {
             auto window = ui::cake::ctor()
                 ->plugin<pro::focus>()
@@ -434,27 +429,29 @@ namespace netxs::app::shared
                     };
                 });
             auto msg = ui::post::ctor()
-                ->colors(whitelt, rgba{ 0x7F404040 })
+                ->colors(whitelt, argb{ 0x7F404040 })
                 ->upload(ansi::fgc(yellowlt).mgl(4).mgr(4).wrp(wrap::off) +
                     "\n"
                     "\nUnsupported application type"
                     "\n" + ansi::nil().wrp(wrap::on) +
-                    "\nOnly the following application types are supported"
+                    "\nOnly the following application types are supported:"
                     "\n" + ansi::nil().wrp(wrap::off).fgc(whitedk) +
-                    "\n   type = DirectVT(dtvt)"
-                    "\n   type = XLinkVT(xlvt)"
-                    "\n   type = ANSIVT"
-                    "\n   type = SHELL"
-                    "\n   type = Group"
-                    "\n   type = Region"
+                    "\n   type = vtty"
+                    "\n   type = term"
+                    "\n   type = dtvt"
+                    "\n   type = dtty"
+                    "\n   type = tile"
+                    "\n   type = site"
+                    "\n   type = info"
                     "\n"
                     "\n" + ansi::nil().wrp(wrap::on).fgc(whitelt)
                     .add(prompt::apps, "See logs for details."));
             auto placeholder = ui::cake::ctor()
-                ->colors(whitelt, rgba{ 0x7F404040 })
+                ->colors(whitelt, argb{ 0x7F404040 })
                 ->attach(msg->alignment({ snap::head, snap::head }));
             window->attach(ui::rail::ctor())
-                ->attach(placeholder);
+                ->attach(placeholder)
+                ->active();
             return window;
         };
         auto& map = creator();
@@ -475,7 +472,14 @@ namespace netxs::app::shared
             auto load = [&](qiew shadow)
             {
                 if (shadow.empty()) return faux;
-                if (shadow.starts_with(":"))
+                if (utf::dequote(shadow).starts_with("<config")) // The configuration text data is specified directly instead of the path to the configuration file.
+                {
+                    auto utf8 = utf::dequote(shadow);
+                    log("%%Use directly specified settings:\n%body%", prompt::apps, ansi::hi(utf8));
+                    conf.fuse<Print>(utf8);
+                    return true;
+                }
+                else if (shadow.starts_with(":")) // Receive configuration via memory mapping.
                 {
                     shadow.remove_prefix(1);
                     auto utf8 = os::process::memory::get(shadow);
@@ -495,7 +499,7 @@ namespace netxs::app::shared
                 log("%%Loading settings from %path%...", prompt::apps, config_path_str);
                 auto ec = std::error_code{};
                 auto config_file = fs::directory_entry(config_path, ec);
-                if (!ec && (config_file.is_regular_file() || config_file.is_symlink()))
+                if (!ec && (config_file.is_regular_file(ec) || config_file.is_symlink(ec)))
                 {
                     auto file = std::ifstream(config_file.path(), std::ios::binary | std::ios::in);
                     if (file.seekg(0, std::ios::end).fail())
@@ -536,21 +540,51 @@ namespace netxs::app::shared
         }
     };
 
-    void start(text params, text aclass, si32 vtmode, twod winsz, xmls& config)
+    void splice(xipc client, xmls& config)
+    {
+        if (os::dtvt::active || !(os::dtvt::vtmode & ui::console::gui)) os::tty::splice(client);
+        else
+        {
+            os::dtvt::client = client;
+            auto winstate = config.take("/config/gui/winstate", win::state::normal, app::shared::win::options);
+            auto aliasing = config.take("/config/gui/antialiasing", faux);
+            auto blinking = config.take("/config/gui/blinkrate", span{ 400ms });
+            auto wincoord = config.take("/config/gui/wincoor", dot_mx);
+            auto gridsize = config.take("/config/gui/gridsize", dot_mx);
+            auto cellsize = std::clamp(config.take("/config/gui/cellheight", si32{ 20 }), 0, 256);
+            auto fontlist = utf::split<true, std::list<text>>(config.take<true>("/config/gui/fontlist", ""s), '\n');
+            if (cellsize == 0) cellsize = 20;
+            if (gridsize == dot_00) gridsize = dot_mx;
+            if (fontlist.size()) log(prompt::xml, ansi::err("Tag '/config/gui/fontlist' is deprecated. Use '/config/gui/fonts/*' instead."));
+            else
+            {
+                auto recs = config.list("/config/gui/fonts/font");
+                for (auto& f : recs)
+                {
+                    //todo implement 'fonts/font/file' - font file path/url
+                    fontlist.push_back(f->value());
+                }
+            }
+            auto event_domain = netxs::events::auth{};
+            auto window = event_domain.create<gui::window>(event_domain, fontlist, cellsize, aliasing, blinking);
+            window->connect(winstate, wincoord, gridsize);
+        }
+    }
+    void start(text cmd, text aclass, xmls& config)
     {
         auto [client, server] = os::ipc::xlink();
-        auto thread = std::thread{[&, &client = client] //todo clang 15.0.0 still disallows capturing structured bindings (wait for clang 16.0.0)
+        auto thread = std::thread{ [&, &client = client] //todo clang 15.0.0 still disallows capturing structured bindings (wait for clang 16.0.0)
         {
-            os::tty::splice(client);
+            app::shared::splice(client, config);
         }};
         //if (!config.cd("/config/" + aclass)) config.cd("/config/appearance/");
         config.cd("/config/appearance/runapp/", "/config/appearance/defaults/");
         auto domain = ui::host::ctor(server, config)
             ->plugin<scripting::host>();
-        auto direct = os::dtvt::active;
-        os::dtvt::isolated = !direct;
-        auto applet = app::shared::builder(aclass)("", "", params, config, /*patch*/(direct ? ""s : "<config isolated=1/>"s));
-        domain->invite(server, applet, vtmode, winsz);
+        auto appcfg = eccc{ .cmd = cmd,
+                            .cfg = os::dtvt::active ? ""s : "<config simple=1/>"s };
+        auto applet = app::shared::builder(aclass)(appcfg, config);
+        domain->invite(server, applet, os::dtvt::vtmode, os::dtvt::gridsz);
         domain->stop();
         server->shut();
         thread.join();

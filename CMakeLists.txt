@@ -20,14 +20,15 @@ if (CMAKE_SYSTEM_NAME STREQUAL "Windows")    # WIN32 and similar checks are soft
     # /EHsc    Tells the compiler that exceptions can only occur at a throw statement or at a function call.
     # /bigobj  Our event model spawns a large number of objects. By default, an object file can hold up to 65,279 (almost 2^16) addressable sections. This limit applies no matter which target platform is specified. /bigobj increases that address capacity to 4,294,967,296 (2^32).
     # /utf-8   All literals in our source code are in UTF-8 format.
-    set (CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /EHsc /bigobj /utf-8")
+    set (CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /EHsc /bigobj /utf-8 /Zc:preprocessor")
+    set (WIN32_RESOURCES ".resources/images/vtm.rc")
 elseif (NOT CMAKE_SYSTEM_NAME MATCHES "Android")
     set (CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -pthread")
     # Static linkage
     #set (CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -static -pthread -s")
 endif ()
 
-add_executable (vtm "src/vtm.cpp")
+add_executable (vtm "src/vtm.cpp" ${WIN32_RESOURCES})
 # add_executable (term "src/netxs/apps/term.cpp")
 # add_executable (calc "src/netxs/apps/calc.cpp")
 

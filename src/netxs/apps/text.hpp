@@ -1,4 +1,4 @@
-// Copyright (c) NetXS Group.
+// Copyright (c) Dmitry Sapozhnikov
 // Licensed under the MIT license.
 
 #pragma once
@@ -29,7 +29,7 @@ namespace netxs::events::userland
 namespace netxs::app::textancy
 {
     static constexpr auto id = "text";
-    static constexpr auto desc = "Text Editor (DEMO)";
+    static constexpr auto name = "Text Editor (DEMO)";
 
     using events = netxs::events::userland::textancy;
 
@@ -75,14 +75,16 @@ displaying the requested definition in a popup window or temporary buffer. Some 
 
 )";
 
-        auto build = [](text env, text cwd, text arg, xmls& config, text patch)
+        auto build = [](eccc /*appcfg*/, xmls& config)
         {
             auto highlight_color = skin::color(tone::highlight);
+            auto c3 = highlight_color;
 
             auto window = ui::cake::ctor();
             window->plugin<pro::focus>(pro::focus::mode::focused)
                   ->plugin<pro::track>()
-                  ->plugin<pro::acryl>()
+                  ->shader(c3, e2::form::state::keybd::focus::count)
+                  //->plugin<pro::acryl>()
                   ->plugin<pro::cache>()
                   ->invoke([&](auto& boss)
                   {
@@ -99,7 +101,7 @@ displaying the requested definition in a popup window or temporary buffer. Some 
                       };
                   });
             auto object = window->attach(ui::fork::ctor(axis::Y))
-                                ->colors(whitelt, 0xA05f1a00);
+                                ->colors(whitelt, 0xA0'00'1a'5f);
                 auto menu = object->attach(slot::_1, app::shared::menu::demo(config));
                 auto body_area = object->attach(slot::_2, ui::fork::ctor(axis::Y));
                     auto fields = body_area->attach(slot::_1, ui::pads::ctor(dent{ 1,1 }));
