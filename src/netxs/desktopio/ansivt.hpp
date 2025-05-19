@@ -4,12 +4,6 @@
 #pragma once
 
 #include "canvas.hpp"
-#include "quartz.hpp"
-
-#include <mutex>
-#include <array>
-#include <list>
-#include <functional>
 
 namespace netxs::ansi
 {
@@ -243,7 +237,7 @@ namespace netxs::ansi
     static const auto ccc_rtl_or = 17 ; // CSI 17: n       p  - set text right-to-left none/on/off if it is not set.
     static const auto ccc_rlf_or = 18 ; // CSI 18: n       p  - set reverse line feed none/on/off if it is not set.
     static const auto ccc_idx    = 19 ; // CSI 19: id      p  - Split the text run and associate the fragment with an id.
-    static const auto ccc_cup    = 20 ; // CSI 20: x [: y] p  - cursor absolute position 0-based.
+    static const auto ccc_cup    = 20 ; // CSI 20: x  : y  p  - cursor absolute position 0-based.
     static const auto ccc_chx    = 21 ; // CSI 21: x       p  - cursor H absolute position 0-based.
     static const auto ccc_chy    = 22 ; // CSI 22: y       p  - cursor V absolute position 0-based.
     static const auto ccc_ref    = 23 ; // CSI 23: id      p  - create the reference to the existing paragraph.
@@ -254,7 +248,8 @@ namespace netxs::ansi
     static const auto ccc_pad    = 30 ; // CSI 30: n       p  - Set left/right padding for the built-in terminal.
     static const auto ccc_lnk    = 31 ; // CSI 31: n       p  - Set object id to the cell owner.
     static const auto ccc_lsr    = 32 ; // CSI 32: n       p  - Enable line style reporting.
-    static const auto ccc_stl    = 33 ; // CSI 32: n       p  - Line style report.
+    static const auto ccc_stl    = 33 ; // CSI 33: n       p  - Line style report.
+    static const auto ccc_cur    = 34 ; // CSI 34: n       p  - Set cursor inside the cell. 0: None, 1: Underline, 2: Block, 3: I-bar. cell::px stores cursor fg/bg if cursor is set.
 
     //static const auto ctrl_break = si32{ 0xE046 }; // Pressed Ctrl+Break scancode.
     static const auto ctrl_break = si32{ 0x46 }; // Pressed Ctrl+Break scancode.
@@ -275,7 +270,7 @@ namespace netxs::ansi
             auto cptr = tail;
             auto bake = [&](auto bits)
             {
-                do *--cptr = static_cast<char>('0' + bits % 10);
+                do *--cptr = (char)('0' + bits % 10);
                 while (bits /= 10);
             };
             if constexpr (std::is_signed_v<T>)
@@ -305,6 +300,20 @@ namespace netxs::ansi
             else if constexpr (std::is_integral_v<D>)
             {
                 itos(data);
+            }
+            else if constexpr (std::is_floating_point_v<D>)
+            {
+                if ((si64)data == data)
+                {
+                    block += std::to_string((si64)data) + ".0";
+                }
+                else
+                {
+                    auto str = std::to_string(data);
+                    auto shadow = qiew{ str };
+                    utf::trim_back(shadow, "0");
+                    block += shadow;
+                }
             }
             else if constexpr (std::is_same_v<D, bias>
                             || std::is_same_v<D, wrap>
@@ -416,10 +425,11 @@ namespace netxs::ansi
             return add("\033[", b + 40, 'm');
         }
         template<svga Mode = svga::vtrgb>
-        auto& fgc(argb c) // basevt: SGR Foreground color. RGB: red, green, blue.
+        auto& fgc(argb c) // basevt: SGR Foreground color. RGB: red, green, blue (+alpha for VT2D).
         {
                  if constexpr (Mode == svga::vt16 ) return fgc_16(c.to_vtm16(true));
             else if constexpr (Mode == svga::vt256) return fgc256(c.to_256cube());
+            else if constexpr (Mode == svga::vt_2D) return fgx(c);
             else if constexpr (Mode == svga::vtrgb) return c.chan.a == 0 ? add("\033[39m")
                                                                          : add("\033[38;2;", c.chan.r, ';',
                                                                                              c.chan.g, ';',
@@ -431,6 +441,7 @@ namespace netxs::ansi
         {
                  if constexpr (Mode == svga::vt16 ) return bgc_8(c.to_vtm8());
             else if constexpr (Mode == svga::vt256) return bgc256(c.to_256cube());
+            else if constexpr (Mode == svga::vt_2D) return bgx(c);
             else if constexpr (Mode == svga::vtrgb) return c.chan.a == 0 ? add("\033[49m")
                                                                          : add("\033[48;2;", c.chan.r, ';',
                                                                                              c.chan.g, ';',
@@ -438,80 +449,34 @@ namespace netxs::ansi
             else return block;
         }
         template<class ...Args>
-        auto& clr(argb c, Args&&... data) { return fgc(c).add(std::forward<Args>(data)...).nil(); } // basevt: Add colored message.
+        auto& clr(argb c, Args&&... data) { return pushsgr().fgc(c).add(std::forward<Args>(data)...).popsgr(); } // basevt: Add colored message.
         template<class ...Args>
-        auto& hi(Args&&... data) { return inv(true).add(std::forward<Args>(data)...).nil(); } // basevt: Add highlighted message.
+        auto& hi(Args&&... data) { return inv(true).add(std::forward<Args>(data)...).inv(faux); } // basevt: Add highlighted message.
         auto& err() { return fgc(redlt); } // basevt: Add error color.
         template<class ...Args>
-        auto& err(Args&&... data) { return fgc(redlt).add(std::forward<Args>(data)...).nil(); } // basevt: Add error message.
+        auto& err(Args&&... data) { return pushsgr().fgc(redlt).add(std::forward<Args>(data)...).popsgr(); } // basevt: Add error message.
         // basevt: Ansify/textify content of specified region.
         template<bool UseSGR = true, bool Initial = true, bool Finalize = true>
         auto& s11n(core const& canvas, rect region, cell& state)
         {
-            auto badfx = [&]
-            {
-                add(utf::replacement);
-                state.set_gc();
-                state.wdt(utf::matrix::vs<11,11>);
-            };
-            auto side_badfx = [&] // Restoring the halves on the side
-            {
-                add(state.txt());
-                state.set_gc();
-                state.wdt(utf::matrix::vs<11,11>);
-            };
             auto allfx = [&](cell const& c)
             {
-                auto [cw, ch, cx, cy] = c.whxy();
-                if (cw < 2) // Narrow character
+                auto utf8 = c.txt<svga::vtrgb>();
+                auto [w, h, x, y] = c.whxy();
+                c.scan_attr<svga::vtrgb, UseSGR>(state, block);
+                if (w == 0 || h == 0 || y != 1 || x != 1 || utf8.empty() || (byte)utf8.front() < 32) // 2D fragment is either non-standard or empty or C0.
                 {
-                    auto [w, h, x, y] = state.whxy();
-                    if (w != 1 && x == 1) badfx(); // Left part alone
-                    c.scan<svga::vtrgb, UseSGR>(state, block);
+                    add(" "sv);
                 }
                 else
                 {
-                    if (cw == 2 && cx == 1) // Left part
-                    {
-                        auto [w, h, x, y] = state.whxy();
-                        if (w != 1 && x == 1) badfx(); // Left part alone
-                        c.scan_attr<svga::vtrgb, UseSGR>(state, block);
-                        state.set_gc(c); // Save char from c for the next iteration
-                    }
-                    else if (cw == 2 && cx == 2) // Right part
-                    {
-                        auto [w, h, x, y] = state.whxy();
-                        if (w == 2 && x == 1)
-                        {
-                            if (state.check_pair(c))
-                            {
-                                state.scan<svga::vtrgb, UseSGR>(state, block);
-                                state.set_gc(); // Cleanup used t
-                            }
-                            else
-                            {
-                                badfx(); // Left part alone
-                                c.scan_attr<svga::vtrgb, UseSGR>(state, block);
-                                badfx(); // Right part alone
-                            }
-                        }
-                        else
-                        {
-                            c.scan_attr<svga::vtrgb, UseSGR>(state, block);
-                            if (state.xy() == 0) side_badfx(); // Right part alone at the left side
-                            else                 badfx(); // Right part alone
-                        }
-                    }
+                    add(utf8);
                 }
             };
             auto eolfx = [&]
             {
-                auto [w, h, x, y] = state.whxy();
-                if (w != 1 && x == 1) side_badfx();  // Left part alone at the right side
-                state.set_gc();
                 basevt::eol();
             };
-
             if (region)
             {
                 if constexpr (UseSGR && Initial) basevt::nil();
@@ -533,7 +498,7 @@ namespace netxs::ansi
         template<bool UseSGR = true, bool Initial = true, bool Finalize = true>
         auto& s11n(core const& canvas, cell& state) // basevt: Ansify/textify all content.
         {
-            auto region = rect{-dot_mx / 2, dot_mx };
+            auto region = rect{ -dot_mx / 2, dot_mx };
             return s11n<UseSGR, Initial, Finalize>(canvas, region, state);
         }
     };
@@ -584,8 +549,9 @@ namespace netxs::ansi
         auto& scrn_reset()          { return add("\033[H\033[m\033[2J"               ); } // escx: Reset palette, erase scrollback and reset cursor location.
         auto& save_title()          { return add("\033[22;0t"                        ); } // escx: Save terminal window title.
         auto& load_title()          { return add("\033[23;0t"                        ); } // escx: Restore terminal window title.
-        auto& osc(view p, view arg) { return add("\033]", p, ';', arg,        c0_bel ); } // escx: OSC report.
-        auto& header(view t)        { return add("\033]2;", t,                c0_bel ); } // escx: Window title.
+        auto& osc(view p)           { return add("\033]", p, c0_bel                  ); } // escx: OSC report.
+        auto& osc(view p, view arg) { return add("\033]", p, ';', arg, c0_bel        ); } // escx: OSC report with args.
+        auto& header(view t)        { return add("\033]2;", t, c0_bel                ); } // escx: Window title.
         auto& save_palette()        { return add("\033[#P"                           ); } // escx: Push palette onto stack XTPUSHCOLORS.
         auto& load_palette()        { return add("\033[#Q"                           ); } // escx: Pop  palette from stack XTPOPCOLORS.
         auto& old_palette_reset()   { return add("\033]R"                            ); } // escx: Reset color palette (Linux console).
@@ -648,6 +614,8 @@ namespace netxs::ansi
             static constexpr auto idle     = si32{ 32 };
             static constexpr auto wheel_up = si32{ 64 };
             static constexpr auto wheel_dn = si32{ 65 };
+            static constexpr auto wheel_lt = si32{ 66 };
+            static constexpr auto wheel_rt = si32{ 67 };
 
             auto ctrl = si32{};
             if (gear.m_sys.ctlstat & hids::anyShift) ctrl |= 0x04;
@@ -656,13 +624,13 @@ namespace netxs::ansi
 
             auto m_bttn = std::bitset<8>{ (ui32)gear.m_sys.buttons };
             auto s_bttn = std::bitset<8>{ (ui32)gear.m_sav.buttons };
-            auto m_left = m_bttn[hids::left  ];
-            auto m_rght = m_bttn[hids::right ];
-            auto m_mddl = m_bttn[hids::middle];
-            auto s_left = s_bttn[hids::left  ];
-            auto s_rght = s_bttn[hids::right ];
-            auto s_mddl = s_bttn[hids::middle];
-            auto pressed = bool{};
+            auto m_left = m_bttn[hids::buttons::left  ];
+            auto m_rght = m_bttn[hids::buttons::right ];
+            auto m_mddl = m_bttn[hids::buttons::middle];
+            auto s_left = s_bttn[hids::buttons::left  ];
+            auto s_rght = s_bttn[hids::buttons::right ];
+            auto s_mddl = s_bttn[hids::buttons::middle];
+            auto pressed = true;
 
             if (m_left != s_left)
             {
@@ -679,10 +647,16 @@ namespace netxs::ansi
                 ctrl |= mddl;
                 pressed = m_mddl;
             }
+            //todo impl ext mouse buttons 128..131/m_5..m_8
+            //else if (m_5 != s_5)
+            //{
+            //    ...
+            //}
+            //...
             else if (gear.m_sys.wheelsi)
             {
-                ctrl |= gear.m_sys.wheelsi > 0 ? wheel_up : wheel_dn;
-                pressed = true;
+                if (gear.m_sys.hzwheel) ctrl |= gear.m_sys.wheelsi > 0 ? wheel_lt : wheel_rt;
+                else                    ctrl |= gear.m_sys.wheelsi > 0 ? wheel_up : wheel_dn;
             }
             else if (gear.m_sys.buttons)
             {
@@ -690,12 +664,10 @@ namespace netxs::ansi
                 else if (m_rght) ctrl |= rght;
                 else if (m_mddl) ctrl |= mddl;
                 ctrl |= idle;
-                pressed = true;
             }
             else
             {
                 ctrl |= idle + btup;
-                pressed = faux;
             }
             coor += dot_11;
             auto count = std::max(1, std::abs(gear.m_sys.wheelsi));
@@ -716,6 +688,8 @@ namespace netxs::ansi
             static constexpr auto idle     = si32{ 32 };
             static constexpr auto wheel_up = si32{ 64 };
             static constexpr auto wheel_dn = si32{ 65 };
+            static constexpr auto wheel_lt = si32{ 66 };
+            static constexpr auto wheel_rt = si32{ 67 };
 
             auto ctrl = si32{};
             if (gear.m_sys.ctlstat & hids::anyShift) ctrl |= 0x04;
@@ -724,19 +698,25 @@ namespace netxs::ansi
 
             auto m_bttn = std::bitset<8>{ (ui32)gear.m_sys.buttons };
             auto s_bttn = std::bitset<8>{ (ui32)gear.m_sav.buttons };
-            auto m_left = m_bttn[hids::left  ];
-            auto m_rght = m_bttn[hids::right ];
-            auto m_mddl = m_bttn[hids::middle];
-            auto s_left = s_bttn[hids::left  ];
-            auto s_rght = s_bttn[hids::right ];
-            auto s_mddl = s_bttn[hids::middle];
+            auto m_left = m_bttn[hids::buttons::left  ];
+            auto m_rght = m_bttn[hids::buttons::right ];
+            auto m_mddl = m_bttn[hids::buttons::middle];
+            auto s_left = s_bttn[hids::buttons::left  ];
+            auto s_rght = s_bttn[hids::buttons::right ];
+            auto s_mddl = s_bttn[hids::buttons::middle];
 
+            //todo impl ext mouse buttons 128-131
                  if (m_left != s_left) ctrl |= m_left ? left : btup;
             else if (m_rght != s_rght) ctrl |= m_rght ? rght : btup;
             else if (m_mddl != s_mddl) ctrl |= m_mddl ? mddl : btup;
-            else if (gear.m_sys.wheelsi) ctrl |= gear.m_sys.wheelsi > 0 ? wheel_up : wheel_dn;
+            else if (gear.m_sys.wheelsi)
+            {
+                if (gear.m_sys.hzwheel) ctrl |= gear.m_sys.wheelsi > 0 ? wheel_lt : wheel_rt;
+                else                    ctrl |= gear.m_sys.wheelsi > 0 ? wheel_up : wheel_dn;
+            }
             else if (gear.m_sys.buttons)
             {
+                //todo impl ext mouse buttons 128-131
                      if (m_left) ctrl |= left;
                 else if (m_rght) ctrl |= rght;
                 else if (m_mddl) ctrl |= mddl;
@@ -783,14 +763,14 @@ namespace netxs::ansi
         auto& chy(si32 n)        { return add("\033[22:", n  , csi_ccc); } // escx: Cursor 0-based vertical absolute.
         auto& cpx(si32 n)        { return add("\033[3:" , n  , csi_ccc); } // escx: Cursor horizontal percent position.
         auto& cpy(si32 n)        { return add("\033[4:" , n  , csi_ccc); } // escx: Cursor vertical percent position.
-        auto& cup(twod p) { return add("\033[20:", p.y, ':',        // escx: 0-Based cursor position.
-                                                   p.x, csi_ccc); }
-        auto& cpp(twod p) { return add("\033[2:" , p.x, ':',        // escx: Cursor percent position.
-                                                   p.y, csi_ccc); }
-        auto& mgn(side n) { return add("\033[6:" , n.l, ':',        // escx: Margin (left, right, top, bottom).
-                                                   n.r, ':',
-                                                   n.t, ':',
-                                                   n.b, csi_ccc); }
+        auto& cup(twod p)        { return add("\033[20:", p.x, ':',        // escx: 0-Based cursor position.
+                                                          p.y, csi_ccc); }
+        auto& cpp(twod p)        { return add("\033[2:" , p.x, ':',        // escx: Cursor percent position.
+                                                          p.y, csi_ccc); }
+        auto& mgn(dent n)        { return add("\033[6:" , n.l, ':',        // escx: Margin (left, right, top, bottom).
+                                                          n.r, ':',
+                                                          n.t, ':',
+                                                          n.b, csi_ccc); }
         auto& mgl(si32 n)        { return add("\033[7:" , n  , csi_ccc); } // escx: Left margin. Positive - native binding. Negative - opposite binding.
         auto& mgr(si32 n)        { return add("\033[8:" , n  , csi_ccc); } // escx: Right margin. Positive - native binding. Negative - opposite binding.
         auto& mgt(si32 n)        { return add("\033[9:" , n  , csi_ccc); } // escx: Top margin. Positive - native binding. Negative - opposite binding.
@@ -809,6 +789,10 @@ namespace netxs::ansi
         auto& link(si32 i)       { return add("\033[31:", i  , csi_ccc); } // escx: Set object id link.
         auto& styled(si32 b)     { return add("\033[32:", b  , csi_ccc); } // escx: Enable line style reporting (0/1).
         auto& style(si32 i)      { return add("\033[33:", i  , csi_ccc); } // escx: Line style response (deco::format: alignment, wrapping, RTL, etc).
+        auto& cursor0(si32 i)    { return add("\033[34:", i  , csi_ccc); } // escx: Set cursor  0: None, 1: Underline, 2: Block, 3: I-bar. cell::px stores cursor fg/bg if cursor is set.
+        //auto& hplink0(si32 i)    { return add("\033[35:", i  , csi_ccc); } // escx: Set hyperlink cell.
+        //auto& bitmap0(si32 i)    { return add("\033[36:", i  , csi_ccc); } // escx: Set bitmap inside the cell.
+        //auto& fusion0(si32 i)    { return add("\033[37:", i  , csi_ccc); } // escx: Object outline boundary.
         auto& cap(qiew utf8, si32 w = 2, si32 h = 2, bool underline = true)
         {
             for (auto y = 1; y <= h; y++)
@@ -834,7 +818,7 @@ namespace netxs::ansi
             while (head != tail)
             {
                 auto& word = *head++;
-                add("\2", word, utf::to_utf_from_code(utf::matrix::vs_runtime(std::min(8, (si32)word.size() * 2 / 4), 1, 0, 1)));
+                add("\2", word, utf::to_utf_from_code(utf::matrix::vs_runtime(std::min(utf::matrix::kx, (si32)word.size() * 2 / 4), 1, 0, 1)));
                 if (head != tail) add(" ");
             }
             return *this;
@@ -899,7 +883,7 @@ namespace netxs::ansi
     auto cpx(si32 n)           { return escx{}.cpx(n);        } // ansi: Cursor horizontal percent position.
     auto cpy(si32 n)           { return escx{}.cpy(n);        } // ansi: Cursor vertical percent position.
     auto tbs(si32 n)           { return escx{}.tbs(n);        } // ansi: Tabulation step length.
-    auto mgn(side s)           { return escx{}.mgn(s);        } // ansi: Margin (left, right, top, bottom).
+    auto mgn(dent s)           { return escx{}.mgn(s);        } // ansi: Margin (left, right, top, bottom).
     auto mgl(si32 n)           { return escx{}.mgl(n);        } // ansi: Left margin.
     auto mgr(si32 n)           { return escx{}.mgr(n);        } // ansi: Right margin.
     auto mgt(si32 n)           { return escx{}.mgt(n);        } // ansi: Top margin.
@@ -932,6 +916,7 @@ namespace netxs::ansi
     auto styled(si32 b)        { return escx{}.styled(b);     } // ansi: Enable line style reporting.
     auto style(si32 i)         { return escx{}.style(i);      } // ansi: Line style report.
     auto link(si32 i)          { return escx{}.link(i);       } // ansi: Set object id link.
+    auto cursor0(si32 i)       { return escx{}.cursor0(i);    } // ansi: Set cursor inside the cell.
     auto ref(si32 i)           { return escx{}.ref(i);        } // ansi: Create the reference to the existing paragraph. Create new id if it is not existing.
     auto idx(si32 i)           { return escx{}.idx(i);        } // ansi: Split the text run and associate the fragment with an id.
                                                                        //       All following text is under the IDX until the next command is issued.
@@ -1019,6 +1004,8 @@ namespace netxs::ansi
         void  sav()               { spare.set(*this);          } // mark: Save current SGR attributes.
         void  sfg(argb c)         { spare.fgc(c);              } // mark: Set default foreground color.
         void  sbg(argb c)         { spare.bgc(c);              } // mark: Set default background color.
+        auto  sfg()const          { return spare.fgc();        } // mark: Return default foreground color.
+        auto  sbg()const          { return spare.bgc();        } // mark: Return default background color.
         void  nil()               { this->set(spare);          } // mark: Restore saved SGR attributes.
         void  rfg()               { this->fgc(spare.fgc());    } // mark: Reset SGR Foreground color.
         void  rbg()               { this->bgc(spare.bgc());    } // mark: Reset SGR Background color.
@@ -1052,7 +1039,7 @@ namespace netxs::ansi
               rlfeed{ (byte)((format >> 6) & 0x03) },
               tablen{ (byte)((format >> 8) & 0xFF) }
         { }
-        bool operator==(deco const&) const = default;
+        bool operator == (deco const&) const = default;
         // deco: Return serialized deco (wo margins).
         auto format() const
         {
@@ -1187,7 +1174,7 @@ namespace netxs::ansi
             * Unicode:
             * - void task(ansi::rule const& cmd);          // Proceed curses command.
             * - void meta(deco& old, deco& new);           // Proceed new style.
-            * - void data(si32 count, grid const& proto);  // Proceed new cells.
+            * - void data(si32 width, si32 height, core::body const& proto);  // Proceed new cells.
             * SGR:
             * - void nil();                          // Reset all SGR to default.
             * - void sav();                          // Set current SGR as default.
@@ -1205,8 +1192,10 @@ namespace netxs::ansi
             * - void ovr(bool b);                    // Set overline attribute.
             * - void wrp(bool b);                    // Set auto wrap.
             * - void jet(si32 b);                    // Set adjustment.
-            * - void rtl(bool b);                    // Set reverse line feed.
+            * - void rlf(bool b);                    // Set reverse line feed.
+            * - void rtl(bool b);                    // Set right to left text.
             * - void link(id_t i);                   // Set object id link.
+            * - void cursor0(si32 i);                // Set cursor inside the cell.
             */
 
             table_quest   .resize(0x100);
@@ -1258,32 +1247,33 @@ namespace netxs::ansi
 
                 auto& ccc = table[csi_ccc].resize(0x100);
                     ccc.template enable_multi_arg<NoMultiArg>();
-                    ccc[ccc_cup] = V{ F(ay, q.subarg(0)); F(ax, q.subarg(0)); }; // fx_ccc_cup
-                    ccc[ccc_cpp] = V{ F(py, q.subarg(0)); F(px, q.subarg(0)); }; // fx_ccc_cpp
+                    ccc[ccc_cup] = V{ F(ax, q.subarg(0)); F(ay, q.subarg(0)); }; // fx_ccc_cup
+                    ccc[ccc_cpp] = V{ F(px, q.subarg(0)); F(py, q.subarg(0)); }; // fx_ccc_cpp
                     ccc[ccc_chx] = V{ F(ax, q.subarg(0)); }; // fx_ccc_chx
                     ccc[ccc_chy] = V{ F(ay, q.subarg(0)); }; // fx_ccc_chy
                     ccc[ccc_cpx] = V{ F(px, q.subarg(0)); }; // fx_ccc_cpx
                     ccc[ccc_cpy] = V{ F(py, q.subarg(0)); }; // fx_ccc_cpy
                     ccc[ccc_rst] = V{ F(zz, 0); }; // fx_ccc_rst
 
-                    ccc[ccc_mgn   ] = V{ p->style.mgn   (q   ); }; // fx_ccc_mgn
-                    ccc[ccc_mgl   ] = V{ p->style.mgl   (q.subarg(0)); }; // fx_ccc_mgl
-                    ccc[ccc_mgr   ] = V{ p->style.mgr   (q.subarg(0)); }; // fx_ccc_mgr
-                    ccc[ccc_mgt   ] = V{ p->style.mgt   (q.subarg(0)); }; // fx_ccc_mgt
-                    ccc[ccc_mgb   ] = V{ p->style.mgb   (q.subarg(0)); }; // fx_ccc_mgb
-                    ccc[ccc_tbs   ] = V{ p->style.tbs   (q.subarg(0)); }; // fx_ccc_tbs
-                    ccc[ccc_jet   ] = V{ p->style.jet   (static_cast<bias>(q.subarg(0))); }; // fx_ccc_jet
-                    ccc[ccc_wrp   ] = V{ p->style.wrp   (static_cast<wrap>(q.subarg(0))); }; // fx_ccc_wrp
-                    ccc[ccc_rtl   ] = V{ p->style.rtl(static_cast<rtol>(q.subarg(0)));
+                    ccc[ccc_mgn   ] = V{ p->style.mgn(q); }; // fx_ccc_mgn
+                    ccc[ccc_mgl   ] = V{ p->style.mgl(q.subarg(0)); }; // fx_ccc_mgl
+                    ccc[ccc_mgr   ] = V{ p->style.mgr(q.subarg(0)); }; // fx_ccc_mgr
+                    ccc[ccc_mgt   ] = V{ p->style.mgt(q.subarg(0)); }; // fx_ccc_mgt
+                    ccc[ccc_mgb   ] = V{ p->style.mgb(q.subarg(0)); }; // fx_ccc_mgb
+                    ccc[ccc_tbs   ] = V{ p->style.tbs(q.subarg(0)); }; // fx_ccc_tbs
+                    ccc[ccc_jet   ] = V{ p->style.jet((bias)q.subarg(0)); }; // fx_ccc_jet
+                    ccc[ccc_wrp   ] = V{ p->style.wrp((wrap)q.subarg(0)); }; // fx_ccc_wrp
+                    ccc[ccc_rtl   ] = V{ p->style.rtl((rtol)q.subarg(0));
                                          p->brush.rtl(p->style.rtl() == rtol::rtl); }; // fx_ccc_rtl
-                    ccc[ccc_rlf   ] = V{ p->style.rlf   (static_cast<feed>(q.subarg(0))); }; // fx_ccc_rlf
-                    ccc[ccc_jet_or] = V{ p->style.jet_or(static_cast<bias>(q.subarg(0))); }; // fx_ccc_or_jet
-                    ccc[ccc_wrp_or] = V{ p->style.wrp_or(static_cast<wrap>(q.subarg(0))); }; // fx_ccc_or_wrp
-                    ccc[ccc_rtl_or] = V{ p->style.rtl_or(static_cast<rtol>(q.subarg(0))); 
+                    ccc[ccc_rlf   ] = V{ p->style.rlf((feed)q.subarg(0)); }; // fx_ccc_rlf
+                    ccc[ccc_jet_or] = V{ p->style.jet_or((bias)q.subarg(0)); }; // fx_ccc_or_jet
+                    ccc[ccc_wrp_or] = V{ p->style.wrp_or((wrap)q.subarg(0)); }; // fx_ccc_or_wrp
+                    ccc[ccc_rtl_or] = V{ p->style.rtl_or((rtol)q.subarg(0));
                                          p->brush.rtl(p->style.rtl() == rtol::rtl); }; // fx_ccc_or_rtl
-                    ccc[ccc_rlf_or] = V{ p->style.rlf_or(static_cast<feed>(q.subarg(0))); }; // fx_ccc_or_rlf
+                    ccc[ccc_rlf_or] = V{ p->style.rlf_or((feed)q.subarg(0)); }; // fx_ccc_or_rlf
 
-                    ccc[ccc_lnk   ] = V{ p->brush.link  (static_cast<id_t>(q.subarg(0))); }; // fx_ccc_lnk
+                    ccc[ccc_lnk   ] = V{ p->brush.link((id_t)q.subarg(0)); }; // fx_ccc_lnk
+                    ccc[ccc_cur   ] = V{ p->brush.cursor0(q.subarg(0)); }; // fx_ccc_cur
 
                     ccc[ccc_nop] = nullptr;
                     ccc[ccc_idx] = nullptr;
@@ -1417,12 +1407,21 @@ namespace netxs::ansi
         {
             auto s = [&](auto const& traits, qiew utf8)
             {
+                client->defer = faux;
                 intro.execute(traits.control, utf8, client); // Make one iteration using firstcmd and return.
                 return utf8;
             };
-            auto y = [&](auto const& cluster){ client->post(cluster); };
-
-            utf::decode(s, y, utf8, client->decsg);
+            auto y = [&](auto const& cluster)
+            {
+                client->post(cluster);
+                client->defer = true;
+            };
+            auto a = [&](view plain)
+            {
+                client->ascii(plain);
+                client->defer = true;
+            };
+            utf::decode(s, y, a, utf8, client->decsg);
             client->flush();
         }
         // vt_parser: Static UTF-8/ANSI parser proc.
@@ -1591,15 +1590,13 @@ namespace netxs::ansi
                     ascii.remove_prefix(1); // R
                     return;
                 }
-
                 auto base = ascii.data();
                 auto head = base;
                 auto tail = head + ascii.length();
                 auto delm = tail; // Semicolon ';' position
                 auto exec = [&](auto pad)
                 {
-                    auto cmd = text(base, delm);
-                    ++delm;
+                    auto cmd = text(base, delm == tail ? (delm = head) : delm++);
                     auto size = head - delm;
                     if (auto it = oscer.find(cmd); it != oscer.end())
                     {
@@ -1609,7 +1606,6 @@ namespace netxs::ansi
                     }
                     ascii.remove_prefix(head - base + pad); // Take the text and BEL or ST too.
                 };
-
                 while (head != tail)
                 {
                     c = *head;
@@ -1619,7 +1615,7 @@ namespace netxs::ansi
                         while (head != tail)
                         {
                             auto c0 = (byte)*head;
-                            if (c0 <= c0_esc) // To avoid double comparing.
+                            if (c0 <= c0_esc) // To avoid extra comparisons.
                             {
                                 if (c0 == c0_bel)
                                 {
@@ -1640,13 +1636,18 @@ namespace netxs::ansi
                         }
                         return; // Drop bcuz no ST in the sequence.
                     }
-                    else if (c == c0_bel) return; // Drop bcuz no ';' in the sequence.
+                    else if (c == c0_bel)
+                    {
+                        exec(1);
+                        return;
+                    }
                     else if (c == c0_esc)
                     {
                         auto next = std::next(head);
                         if (next != tail && *next == '\\')
                         {
-                            return; // Drop bcuz no ';' in the sequence.
+                            exec(2);
+                            return;
                         }
                     }
                     ++head;
@@ -1686,13 +1687,16 @@ namespace netxs::ansi
         deco state{}; // parser: Parser style last state.
         mark brush{}; // parser: Parser brush.
         si32 decsg{}; // parser: DEC Special Graphics Mode.
+        bool defer{}; // parser: The last character was a cluster that could continue to grow.
 
     private:
-        grid proto_cells{}; // parser: Proto lyric.
-        si32 proto_count{}; // parser: Proto lyric length.
+        core::body proto_cells{}; // parser: Proto lyric.
+        si32       proto_count{}; // parser: Proto length.
+        si32       proto_depth{}; // parser: Proto height.
         //text debug{};
 
     public:
+        virtual ~parser() = default;
         parser() = default;
         parser(deco style, mark brush = {})
             : style{ style },
@@ -1719,14 +1723,22 @@ namespace netxs::ansi
             proto_cells.assign(n, c);
             auto [w, h, x, y] = c.whxy();
             auto wdt = x == 0 ? w : 1;
-            data(n * wdt, proto_cells);
+            auto hgt = y == 0 ? h : 1;
+            data(n * wdt, hgt, proto_cells);
             proto_cells.clear();
         }
-        void reset(cell c)
+        template<bool ResetStyle = true>
+        void reset(cell c = {})
         {
             brush.reset(c);
+            if constexpr (ResetStyle)
+            {
+                style.rst();
+                state.rst();
+            }
             proto_count = 0;
             proto_cells.clear();
+            defer = faux;
         }
         auto empty() const
         {
@@ -1734,29 +1746,64 @@ namespace netxs::ansi
         }
         void data(core& cooked)
         {
-            if (auto len = cooked.size().x)
+            auto size = cooked.size();
+            if (size.x)
             {
                 cooked.each([&](cell& c){ c.meta(brush); });
-                data(len, cooked.pick());
+                data(size.x, size.y, cooked.pick());
+            }
+        }
+        auto& get_ansi_marker()
+        {
+            static auto marker = ansi::marker{};
+            return marker;
+        }
+        void check_height(si32 height)
+        {
+            if (proto_depth != height)
+            {
+                if (proto_count)
+                {
+                    flush();
+                }
+                proto_depth = height;
+            }
+        }
+        void ascii(view plain)
+        {
+            assert(plain.length());
+            check_height(1);
+            brush.txt(plain.back());
+            auto start = proto_cells.size();
+            proto_cells.resize(start + plain.length(), brush);
+            proto_count += (si32)plain.length();
+            auto iter = plain.begin();
+            auto head = proto_cells.begin() + start;
+            auto tail = std::prev(proto_cells.end());
+            while (head != tail)
+            {
+                auto& dst = *head++;
+                dst.gc.set(*iter++);
             }
         }
         void post(utf::frag const& cluster)
         {
-            static auto marker = ansi::marker{};
-
             auto& utf8 = cluster.text;
             auto& attr = cluster.attr;
             if (auto v = attr.cmatrix)
             {
                 auto [w, h, x, y] = utf::matrix::whxy(v);
                 auto wdt = x == 0 ? w : 1;
+                auto hgt = y == 0 ? h : 1;
+                check_height(hgt);
                 proto_count += wdt;
-                brush.txt(utf8, v);
+                brush.txt(utf8, w, h, x, y);
                 proto_cells.push_back(brush);
                 //debug += (debug.size() ? "_"s : ""s) + text(utf8);
             }
             else
             {
+                auto& marker = get_ansi_marker();
                 if (auto set_prop = marker.setter[attr.control])
                 {
                     if (proto_cells.size())
@@ -1792,7 +1839,7 @@ namespace netxs::ansi
         {
             if (proto_count)
             {
-                data(proto_count, proto_cells);
+                data(proto_count, proto_depth, proto_cells);
                 proto_cells.clear();
                 proto_count = 0;
             }
@@ -1803,7 +1850,7 @@ namespace netxs::ansi
             flush_data();
         }
         virtual void meta(deco const& /*old_style*/) { };
-        virtual void data(si32 /*count*/, grid const& /*proto*/) { };
+        virtual void data(si32 /*width*/, si32 /*height*/, core::body const& /*proto*/) { };
     };
 
     // ansi: Cursor manipulation command list.
@@ -1822,8 +1869,8 @@ namespace netxs::ansi
                                 push({ fn::py, p.y }); return *this; }
         writ& cpx(si32 x)     { push({ fn::px, x   }); return *this; } // Cursor horizontal percent position.
         writ& cpy(si32 y)     { push({ fn::py, y   }); return *this; } // Cursor vertical percent position.
-        writ& cup(twod p)     { push({ fn::ay, p.y });                 // 0-Based cursor position.
-                                push({ fn::ax, p.x }); return *this; }
+        writ& cup(twod p)     { push({ fn::ax, p.x });                 // 0-Based cursor position.
+                                push({ fn::ay, p.y }); return *this; }
         writ& cuu(si32 n = 1) { push({ fn::dy,-n   }); return *this; } // Cursor up.
         writ& cud(si32 n = 1) { push({ fn::dy, n   }); return *this; } // Cursor down.
         writ& cuf(si32 n = 1) { push({ fn::dx, n   }); return *this; } // Cursor forward.
@@ -1863,8 +1910,7 @@ namespace netxs::ansi
                         }
                         if (next == tail)
                         {
-                            //utf8 = { head, prev }; //todo Clang 13.0.0 doesn't get it // preserve ESC at the end
-                            utf8 = view{ &(*head), (size_t)(prev - head) }; // preserve ESC at the end
+                            utf8 = { head, prev }; // preserve ESC at the end
                             return utf8;
                         }
                     }
@@ -1879,8 +1925,7 @@ namespace netxs::ansi
                             {
                                 if (tail - step < 8)
                                 {
-                                    //utf8 = { head, prev }; //todo Clang 13.0.0 doesn't get it // preserve ESC at the end
-                                    utf8 = view{ &(*head), (size_t)(prev - head) }; // preserve ESC at the end
+                                    utf8 = { head, prev }; // preserve ESC at the end
                                 }
                                 else
                                 {
@@ -1901,8 +1946,7 @@ namespace netxs::ansi
                         }
                         if (next == tail)
                         {
-                            //utf8 = { head, prev }; //todo Clang 13.0.0 doesn't get it // preserve ESC at the end
-                            utf8 = view{ &(*head), (size_t)(prev - head) }; // preserve ESC at the end
+                            utf8 = { head, prev }; // preserve ESC at the end
                             return utf8;
                         }
                     }
@@ -1926,8 +1970,7 @@ namespace netxs::ansi
                         }
                         if (next == tail)
                         {
-                            //utf8 = { head, prev }; //todo Clang 13.0.0 doesn't get it // preserve ESC at the end
-                            utf8 = view{ &(*head), (size_t)(prev - head) }; // preserve ESC at the end
+                            utf8 = { head, prev }; // preserve ESC at the end
                             return utf8;
                         }
                     }
@@ -1945,8 +1988,7 @@ namespace netxs::ansi
                     {
                         if (++next == tail)
                         {
-                            //utf8 = { head, prev }; //todo Clang 13.0.0 doesn't get it // preserve ESC at the end
-                            utf8 = view{ &(*head), (size_t)(prev - head) }; // preserve ESC at the end
+                            utf8 = { head, prev }; // preserve ESC at the end
                         }
                     }
                     // test Esc + byte: ESC 7 8 D E H M ...
@@ -1983,8 +2025,7 @@ namespace netxs::ansi
                 }
                 else
                 {
-                    //utf8 = { head, prev }; //todo Clang 13.0.0 doesn't get it // preserve ESC at the end
-                    utf8 = view{ &(*head), (size_t)(prev - head) }; // preserve ESC at the end
+                    utf8 = { head, prev }; // preserve ESC at the end
                     return utf8;
                 }
             }

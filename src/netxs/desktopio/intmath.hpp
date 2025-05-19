@@ -3,17 +3,44 @@
 
 #pragma once
 
-#include <array>
-#include <optional>
 #include <algorithm>
-#include <limits>
-#include <cmath>
-#include <cfenv>
-#include <cassert>
-#include <bit>
+#include <any>
+#include <array>
 #include <atomic>
+#include <bit>
+#include <bitset>
+#include <cassert>
+#include <cfenv>
+#include <charconv>
+#include <chrono>
+#include <cmath>
+#include <condition_variable>
+#include <cstdint>
 #include <cstring> // std::memcpy
+#include <deque>
+#include <fstream>
+#include <filesystem>
+#include <functional>
+#include <future>
+#include <iterator>
+#include <limits>
+#include <list>
+#include <map>
+#include <memory>
+#include <mutex>
+#include <numeric> // std::accumulate
+#include <optional>
+#include <span>
+#include <sstream>
+#include <string>
+#include <string_view>
+#include <thread>
+#include <type_traits>
+#include <typeindex>
+#include <unordered_map>
+#include <unordered_set>
 #include <utility> // std::cmp_equal
+#include <vector>
 
 #ifndef faux
     #define faux (false)
@@ -21,6 +48,7 @@
 
 namespace netxs
 {
+    using int8 = int8_t;
     using byte = uint8_t;
     using ui16 = uint16_t;
     using ui32 = uint32_t;
@@ -35,12 +63,13 @@ namespace netxs
     using sz_t = uint32_t;
     using arch = size_t;
     using flag = std::atomic<bool>;
+    using many = std::vector<std::any>;
 
-    constexpr size_t operator "" _sz (unsigned long long i) { return static_cast<size_t>(i); }
+    constexpr size_t operator ""_sz (unsigned long long i) { return static_cast<size_t>(i); }
     static constexpr auto bytemin = std::numeric_limits<byte>::min();
     static constexpr auto bytemax = std::numeric_limits<byte>::max();
-    static constexpr auto charmin = std::numeric_limits<char>::min();
-    static constexpr auto charmax = std::numeric_limits<char>::max();
+    static constexpr auto int8min = std::numeric_limits<int8>::min();
+    static constexpr auto int8max = std::numeric_limits<int8>::max();
     static constexpr auto ui64max = std::numeric_limits<ui64>::max();
     static constexpr auto si64max = std::numeric_limits<si64>::max();
     static constexpr auto si32max = std::numeric_limits<si32>::max();
@@ -73,12 +102,13 @@ namespace netxs
 
     struct noop
     {
-        constexpr auto operator()(auto&&...)
+        constexpr auto operator () (auto&&...)
         {
             return faux;
             //return *this;
         }
-        //constexpr operator bool() const { return faux; }
+        constexpr operator bool () const { return faux; }
+        constexpr noop(auto&&...) { }
     };
 
     enum class feed : byte { none, rev, fwd };
@@ -111,12 +141,44 @@ namespace netxs
         Y_only = 1 << 1,
         all    = X_only | Y_only,
     };
+
+    struct solo
+    {
+        static constexpr auto off = 0; // Allow group focus.
+        static constexpr auto on  = 1; // Set a unique focus.
+    };
+
     constexpr auto operator & (axes l, axes r) { return static_cast<si32>(l) & static_cast<si32>(r); }
 
     template<class T>
     using to_signed_t = std::conditional_t<(si64)std::numeric_limits<std::remove_reference_t<T>>::max() <= si16max, si16,
                         std::conditional_t<(si64)std::numeric_limits<std::remove_reference_t<T>>::max() <= si32max, si32, si64>>;
 
+    template<class T>
+    auto& any_get_or(std::any const& value, T& fallback)
+    {
+        return value.type() == typeid(T) ? *std::any_cast<T*>(value)
+                                         : fallback;
+    }
+    template<class T = si32>
+    auto any_get_or(std::any const& value, T const& fallback = {})
+    {
+        return value.type() == typeid(T) ? std::any_cast<T>(value)
+                                         : fallback;
+    }
+    template<ui32 FieldMask>
+    static constexpr si32 field_offset()
+    {
+        auto mask = FieldMask;
+        if (mask == 0) return 0;
+        auto n = 0;
+        while ((mask & 1) == 0)
+        {
+            mask >>= 1;
+            ++n;
+        }
+        return n;
+    }
     // intmath: Set a single p-bit to v.
     template<sz_t P, class T>
     void set_bit(T&& n, bool v)
@@ -171,19 +233,21 @@ namespace netxs
         else assert(faux);
         return r;
     }
+    static constexpr auto endian_BE = std::endian::native == std::endian::big;
+    static constexpr auto endian_LE = std::endian::native == std::endian::little;
     // intmath: Convert LE to host endianness.
-    template<class T, bool BE = std::endian::native == std::endian::big>
+    template<class T>
     constexpr auto letoh(T i)
     {
-        if constexpr (BE && sizeof(T) > 1) return swap_bytes(i);
-        else                               return i;
+        if constexpr (endian_BE && sizeof(T) > 1) return swap_bytes(i);
+        else                                      return i;
     }
     // intmath: Convert BE to host endianness.
-    template<class T, bool LE = std::endian::native == std::endian::little>
+    template<class T>
     constexpr auto betoh(T i)
     {
-        if constexpr (LE && sizeof(T) > 1) return swap_bytes(i);
-        else                               return i;
+        if constexpr (endian_LE && sizeof(T) > 1) return swap_bytes(i);
+        else                                      return i;
     }
     // intmath: Get the aligned integral value.
     template<class T>
@@ -281,23 +345,23 @@ namespace netxs
             log("fp64max -> fp32: ", fp64max, " -> ",       netxs::saturate_cast<fp32>(fp64max), netxs::saturate_cast<fp32>(fp64max) != fp32max ? " BAD" : "");
             log("fp64max -> si64: ", fp64max, " -> ",       netxs::saturate_cast<si64>(fp64max), netxs::saturate_cast<si64>(fp64max) != si64max ? " BAD" : "");
             log("fp64max -> si32: ", fp64max, " -> ",       netxs::saturate_cast<si32>(fp64max), netxs::saturate_cast<si32>(fp64max) != si32max ? " BAD" : "");
-            log("fp64max -> char: ", fp64max, " -> ", (si32)netxs::saturate_cast<char>(fp64max), netxs::saturate_cast<char>(fp64max) != charmax ? " BAD" : "");
+            log("fp64max -> int8: ", fp64max, " -> ", (si32)netxs::saturate_cast<int8>(fp64max), netxs::saturate_cast<int8>(fp64max) != int8max ? " BAD" : "");
             log("fp64max -> ui64: ", fp64max, " -> ",       netxs::saturate_cast<ui64>(fp64max), netxs::saturate_cast<ui64>(fp64max) != ui64max ? " BAD" : "");
             log("fp64max -> ui32: ", fp64max, " -> ",       netxs::saturate_cast<ui32>(fp64max), netxs::saturate_cast<ui32>(fp64max) != ui32max ? " BAD" : "");
             log("fp64max -> byte: ", fp64max, " -> ", (si32)netxs::saturate_cast<byte>(fp64max), netxs::saturate_cast<byte>(fp64max) != bytemax ? " BAD" : "");
             log("fp64min -> fp32: ", fp64min, " -> ",       netxs::saturate_cast<fp32>(fp64min), netxs::saturate_cast<fp32>(fp64min) != fp32min ? " BAD" : "");
             log("fp64min -> si64: ", fp64min, " -> ",       netxs::saturate_cast<si64>(fp64min), netxs::saturate_cast<si64>(fp64min) != si64min ? " BAD" : "");
-            log("fp64min -> char: ", fp64min, " -> ", (si32)netxs::saturate_cast<char>(fp64min), netxs::saturate_cast<char>(fp64min) != charmin ? " BAD" : "");
+            log("fp64min -> int8: ", fp64min, " -> ", (si32)netxs::saturate_cast<int8>(fp64min), netxs::saturate_cast<int8>(fp64min) != int8min ? " BAD" : "");
             log("fp64min -> ui64: ", fp64min, " -> ",       netxs::saturate_cast<ui64>(fp64min), netxs::saturate_cast<ui64>(fp64min) != ui64min ? " BAD" : "");
             log("fp64min -> byte: ", fp64min, " -> ", (si32)netxs::saturate_cast<byte>(fp64min), netxs::saturate_cast<byte>(fp64min) != bytemin ? " BAD" : "");
             log("fp32max -> fp64: ", fp32max, " -> ",       netxs::saturate_cast<fp64>(fp32max), netxs::saturate_cast<fp64>(fp32max) != fp32max ? " BAD" : "");
             log("fp32max -> si32: ", fp32max, " -> ",       netxs::saturate_cast<si32>(fp32max), netxs::saturate_cast<si32>(fp32max) != si32max ? " BAD" : "");
-            log("fp32max -> char: ", fp32max, " -> ", (si32)netxs::saturate_cast<char>(fp32max), netxs::saturate_cast<char>(fp32max) != charmax ? " BAD" : "");
+            log("fp32max -> int8: ", fp32max, " -> ", (si32)netxs::saturate_cast<int8>(fp32max), netxs::saturate_cast<int8>(fp32max) != int8max ? " BAD" : "");
             log("fp32max -> ui32: ", fp32max, " -> ",       netxs::saturate_cast<ui32>(fp32max), netxs::saturate_cast<ui32>(fp32max) != ui32max ? " BAD" : "");
             log("fp32max -> byte: ", fp32max, " -> ", (si32)netxs::saturate_cast<byte>(fp32max), netxs::saturate_cast<byte>(fp32max) != bytemax ? " BAD" : "");
             log("fp32min -> fp64: ", fp32min, " -> ",       netxs::saturate_cast<fp64>(fp32min), netxs::saturate_cast<fp64>(fp32min) != fp32min ? " BAD" : "");
             log("fp32min -> si32: ", fp32min, " -> ",       netxs::saturate_cast<si32>(fp32min), netxs::saturate_cast<si32>(fp32min) != si32min ? " BAD" : "");
-            log("fp32min -> char: ", fp32min, " -> ", (si32)netxs::saturate_cast<char>(fp32min), netxs::saturate_cast<char>(fp32min) != charmin ? " BAD" : "");
+            log("fp32min -> int8: ", fp32min, " -> ", (si32)netxs::saturate_cast<int8>(fp32min), netxs::saturate_cast<int8>(fp32min) != int8min ? " BAD" : "");
             log("fp32min -> ui32: ", fp32min, " -> ",       netxs::saturate_cast<ui32>(fp32min), netxs::saturate_cast<ui32>(fp32min) != ui32min ? " BAD" : "");
             log("fp32min -> byte: ", fp32min, " -> ", (si32)netxs::saturate_cast<byte>(fp32min), netxs::saturate_cast<byte>(fp32min) != bytemin ? " BAD" : "");
             log("ui64max -> si32: ", ui64max, " -> ",       netxs::saturate_cast<si32>(ui64max), netxs::saturate_cast<si32>(ui64max) != si32max ? " BAD" : "");
@@ -316,12 +380,12 @@ namespace netxs
             log("si64min -> ui32: ", si64min, " -> ",       netxs::saturate_cast<ui32>(si64min), netxs::saturate_cast<ui32>(si64min) != ui32min ? " BAD" : "");
             log("si32max -> fp32: ", si32max, " -> ",       netxs::saturate_cast<fp32>(si32max), netxs::saturate_cast<fp32>(si32max) != (fp32)si32max ? " BAD" : "");
             log("si32max -> si64: ", si32max, " -> ",       netxs::saturate_cast<si64>(si32max), netxs::saturate_cast<si64>(si32max) != si32max ? " BAD" : "");
-            log("si32max -> char: ", si32max, " -> ", (si32)netxs::saturate_cast<char>(si32max), netxs::saturate_cast<char>(si32max) != charmax ? " BAD" : "");
+            log("si32max -> int8: ", si32max, " -> ", (si32)netxs::saturate_cast<int8>(si32max), netxs::saturate_cast<int8>(si32max) != int8max ? " BAD" : "");
             log("si32max -> ui64: ", si32max, " -> ",       netxs::saturate_cast<ui64>(si32max), netxs::saturate_cast<ui64>(si32max) != si32max ? " BAD" : "");
             log("si32max -> byte: ", si32max, " -> ", (si32)netxs::saturate_cast<byte>(si32max), netxs::saturate_cast<byte>(si32max) != bytemax ? " BAD" : "");
             log("si32min -> fp32: ", si32min, " -> ",       netxs::saturate_cast<fp32>(si32min), netxs::saturate_cast<fp32>(si32min) != (fp32)si32min ? " BAD" : "");
             log("si32min -> si64: ", si32min, " -> ",       netxs::saturate_cast<si64>(si32min), netxs::saturate_cast<si64>(si32min) != si32min ? " BAD" : "");
-            log("si32min -> char: ", si32min, " -> ", (si32)netxs::saturate_cast<char>(si32min), netxs::saturate_cast<char>(si32min) != charmin ? " BAD" : "");
+            log("si32min -> int8: ", si32min, " -> ", (si32)netxs::saturate_cast<int8>(si32min), netxs::saturate_cast<int8>(si32min) != int8min ? " BAD" : "");
             log("si32min -> ui64: ", si32min, " -> ",       netxs::saturate_cast<ui64>(si32min), netxs::saturate_cast<ui64>(si32min) != ui64min ? " BAD" : "");
             log("si32min -> byte: ", si32min, " -> ", (si32)netxs::saturate_cast<byte>(si32min), netxs::saturate_cast<byte>(si32min) != bytemin ? " BAD" : "");
         }
@@ -359,7 +423,7 @@ namespace netxs
     template<class T1, class T2, class T3 = T2, class = std::enable_if_t<std::is_integral_v<T1> && std::is_integral_v<T2> && std::is_integral_v<T3>>>
     constexpr T3 grid_mod(T1 n, T2 d)
     {
-        auto mod = n % d;
+        auto mod = d != 0 ? n % d : 0;
         if (mod < 0) mod += d;
         return mod;
     }
@@ -375,8 +439,7 @@ namespace netxs
     using disintegrate = typename _disintegrate<std::is_arithmetic_v<T>, T>::type;
 
     // intmath: Quadratic fader delta sequence generator.
-    //          The QUADRATIC-LAW fader from the initial velocity
-    //          to stop for a given period of time.
+    //          The QUADRATIC-LAW fader from the initial velocity to stop for a given period of time.
     template<class T>
     struct quadratic
     {
@@ -538,7 +601,7 @@ namespace netxs
             :  r{ r },
               d1{ 1 / (r * r)},
               d2{ 1 / ((r - 1) * (r - 1)) },
-              a2{ 1 - d2 }, 
+              a2{ 1 - d2 },
               b2{ 3 * d2},
               c2{ -3 * d2}
         { }
@@ -568,7 +631,7 @@ namespace netxs
             : r{ r },
               d1{ 1 / (r * r)},
               d2{ 1 / ((r - 1) * (r - 1)) },
-              a2{ 1 - d2 }, 
+              a2{ 1 - d2 },
               b2{ 3 * d2},
               c2{ -3 * d2},
             offset_x{ offset_x },
@@ -723,7 +786,7 @@ namespace netxs
         auto dy = std::abs(src_size.x);
         if (src_view.size.x < 0) { dx = -dx; src_view.coor.x -= 1; }
         if (src_view.size.y < 0) { dy = -dy; src_view.coor.y -= 1; }
-        
+
         dst_view.size -= 1;
         auto sptr = bitmap.begin() + (src_view.coor.x + src_view.coor.y * src_size.x);
         auto dptr = canvas.begin() + (dst_view.coor.x + dst_view.coor.y * dst_size.x);
@@ -1029,11 +1092,11 @@ namespace netxs
         using twod = T;
         using type = disintegrate<twod>;
 
-        auto gain = static_cast<ui16>( 0 );
-        auto   dx = static_cast<si32>( p1.x - p0.x );
-        auto   dy = static_cast<si32>( p1.y - p0.y );
-        auto   lx = static_cast<ui32>( std::abs(dx) );
-        auto   ly = static_cast<ui32>( std::abs(dy) );
+        auto gain = ui16{};
+        auto   dx = (si32)(p1.x - p0.x);
+        auto   dy = (si32)(p1.y - p0.y);
+        auto   lx = (ui32)std::abs(dx);
+        auto   ly = (ui32)std::abs(dy);
 
         rect = rect.normalize();
         auto& coor = rect.coor;

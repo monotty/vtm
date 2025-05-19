@@ -45,9 +45,10 @@ namespace netxs::ui
     class flow
         : protected ansi::runtime
     {
+    protected:
         rect textline{ }; // flow: Textline placeholder.
         si32 textsize{ }; // flow: Full textline length (1D).
-        side boundary{ }; // flow: Affected area by the text output.
+        rect boundary{ }; // flow: Affected area by the text output.
         si32 curpoint{ }; // flow: Current substring start position.
         si32 caret_mx{ }; // flow: Maximum x-coor value on the visible area.
         twod caretpos{ }; // flow: Current virtual (w/o style applied) cursor position.
@@ -131,19 +132,20 @@ namespace netxs::ui
                     while (n)
                     {
                         auto& c = block.at(p);
-                        if (c.isspc() || c.wdt() == utf::matrix::vs<21,21>
-                         || c.txt().ends_with(utf::utf8view<0x200B>)) break;
+                        if (c.isspc() || c.matrix_end() || c.txt().ends_with(utf::utf8view<0x200B>)) break;
                         n--;
                         p--;
                     }
                     if (n > 0) // Cut by whitespace.
                     {
-                        printout.size.x = n + 1;
+                        printout.size.x = n + (RtoL ? 0 : 1);
                     }
-                    else // Cut on a widechar boundary (CJK/Emoji).
+                    else // Try to cut on a matrix boundary (CJK/Emoji).
                     {
                         auto q = curpoint + printout.size.x - 1;
-                        if (block.at(q).wdt() == utf::matrix::vs<21,11>)
+                        auto& c = block.at(q);
+                        auto [w, h, x, y] = c.whxy();
+                        if (w != 1 && h == 1 && x == 1 && y == 1)
                         {
                             --printout.size.x;
                         }
@@ -170,7 +172,7 @@ namespace netxs::ui
             //todo revise: It is actually only for the coor.y that is negative.
 
             printout.coor += cliprect.coor;
-            boundary |= printout;
+            minmax(printout);
 
             if constexpr (!std::is_same_v<P, noop>)
             {
@@ -192,16 +194,27 @@ namespace netxs::ui
         auto middle() { return (cliprect.size.x >> 1) - (textline.size.x >> 1); }
         void autocr() { if (caretpos.x >= caret_mx) flow::nl(highness); }
 
+        void cut_leading_spaces(auto const& block)
+        {
+            while (textline.size.x > 0 && block.at(curpoint).isspc())
+            {
+                textline.size.x--;
+                curpoint++;
+            }
+        }
         template<bool Split, bool RtoL, bool ReLF, class T, class P>
         void centred(T const& block, P print)
         {
             while (textline.size.x > 0)
             {
                 autocr();
-                auto axis = textline.size.x >= caret_mx ? 0
-                                                        : middle();
+                auto axis = textline.size.x >= caret_mx ? 0 : middle();
                 flow::ax(axis);
                 output<Split, true, RtoL, ReLF>(block, print);
+                if constexpr (!Split) // Cut all leading spaces on wrapping.
+                {
+                    cut_leading_spaces(block);
+                }
             }
         }
         template<bool Split, bool RtoL, bool ReLF, class T, class P>
@@ -211,6 +224,10 @@ namespace netxs::ui
             {
                 autocr();
                 output<Split, true, RtoL, ReLF>(block, print);
+                if constexpr (!Split) // Cut all leading spaces on wrapping.
+                {
+                    cut_leading_spaces(block);
+                }
             }
         }
         template<bool Split, bool RtoL, bool ReLF, class T, class P>
@@ -244,13 +261,13 @@ namespace netxs::ui
             : flow{ pagerect.size }
         { }
 
-        void   vsize(si32 height) { pagerect.size.y = height;  } // flow: Set client full height.
-        void    size(twod size)   { pagerect.size = size; } // flow: Set client full size.
-        void    full(rect area)   { pagerect = area;      } // flow: Set client full rect.
-        auto&   full() const      { return pagerect;      } // flow: Get client full rect reference.
-        auto& minmax() const      { return boundary;      } // flow: Return the output range.
-        void  minmax(twod p)      { boundary |= p;        } // flow: Register twod.
-        void  minmax(rect r)      { boundary |= r;        } // flow: Register rect.
+        void   vsize(si32 height) { pagerect.size.y = height;      } // flow: Set client full height.
+        void    size(twod size)   { pagerect.size = size;          } // flow: Set client full size.
+        void    full(rect area)   { pagerect = area;               } // flow: Set client full rect.
+        auto&   full() const      { return pagerect;               } // flow: Get client full rect reference.
+        auto& minmax() const      { return boundary;               } // flow: Return the output range.
+        void  minmax(twod p)      { boundary |= rect{ p, dot_11 }; } // flow: Register twod (cursor).
+        void  minmax(rect r)      { boundary |= r;                 } // flow: Register rect.
 
         // flow: Sync paragraph style.
         template<class T>
@@ -313,7 +330,7 @@ namespace netxs::ui
                 if (cmd == ansi::fn::el && arg == 0)
                 {
                     auto coor = flow::cp();
-                    auto mark = block.brush();
+                    auto mark = cell{ block.brush() }.txt(' ');
                     auto line = arighted ? rect{{ textpads.l, coor.y }, { coor.x, 1 }}
                                          : rect{ coor, { caret_mx - coor.x + 1, 1 }};
                     line.coor.x += pagerect.coor.x;
@@ -401,7 +418,7 @@ namespace netxs::ui
         twod up () // flow: Register cursor position.
         {
             auto cp = flow::cp();
-            boundary |= cp; /* |= cursor*/;
+            minmax(cp); /* |= cursor*/;
             return cp;
         }
         void zz (twod offset = dot_00)
@@ -437,7 +454,7 @@ namespace netxs::ui
         {
             flow::zz(offset);
             flow::sc();
-            boundary = caretpos;
+            boundary = { .coor = caretpos };
         }
         void reset(flow const& canvas) // flow: Reset flow state.
         {
@@ -559,6 +576,33 @@ namespace netxs::ui
         auto substr(si32 at, si32 width = netxs::si32max) const { return shadow().substr(at, width);       }
         void trimto(si32 max_size)                              { if (length() > max_size) crop(max_size); }
         void resize(si32 oversize)                              { if (oversize > length()) crop(oversize); }
+        auto take_piece(si32 at, si32 width = netxs::si32max) const
+        {
+            if (width == netxs::si32max) width = length() - at;
+            return rich{ core::crop(at, width) };
+        }
+        auto copy_piece(rich& dest, si32 from, si32 width) const
+        {
+            auto my_size = size();
+            if (from >= my_size.x * my_size.y)
+            {
+                dest.crop(0);
+                return;
+            }
+            auto new_width = from % my_size.x + width;
+            if (new_width > my_size.x)
+            {
+                width = my_size.x - from;
+            }
+            dest.crop(width);
+            auto src = begin() + from;
+            auto dst = dest.begin();
+            auto end = dest.end();
+            while (dst != end)
+            {
+                *dst++ = *src++;
+            }
+        }
         auto empty()
         {
             return canvas.empty();
@@ -575,7 +619,7 @@ namespace netxs::ui
                 if (*next != blank) break;
                 tail = next;
             }
-            auto new_size = static_cast<si32>(tail - head);
+            auto new_size = (si32)(tail - head);
             if (max_size && max_size < new_size) new_size = max_size;
             if (new_size != length()) crop(new_size);
         }
@@ -621,162 +665,57 @@ namespace netxs::ui
                 while (dest < tail)
                 {
                     auto c = *data++;
-                    //todo use c.whxy()
-                    auto v = c.wdt();
-                    if (v == utf::matrix::vs<11,00>)
+                    auto [w, h, x, y] = c.whxy();
+                    if (x == 0 && y == 0)
                     {
-                        fuse(*dest++, c.wdt(utf::matrix::vs<11,11>));
-                    }
-                    else if (v == utf::matrix::vs<21,00>)
-                    {
-                        if (c.rtl())
+                        if (w == 0 && h == 0)
                         {
-                                             fuse(*dest++, c.wdt(utf::matrix::vs<21,21>));
-                            if (dest < tail) fuse(*dest++, c.wdt(utf::matrix::vs<21,11>));
+                            //todo implement controls/commands
+                            // winsrv2019's cmd.exe sets title with a zero at the end
+                            //*dst++ = cell{ c, whitespace };
+                        }
+                        else if (h == 1)
+                        {
+                            if (w == 1)
+                            {
+                                fuse(*dest++, c.wdt(w, h, 1, 1));
+                            }
+                            else if (w != 0)
+                            {
+                                if (c.rtl())
+                                {
+                                    x = w;
+                                    do fuse(*dest++, c.wdt(w, h, x--, 1));
+                                    while (x != 0 && dest != tail);
+                                }
+                                else
+                                {
+                                    do fuse(*dest++, c.wdt(w, h, ++x, 1));
+                                    while (x != w && dest != tail);
+                                }
+                            }
+                        }
+                    }
+                    else if (x == 0) // x==0; Expand hz cell stripe.
+                    {
+                        if (w == 1)
+                        {
+                            fuse(*dest++, c.wdt(w, h, 1, y));
                         }
                         else
                         {
-                                             fuse(*dest++, c.wdt(utf::matrix::vs<21,11>));
-                            if (dest < tail) fuse(*dest++, c.wdt(utf::matrix::vs<21,21>));
+                            if (c.rtl())
+                            {
+                                x = w;
+                                while (x != 0 && dest != tail) fuse(*dest++, c.wdt(w, h, x--, y));
+                            }
+                            else
+                            {
+                                while (x != w && dest != tail) fuse(*dest++, c.wdt(w, h, ++x, y));
+                            }
                         }
                     }
-                    else if (v == 0)
-                    {
-                        //todo implement controls/commands
-                        // winsrv2019's cmd.exe sets title with a zero at the end
-                        //*dst++ = cell{ c, whitespace };
-                    }
-                    else if (v == utf::matrix::vs<31,00>)
-                    {
-                        if (c.rtl())
-                        {
-                                             fuse(*dest++, c.wdt(utf::matrix::vs<31,31>));
-                            if (dest < tail) fuse(*dest++, c.wdt(utf::matrix::vs<31,21>));
-                            if (dest < tail) fuse(*dest++, c.wdt(utf::matrix::vs<31,11>));
-                        }
-                        else
-                        {
-                                             fuse(*dest++, c.wdt(utf::matrix::vs<31,11>));
-                            if (dest < tail) fuse(*dest++, c.wdt(utf::matrix::vs<31,21>));
-                            if (dest < tail) fuse(*dest++, c.wdt(utf::matrix::vs<31,31>));
-                        }
-                    }
-                    else if (v == utf::matrix::vs<41,00>)
-                    {
-                        if (c.rtl())
-                        {
-                                             fuse(*dest++, c.wdt(utf::matrix::vs<41,41>));
-                            if (dest < tail) fuse(*dest++, c.wdt(utf::matrix::vs<41,31>));
-                            if (dest < tail) fuse(*dest++, c.wdt(utf::matrix::vs<41,21>));
-                            if (dest < tail) fuse(*dest++, c.wdt(utf::matrix::vs<41,11>));
-                        }
-                        else
-                        {
-                                             fuse(*dest++, c.wdt(utf::matrix::vs<41,11>));
-                            if (dest < tail) fuse(*dest++, c.wdt(utf::matrix::vs<41,21>));
-                            if (dest < tail) fuse(*dest++, c.wdt(utf::matrix::vs<41,31>));
-                            if (dest < tail) fuse(*dest++, c.wdt(utf::matrix::vs<41,41>));
-                        }
-                    }
-                    else if (v == utf::matrix::vs<51,00>)
-                    {
-                        if (c.rtl())
-                        {
-                                             fuse(*dest++, c.wdt(utf::matrix::vs<51,51>));
-                            if (dest < tail) fuse(*dest++, c.wdt(utf::matrix::vs<51,41>));
-                            if (dest < tail) fuse(*dest++, c.wdt(utf::matrix::vs<51,31>));
-                            if (dest < tail) fuse(*dest++, c.wdt(utf::matrix::vs<51,21>));
-                            if (dest < tail) fuse(*dest++, c.wdt(utf::matrix::vs<51,11>));
-                        }
-                        else
-                        {
-                                             fuse(*dest++, c.wdt(utf::matrix::vs<51,11>));
-                            if (dest < tail) fuse(*dest++, c.wdt(utf::matrix::vs<51,21>));
-                            if (dest < tail) fuse(*dest++, c.wdt(utf::matrix::vs<51,31>));
-                            if (dest < tail) fuse(*dest++, c.wdt(utf::matrix::vs<51,41>));
-                            if (dest < tail) fuse(*dest++, c.wdt(utf::matrix::vs<51,51>));
-                        }
-                    }
-                    else if (v == utf::matrix::vs<61,00>)
-                    {
-                        if (c.rtl())
-                        {
-                                             fuse(*dest++, c.wdt(utf::matrix::vs<61,61>));
-                            if (dest < tail) fuse(*dest++, c.wdt(utf::matrix::vs<61,51>));
-                            if (dest < tail) fuse(*dest++, c.wdt(utf::matrix::vs<61,41>));
-                            if (dest < tail) fuse(*dest++, c.wdt(utf::matrix::vs<61,31>));
-                            if (dest < tail) fuse(*dest++, c.wdt(utf::matrix::vs<61,21>));
-                            if (dest < tail) fuse(*dest++, c.wdt(utf::matrix::vs<61,11>));
-                        }
-                        else
-                        {
-                                             fuse(*dest++, c.wdt(utf::matrix::vs<61,11>));
-                            if (dest < tail) fuse(*dest++, c.wdt(utf::matrix::vs<61,21>));
-                            if (dest < tail) fuse(*dest++, c.wdt(utf::matrix::vs<61,31>));
-                            if (dest < tail) fuse(*dest++, c.wdt(utf::matrix::vs<61,41>));
-                            if (dest < tail) fuse(*dest++, c.wdt(utf::matrix::vs<61,51>));
-                            if (dest < tail) fuse(*dest++, c.wdt(utf::matrix::vs<61,61>));
-                        }
-                    }
-                    else if (v == utf::matrix::vs<71,00>)
-                    {
-                        if (c.rtl())
-                        {
-                                             fuse(*dest++, c.wdt(utf::matrix::vs<71,71>));
-                            if (dest < tail) fuse(*dest++, c.wdt(utf::matrix::vs<71,61>));
-                            if (dest < tail) fuse(*dest++, c.wdt(utf::matrix::vs<71,51>));
-                            if (dest < tail) fuse(*dest++, c.wdt(utf::matrix::vs<71,41>));
-                            if (dest < tail) fuse(*dest++, c.wdt(utf::matrix::vs<71,31>));
-                            if (dest < tail) fuse(*dest++, c.wdt(utf::matrix::vs<71,21>));
-                            if (dest < tail) fuse(*dest++, c.wdt(utf::matrix::vs<71,11>));
-                        }
-                        else
-                        {
-                                             fuse(*dest++, c.wdt(utf::matrix::vs<71,11>));
-                            if (dest < tail) fuse(*dest++, c.wdt(utf::matrix::vs<71,21>));
-                            if (dest < tail) fuse(*dest++, c.wdt(utf::matrix::vs<71,31>));
-                            if (dest < tail) fuse(*dest++, c.wdt(utf::matrix::vs<71,41>));
-                            if (dest < tail) fuse(*dest++, c.wdt(utf::matrix::vs<71,51>));
-                            if (dest < tail) fuse(*dest++, c.wdt(utf::matrix::vs<71,61>));
-                            if (dest < tail) fuse(*dest++, c.wdt(utf::matrix::vs<71,71>));
-                        }
-                    }
-                    else if (v == utf::matrix::vs<81,00>)
-                    {
-                        if (c.rtl())
-                        {
-                                             fuse(*dest++, c.wdt(utf::matrix::vs<81,81>));
-                            if (dest < tail) fuse(*dest++, c.wdt(utf::matrix::vs<81,71>));
-                            if (dest < tail) fuse(*dest++, c.wdt(utf::matrix::vs<81,61>));
-                            if (dest < tail) fuse(*dest++, c.wdt(utf::matrix::vs<81,51>));
-                            if (dest < tail) fuse(*dest++, c.wdt(utf::matrix::vs<81,41>));
-                            if (dest < tail) fuse(*dest++, c.wdt(utf::matrix::vs<81,31>));
-                            if (dest < tail) fuse(*dest++, c.wdt(utf::matrix::vs<81,21>));
-                            if (dest < tail) fuse(*dest++, c.wdt(utf::matrix::vs<81,11>));
-                        }
-                        else
-                        {
-                                             fuse(*dest++, c.wdt(utf::matrix::vs<81,11>));
-                            if (dest < tail) fuse(*dest++, c.wdt(utf::matrix::vs<81,21>));
-                            if (dest < tail) fuse(*dest++, c.wdt(utf::matrix::vs<81,31>));
-                            if (dest < tail) fuse(*dest++, c.wdt(utf::matrix::vs<81,41>));
-                            if (dest < tail) fuse(*dest++, c.wdt(utf::matrix::vs<81,51>));
-                            if (dest < tail) fuse(*dest++, c.wdt(utf::matrix::vs<81,61>));
-                            if (dest < tail) fuse(*dest++, c.wdt(utf::matrix::vs<81,71>));
-                            if (dest < tail) fuse(*dest++, c.wdt(utf::matrix::vs<81,81>));
-                        }
-                    }
-                    else
-                    {
-                        auto [w, h, x, y] = utf::matrix::whxy(v);
-                        if (x == 0) // x==0; Expand hz cell stripe.
-                        {
-                            auto stop = v + w;
-                            if (c.rtl()) while (v != stop) fuse(*dest++, c.wdt(stop--));
-                            else         while (v != stop) fuse(*dest++, c.wdt(++v));
-                        }
-                        else fuse(*dest++, c);
-                    }
+                    else fuse(*dest++, c);
                 }
             }
         }
@@ -798,159 +737,57 @@ namespace netxs::ui
                 while (size > 0)
                 {
                     auto c = *data++;
-                    auto v = c.wdt();
-                    if (v == utf::matrix::vs<11,00>)
+                    auto [w, h, x, y] = c.whxy();
+                    if (x == 0 && y == 0)
                     {
-                        set(c.wdt(utf::matrix::vs<11,11>));
-                    }
-                    else if (v == utf::matrix::vs<21,00>)
-                    {
-                        if (c.rtl())
+                        if (w == 0 && h == 0)
                         {
-                                          set(c.wdt(utf::matrix::vs<21,21>));
-                            if (size > 0) set(c.wdt(utf::matrix::vs<21,11>));
+                            //todo implement controls/commands
+                            // winsrv2019's cmd.exe sets title with a zero at the end
+                            //*dst++ = cell{ c, whitespace };
+                        }
+                        else if (h == 1)
+                        {
+                            if (w == 1)
+                            {
+                                set(c.wdt(w, h, 1, 1));
+                            }
+                            else if (w != 0)
+                            {
+                                if (c.rtl())
+                                {
+                                    x = w;
+                                    do set(c.wdt(w, h, x--, 1));
+                                    while (x != 0 && size != 0);
+                                }
+                                else
+                                {
+                                    do set(c.wdt(w, h, ++x, 1));
+                                    while (x != w && size != 0);
+                                }
+                            }
+                        }
+                    }
+                    else if (x == 0) // x==0; Expand hz cell stripe.
+                    {
+                        if (w == 1)
+                        {
+                            set(c.wdt(w, h, 1, y));
                         }
                         else
                         {
-                                          set(c.wdt(utf::matrix::vs<21,11>));
-                            if (size > 0) set(c.wdt(utf::matrix::vs<21,21>));
+                            if (c.rtl())
+                            {
+                                x = w;
+                                while (x != 0 && size != 0) set(c.wdt(w, h, x--, y));
+                            }
+                            else
+                            {
+                                while (x != w && size != 0) set(c.wdt(w, h, ++x, y));
+                            }
                         }
                     }
-                    else if (v == 0)
-                    {
-                        //
-                    }
-                    else if (v == utf::matrix::vs<31,00>)
-                    {
-                        if (c.rtl())
-                        {
-                                          set(c.wdt(utf::matrix::vs<31,31>));
-                            if (size > 0) set(c.wdt(utf::matrix::vs<31,21>));
-                            if (size > 0) set(c.wdt(utf::matrix::vs<31,11>));
-                        }
-                        else
-                        {
-                                          set(c.wdt(utf::matrix::vs<31,11>));
-                            if (size > 0) set(c.wdt(utf::matrix::vs<31,21>));
-                            if (size > 0) set(c.wdt(utf::matrix::vs<31,31>));
-                        }
-                    }
-                    else if (v == utf::matrix::vs<41,00>)
-                    {
-                        if (c.rtl())
-                        {
-                                          set(c.wdt(utf::matrix::vs<41,41>));
-                            if (size > 0) set(c.wdt(utf::matrix::vs<41,31>));
-                            if (size > 0) set(c.wdt(utf::matrix::vs<41,21>));
-                            if (size > 0) set(c.wdt(utf::matrix::vs<41,11>));
-                        }
-                        else
-                        {
-                                          set(c.wdt(utf::matrix::vs<41,11>));
-                            if (size > 0) set(c.wdt(utf::matrix::vs<41,21>));
-                            if (size > 0) set(c.wdt(utf::matrix::vs<41,31>));
-                            if (size > 0) set(c.wdt(utf::matrix::vs<41,41>));
-                        }
-                    }
-                    else if (v == utf::matrix::vs<51,00>)
-                    {
-                        if (c.rtl())
-                        {
-                                          set(c.wdt(utf::matrix::vs<51,51>));
-                            if (size > 0) set(c.wdt(utf::matrix::vs<51,41>));
-                            if (size > 0) set(c.wdt(utf::matrix::vs<51,31>));
-                            if (size > 0) set(c.wdt(utf::matrix::vs<51,21>));
-                            if (size > 0) set(c.wdt(utf::matrix::vs<51,11>));
-                        }
-                        else
-                        {
-                                          set(c.wdt(utf::matrix::vs<51,11>));
-                            if (size > 0) set(c.wdt(utf::matrix::vs<51,21>));
-                            if (size > 0) set(c.wdt(utf::matrix::vs<51,31>));
-                            if (size > 0) set(c.wdt(utf::matrix::vs<51,41>));
-                            if (size > 0) set(c.wdt(utf::matrix::vs<51,51>));
-                        }
-                    }
-                    else if (v == utf::matrix::vs<61,00>)
-                    {
-                        if (c.rtl())
-                        {
-                                          set(c.wdt(utf::matrix::vs<61,61>));
-                            if (size > 0) set(c.wdt(utf::matrix::vs<61,51>));
-                            if (size > 0) set(c.wdt(utf::matrix::vs<61,41>));
-                            if (size > 0) set(c.wdt(utf::matrix::vs<61,31>));
-                            if (size > 0) set(c.wdt(utf::matrix::vs<61,21>));
-                            if (size > 0) set(c.wdt(utf::matrix::vs<61,11>));
-                        }
-                        else
-                        {
-                                          set(c.wdt(utf::matrix::vs<61,11>));
-                            if (size > 0) set(c.wdt(utf::matrix::vs<61,21>));
-                            if (size > 0) set(c.wdt(utf::matrix::vs<61,31>));
-                            if (size > 0) set(c.wdt(utf::matrix::vs<61,41>));
-                            if (size > 0) set(c.wdt(utf::matrix::vs<61,51>));
-                            if (size > 0) set(c.wdt(utf::matrix::vs<61,61>));
-                        }
-                    }
-                    else if (v == utf::matrix::vs<71,00>)
-                    {
-                        if (c.rtl())
-                        {
-                                          set(c.wdt(utf::matrix::vs<71,71>));
-                            if (size > 0) set(c.wdt(utf::matrix::vs<71,61>));
-                            if (size > 0) set(c.wdt(utf::matrix::vs<71,51>));
-                            if (size > 0) set(c.wdt(utf::matrix::vs<71,41>));
-                            if (size > 0) set(c.wdt(utf::matrix::vs<71,31>));
-                            if (size > 0) set(c.wdt(utf::matrix::vs<71,21>));
-                            if (size > 0) set(c.wdt(utf::matrix::vs<71,11>));
-                        }
-                        else
-                        {
-                                          set(c.wdt(utf::matrix::vs<71,11>));
-                            if (size > 0) set(c.wdt(utf::matrix::vs<71,21>));
-                            if (size > 0) set(c.wdt(utf::matrix::vs<71,31>));
-                            if (size > 0) set(c.wdt(utf::matrix::vs<71,41>));
-                            if (size > 0) set(c.wdt(utf::matrix::vs<71,51>));
-                            if (size > 0) set(c.wdt(utf::matrix::vs<71,61>));
-                            if (size > 0) set(c.wdt(utf::matrix::vs<71,71>));
-                        }
-                    }
-                    else if (v == utf::matrix::vs<81,00>)
-                    {
-                        if (c.rtl())
-                        {
-                                          set(c.wdt(utf::matrix::vs<81,81>));
-                            if (size > 0) set(c.wdt(utf::matrix::vs<81,71>));
-                            if (size > 0) set(c.wdt(utf::matrix::vs<81,61>));
-                            if (size > 0) set(c.wdt(utf::matrix::vs<81,51>));
-                            if (size > 0) set(c.wdt(utf::matrix::vs<81,41>));
-                            if (size > 0) set(c.wdt(utf::matrix::vs<81,31>));
-                            if (size > 0) set(c.wdt(utf::matrix::vs<81,21>));
-                            if (size > 0) set(c.wdt(utf::matrix::vs<81,11>));
-                        }
-                        else
-                        {
-                                          set(c.wdt(utf::matrix::vs<81,11>));
-                            if (size > 0) set(c.wdt(utf::matrix::vs<81,21>));
-                            if (size > 0) set(c.wdt(utf::matrix::vs<81,31>));
-                            if (size > 0) set(c.wdt(utf::matrix::vs<81,41>));
-                            if (size > 0) set(c.wdt(utf::matrix::vs<81,51>));
-                            if (size > 0) set(c.wdt(utf::matrix::vs<81,61>));
-                            if (size > 0) set(c.wdt(utf::matrix::vs<81,71>));
-                            if (size > 0) set(c.wdt(utf::matrix::vs<81,81>));
-                        }
-                    }
-                    else
-                    {
-                        auto [w, h, x, y] = utf::matrix::whxy(v);
-                        if (x == 0) // x==0; Expand hz cell stripe.
-                        {
-                            auto stop = v + w;
-                            if (c.rtl()) while (v != stop) set(c.wdt(stop--));
-                            else         while (v != stop) set(c.wdt(++v));
-                        }
-                        else set(c);
-                    }
+                    else set(c);
                 }
             }
         }
@@ -966,160 +803,87 @@ namespace netxs::ui
                 while (dest > tail)
                 {
                     auto c = *--data;
-                    auto v = c.wdt();
-                    if (v == utf::matrix::vs<11,00>)
+                    auto [w, h, x, y] = c.whxy();
+                    if (x == 0 && y == 0)
                     {
-                        fuse(*--dest, c.wdt(utf::matrix::vs<11,11>));
-                    }
-                    else if (v == utf::matrix::vs<21,00>)
-                    {
-                        if (c.rtl())
+                        if (w == 0 && h == 0)
                         {
-                                             fuse(*--dest, c.wdt(utf::matrix::vs<21,11>));
-                            if (dest > tail) fuse(*--dest, c.wdt(utf::matrix::vs<21,21>));
+                            //todo implement controls/commands
+                            // winsrv2019's cmd.exe sets title with a zero at the end
+                            //*dst++ = cell{ c, whitespace };
+                        }
+                        else if (h == 1)
+                        {
+                            if (w == 1)
+                            {
+                                fuse(*--dest, c.wdt(w, h, 1, 1));
+                            }
+                            else if (w != 0)
+                            {
+                                if (c.rtl())
+                                {
+                                    do fuse(*--dest, c.wdt(w, h, ++x, 1));
+                                    while (x != w && dest != tail);
+                                }
+                                else
+                                {
+                                    x = w;
+                                    do fuse(*--dest, c.wdt(w, h, x--, 1));
+                                    while (x != 0 && dest != tail);
+                                }
+                            }
+                        }
+                    }
+                    else if (x == 0) // x==0; Expand hz cell stripe.
+                    {
+                        if (w == 1)
+                        {
+                            fuse(*--dest, c.wdt(w, h, 1, y));
                         }
                         else
                         {
-                                             fuse(*--dest, c.wdt(utf::matrix::vs<21,21>));
-                            if (dest > tail) fuse(*--dest, c.wdt(utf::matrix::vs<21,11>));
+                            if (c.rtl())
+                            {
+                                while (x != w && dest != tail) fuse(*--dest, c.wdt(w, h, ++x, y));
+                            }
+                            else
+                            {
+                                x = w;
+                                while (x != 0 && dest != tail) fuse(*--dest, c.wdt(w, h, x--, y));
+                            }
                         }
                     }
-                    else if (v == 0)
-                    {
-                        //
-                    }
-                    else if (v == utf::matrix::vs<31,00>)
-                    {
-                        if (c.rtl())
-                        {
-                                             fuse(*--dest, c.wdt(utf::matrix::vs<31,11>));
-                            if (dest > tail) fuse(*--dest, c.wdt(utf::matrix::vs<31,21>));
-                            if (dest > tail) fuse(*--dest, c.wdt(utf::matrix::vs<31,31>));
-                        }
-                        else
-                        {
-                                             fuse(*--dest, c.wdt(utf::matrix::vs<31,31>));
-                            if (dest > tail) fuse(*--dest, c.wdt(utf::matrix::vs<31,21>));
-                            if (dest > tail) fuse(*--dest, c.wdt(utf::matrix::vs<31,11>));
-                        }
-                    }
-                    else if (v == utf::matrix::vs<41,00>)
-                    {
-                        if (c.rtl())
-                        {
-                                             fuse(*--dest, c.wdt(utf::matrix::vs<41,11>));
-                            if (dest > tail) fuse(*--dest, c.wdt(utf::matrix::vs<41,21>));
-                            if (dest > tail) fuse(*--dest, c.wdt(utf::matrix::vs<41,31>));
-                            if (dest > tail) fuse(*--dest, c.wdt(utf::matrix::vs<41,41>));
-                        }
-                        else
-                        {
-                                             fuse(*--dest, c.wdt(utf::matrix::vs<41,41>));
-                            if (dest > tail) fuse(*--dest, c.wdt(utf::matrix::vs<41,31>));
-                            if (dest > tail) fuse(*--dest, c.wdt(utf::matrix::vs<41,21>));
-                            if (dest > tail) fuse(*--dest, c.wdt(utf::matrix::vs<41,11>));
-                        }
-                    }
-                    else if (v == utf::matrix::vs<51,00>)
-                    {
-                        if (c.rtl())
-                        {
-                                             fuse(*--dest, c.wdt(utf::matrix::vs<51,11>));
-                            if (dest > tail) fuse(*--dest, c.wdt(utf::matrix::vs<51,21>));
-                            if (dest > tail) fuse(*--dest, c.wdt(utf::matrix::vs<51,31>));
-                            if (dest > tail) fuse(*--dest, c.wdt(utf::matrix::vs<51,41>));
-                            if (dest > tail) fuse(*--dest, c.wdt(utf::matrix::vs<51,51>));
-                        }
-                        else
-                        {
-                                             fuse(*--dest, c.wdt(utf::matrix::vs<51,51>));
-                            if (dest > tail) fuse(*--dest, c.wdt(utf::matrix::vs<51,41>));
-                            if (dest > tail) fuse(*--dest, c.wdt(utf::matrix::vs<51,31>));
-                            if (dest > tail) fuse(*--dest, c.wdt(utf::matrix::vs<51,21>));
-                            if (dest > tail) fuse(*--dest, c.wdt(utf::matrix::vs<51,11>));
-                        }
-                    }
-                    else if (v == utf::matrix::vs<61,00>)
-                    {
-                        if (c.rtl())
-                        {
-                                             fuse(*--dest, c.wdt(utf::matrix::vs<61,11>));
-                            if (dest > tail) fuse(*--dest, c.wdt(utf::matrix::vs<61,21>));
-                            if (dest > tail) fuse(*--dest, c.wdt(utf::matrix::vs<61,31>));
-                            if (dest > tail) fuse(*--dest, c.wdt(utf::matrix::vs<61,41>));
-                            if (dest > tail) fuse(*--dest, c.wdt(utf::matrix::vs<61,51>));
-                            if (dest > tail) fuse(*--dest, c.wdt(utf::matrix::vs<61,61>));
-                        }
-                        else
-                        {
-                                             fuse(*--dest, c.wdt(utf::matrix::vs<61,61>));
-                            if (dest > tail) fuse(*--dest, c.wdt(utf::matrix::vs<61,51>));
-                            if (dest > tail) fuse(*--dest, c.wdt(utf::matrix::vs<61,41>));
-                            if (dest > tail) fuse(*--dest, c.wdt(utf::matrix::vs<61,31>));
-                            if (dest > tail) fuse(*--dest, c.wdt(utf::matrix::vs<61,21>));
-                            if (dest > tail) fuse(*--dest, c.wdt(utf::matrix::vs<61,11>));
-                        }
-                    }
-                    else if (v == utf::matrix::vs<71,00>)
-                    {
-                        if (c.rtl())
-                        {
-                                             fuse(*--dest, c.wdt(utf::matrix::vs<71,11>));
-                            if (dest > tail) fuse(*--dest, c.wdt(utf::matrix::vs<71,21>));
-                            if (dest > tail) fuse(*--dest, c.wdt(utf::matrix::vs<71,31>));
-                            if (dest > tail) fuse(*--dest, c.wdt(utf::matrix::vs<71,41>));
-                            if (dest > tail) fuse(*--dest, c.wdt(utf::matrix::vs<71,51>));
-                            if (dest > tail) fuse(*--dest, c.wdt(utf::matrix::vs<71,61>));
-                            if (dest > tail) fuse(*--dest, c.wdt(utf::matrix::vs<71,71>));
-                        }
-                        else
-                        {
-                                             fuse(*--dest, c.wdt(utf::matrix::vs<71,71>));
-                            if (dest > tail) fuse(*--dest, c.wdt(utf::matrix::vs<71,61>));
-                            if (dest > tail) fuse(*--dest, c.wdt(utf::matrix::vs<71,51>));
-                            if (dest > tail) fuse(*--dest, c.wdt(utf::matrix::vs<71,41>));
-                            if (dest > tail) fuse(*--dest, c.wdt(utf::matrix::vs<71,31>));
-                            if (dest > tail) fuse(*--dest, c.wdt(utf::matrix::vs<71,21>));
-                            if (dest > tail) fuse(*--dest, c.wdt(utf::matrix::vs<71,11>));
-                        }
-                    }
-                    else if (v == utf::matrix::vs<81,00>)
-                    {
-                        if (c.rtl())
-                        {
-                                             fuse(*--dest, c.wdt(utf::matrix::vs<81,11>));
-                            if (dest > tail) fuse(*--dest, c.wdt(utf::matrix::vs<81,21>));
-                            if (dest > tail) fuse(*--dest, c.wdt(utf::matrix::vs<81,31>));
-                            if (dest > tail) fuse(*--dest, c.wdt(utf::matrix::vs<81,41>));
-                            if (dest > tail) fuse(*--dest, c.wdt(utf::matrix::vs<81,51>));
-                            if (dest > tail) fuse(*--dest, c.wdt(utf::matrix::vs<81,61>));
-                            if (dest > tail) fuse(*--dest, c.wdt(utf::matrix::vs<81,71>));
-                            if (dest > tail) fuse(*--dest, c.wdt(utf::matrix::vs<81,81>));
-                        }
-                        else
-                        {
-                                             fuse(*--dest, c.wdt(utf::matrix::vs<81,81>));
-                            if (dest > tail) fuse(*--dest, c.wdt(utf::matrix::vs<81,71>));
-                            if (dest > tail) fuse(*--dest, c.wdt(utf::matrix::vs<81,61>));
-                            if (dest > tail) fuse(*--dest, c.wdt(utf::matrix::vs<81,51>));
-                            if (dest > tail) fuse(*--dest, c.wdt(utf::matrix::vs<81,41>));
-                            if (dest > tail) fuse(*--dest, c.wdt(utf::matrix::vs<81,31>));
-                            if (dest > tail) fuse(*--dest, c.wdt(utf::matrix::vs<81,21>));
-                            if (dest > tail) fuse(*--dest, c.wdt(utf::matrix::vs<81,11>));
-                        }
-                    }
-                    else
-                    {
-                        auto [w, h, x, y] = utf::matrix::whxy(v);
-                        if (x == 0) // x==0; Expand hz cell stripe.
-                        {
-                            auto stop = v + w;
-                            if (c.rtl()) while (v != stop) fuse(*--dest, c.wdt(++v));
-                            else         while (v != stop) fuse(*--dest, c.wdt(stop--));
-                        }
-                        else fuse(*--dest, c);
-                    }
+                    else fuse(*--dest, c);
                 }
+            }
+        }
+        void unpack2d(auto const& proto, twod block_size)
+        {
+            core::size(block_size);
+            //todo simplify (use netxs::onrect)
+            auto iter = core::begin();
+            auto bottom = block_size.x * (block_size.y - 1);
+            auto width_check = block_size.x;
+            for (auto c : proto)
+            {
+                auto [w, h, x, y] = c.whxy();
+                assert(y == 0);
+                if (x != 0) w = 1;
+                width_check -= w;
+                if (width_check < 0) break;
+                auto stride = block_size.x - w;
+                auto dx = w;
+                auto dy = bottom + w;
+                if (x == 0) // Fullsize character.
+                {
+                    y += 1;
+                    netxs::inrect(iter, dx, dy, stride, [&](cell& b){ b = c.xy(++x, y); }, [&]{ x = 0; y++; });
+                }
+                else // Vertical stripe (char_size = twod{ 1, h }).
+                {
+                    netxs::inrect(iter, dx, dy, stride, [&](cell& b){ b = c.xy(x, ++y); });
+                }
+                iter += w;
             }
         }
         // rich: Splice proto with auto grow.
@@ -1215,7 +979,7 @@ namespace netxs::ui
         // rich: (current segment) Insert n blanks at the specified position. Autogrow within segment only.
         void insert(si32 at, si32 count, cell const& blank, si32 margin)
         {
-            if (count <= 0) return;
+            if (count <= 0 || margin == 0) return;
             auto len = length();
             auto pos = at % margin;
             auto vol = std::min(count, margin - pos);
@@ -1249,7 +1013,7 @@ namespace netxs::ui
         // rich: (current segment) Delete n chars and add blanks at the right margin.
         void cutoff(si32 at, si32 count, cell const& blank, si32 margin)
         {
-            if (count <= 0) return;
+            if (count <= 0 || margin == 0) return;
             auto len = length();
             if (at < len)
             {
@@ -1282,7 +1046,7 @@ namespace netxs::ui
         // rich: (whole line) Delete n chars and add blanks at the right margin.
         void cutoff_full(si32 at, si32 count, cell const& blank, si32 margin)
         {
-            if (count <= 0) return;
+            if (count <= 0 || margin == 0) return;
             auto len = length();
             if (at < len)
             {
@@ -1403,7 +1167,50 @@ namespace netxs::ui
                                                     len.y * len.x);
             while (dst != end) *dst++ = blank;
         }
-
+        //todo make it 2D
+        // rich: Pop glyph matrix.
+        auto pop_cluster()
+        {
+            auto cluster = netxs::text{};
+            auto size = (si32)core::canvas.size();
+            if (size)
+            {
+                auto& back = canvas.back();
+                auto [w, h, x, y] = back.whxy();
+                //if constexpr (debugmode) log("\tw=%%, h=%%, x=%%, y=%%", w, h, x, y);
+                if (w && x == w && size >= w)
+                {
+                    auto current_x = w - 1;
+                    auto head = canvas.rbegin() + 1;
+                    auto tail = head + current_x;
+                    while (head != tail)
+                    {
+                        auto& c = *head;
+                        if (!c.same_txt(back) || !c.like(back))
+                        {
+                            break;
+                        }
+                        auto [cw, ch, cx, cy] = c.whxy();
+                        //if constexpr (debugmode) log("\t\tcurrent_x=%%, cw=%%, ch=%%, cx=%%, cy=%%", current_x, cw, ch, cx, cy);
+                        if (cw != w || ch != h || cy != y || cx != current_x)
+                        {
+                            break;
+                        }
+                        head++;
+                        current_x--;
+                    }
+                    if (head == tail)
+                    {
+                        cluster = back.txt();
+                        if (cluster.size())
+                        {
+                            core::crop(size - w);
+                        }
+                    }
+                }
+            }
+            return cluster;
+        }
         //todo unify
         auto& at(si32 p) const
         {
@@ -1439,7 +1246,27 @@ namespace netxs::ui
         para(id_t id, auto utf8)      { brush.link(id); ansi::parse(utf8, this);               }
         para(auto utf8)               {                 ansi::parse(utf8, this);               }
         auto& operator  = (auto utf8) { wipe(brush);    ansi::parse(utf8, this); return *this; }
-        auto& operator += (auto utf8) {                 ansi::parse(utf8, this); return *this; }
+        auto& operator += (auto utf8)
+        {
+            if (parser::defer && caret && caret == length())
+            {
+                //if constexpr (debugmode) log("try to reassemble cluster=", lyric->back().txt());
+                auto last_cluster = lyric->pop_cluster();
+                if (caret != length())
+                {
+                    caret = length();
+                    auto reassembled_cluster = text{};
+                    reassembled_cluster.reserve(last_cluster.length() + utf8.length());
+                    reassembled_cluster += last_cluster;
+                    reassembled_cluster += utf8;
+                    ansi::parse(reassembled_cluster, this);
+                    //if constexpr (debugmode) log("\treassembled_cluster=", utf::buffer_to_hex(reassembled_cluster, true));
+                    return *this;
+                }
+            }
+            ansi::parse(utf8, this);
+            return *this;
+        }
 
         operator writ const& () const { return locus; }
 
@@ -1452,20 +1279,17 @@ namespace netxs::ui
             return shadow().substr(start, width);
         }
         bool   bare() const { return locus.bare();    } // para: Does the paragraph have no locator.
-        auto length() const { return lyric->size().x; } // para: Return printable length.
+        si32 length() const { return lyric->size().x; } // para: Return printable length. //todo Apple clang doesn't get auto return.
         auto  empty() const { return !length();       } // para: Return true if empty.
         auto   size() const { return lyric->size();   } // para: Return 2D volume size.
         auto&  back() const { return brush;           } // para: Return current brush.
         bool   busy() const { return length() || !parser::empty() || brush.busy(); } // para: Is it filled.
-        void   ease()   { brush.nil(); lyric->each([&](auto& c){ c.clr(brush); });  } // para: Reset color for all text.
-        void   link(id_t id)         { lyric->each([&](auto& c){ c.link(id);   });  } // para: Set object ID for each cell.
-        void   wipe(cell c = cell{}) // para: Clear the text and locus, and reset SGR attributes.
+        void   link(id_t id) { lyric->each([&](auto& c){ c.link(id); });  } // para: Set object ID for each cell.
+        template<bool ResetStyle = faux>
+        void wipe(cell c = cell{}) // para: Clear the text and locus, and reset SGR attributes.
         {
-            parser::reset(c);
+            parser::reset<ResetStyle>(c);
             caret = 0;
-            //todo revise
-            //style.rst();
-            //proto.clear();
             locus.kill();
             lyric->kill();
         }
@@ -1480,24 +1304,10 @@ namespace netxs::ui
             else if (!busy()) locus.push(cmd);
         }
         // para: Convert into the screen-adapted sequence (unfold, remove zerospace chars, etc.).
-        void data(si32 count, grid const& proto) override
+        void data(si32 width, si32 /*height*/, core::body const& proto) override
         {
-            lyric->splice(caret, count, proto, cell::shaders::full);
-            caret += count;
-        }
-        //todo unify: see ui::page::post
-        void post(utf::frag const& cluster)
-        {
-            if (cluster.attr.cdpoint == 0) // Override null character - set a narrow width.
-            {
-                auto c = cluster;
-                c.attr.cmatrix = netxs::utf::matrix::vs<11,11>;
-                ansi::parser::post(c);
-            }
-            else
-            {
-                ansi::parser::post(cluster);
-            }
+            lyric->splice(caret, width, proto, cell::shaders::full);
+            caret += width;
         }
         void id(ui32 newid) { index = newid; }
         auto id() const     { return index;  }
@@ -1566,10 +1376,18 @@ namespace netxs::ui
                 caret--;
                 auto& line = content();
                 auto  iter = line.begin() + caret;
-                //todo use whxy
-                if (iter->wdt() == utf::matrix::vs<21,21> && caret > 0 && (--iter)->wdt() == utf::matrix::vs<21,11>)
+                if (caret > 0)
                 {
-                    caret--;
+                    auto [w, h, x, y] = iter->whxy();
+                    if (w == 2 && x == 2 && caret > 0)
+                    {
+                        --iter;
+                        auto [w2, h2, x2, y2] = iter->whxy();
+                        if (w2 == 2 && x2 == 1)
+                        {
+                            caret--;
+                        }
+                    }
                 }
                 return true;
             }
@@ -1598,10 +1416,18 @@ namespace netxs::ui
                 auto& line = content();
                 auto  iter = line.begin() + caret;
                 caret++;
-                //todo use whxy
-                if (iter->wdt() == utf::matrix::vs<21,11> && caret < length() && (++iter)->wdt() == utf::matrix::vs<21,21>)
+                if (caret < length())
                 {
-                    caret++;
+                    auto [w, h, x, y] = iter->whxy();
+                    if (w == 2 && x == 1)
+                    {
+                        ++iter;
+                        auto [w2, h2, x2, y2] = iter->whxy();
+                        if (w2 == 2 && x2 == 2)
+                        {
+                            caret++;
+                        }
+                    }
                 }
                 return true;
             }
@@ -1631,12 +1457,12 @@ namespace netxs::ui
             auto& line = content();
             if (w == 2)
             {
-                line.insert_full(caret, 2, c.wdt(utf::matrix::vs<21,11>));
+                line.insert_full(caret, 2, c.wdt(2, 1, 1, 1));
                 caret++;
-                line.begin(caret)->wdt(utf::matrix::vs<21,21>);
+                line.begin(caret)->wdt(2, 1, 2, 1);
                 caret++;
             }
-            else line.insert_full(caret++, 1, c.wdt(utf::matrix::vs<11,11>));
+            else line.insert_full(caret++, 1, c.wdt(1, 1, 1, 1));
         }
         // para: Insert text.
         void insert(view utf8, bool inserting)
@@ -1644,30 +1470,31 @@ namespace netxs::ui
             caret_check();
             if (caret != length())
             {
+                auto& line = content();
+                auto left = line.take_piece(0, caret);
+                auto right = line.take_piece(caret);
+                std::swap(left, line);
+                parser::defer = true;
+                auto prev_caret = caret;
+                operator+=(utf8);
+                caret = line.length();
                 if (inserting)
                 {
-                    auto coor = caret;
-                    auto size = length();
-                    caret = size;
-                    operator+=(utf8);
-                    auto& line = content();
-                    auto  grow = length() - size;
-                    line.scroll(coor, size - coor, grow);
-                    caret = coor + grow;
+                    line.rich::insert(caret, right);
                 }
                 else
                 {
-                    operator+=(utf8);
-                    auto size = length();
-                    if (caret < size)
+                    auto delta = caret - prev_caret;
+                    if (delta < right.length())
                     {
-                        auto [w, h, x, y] = at(caret).whxy();
+                        auto [w, h, x, y] = right.begin(delta)->whxy();
                         if (w != 1 && x != 1) // Broken cluster.
                         {
-                            auto& line = content();
-                            size--;
-                            line.scroll(caret, 1, size - caret);
-                            line.crop(size);
+                            delta++;
+                        }
+                        if (delta < right.length())
+                        {
+                            line.rich::insert(caret, right.take_piece(delta));
                         }
                     }
                 }
@@ -1753,9 +1580,18 @@ namespace netxs::ui
                         insert(*iter2);
                         return true;
                     }
-                    //todo use whxy
-                    if ((iter1++)->wdt() == utf::matrix::vs<21,11> && iter1 != end_1 && (iter1++)->wdt() != utf::matrix::vs<21,21>) log(prompt::para, "Corrupted glyph");
-                    if ((iter2++)->wdt() == utf::matrix::vs<21,11> && iter2 != end_2 && (iter2++)->wdt() != utf::matrix::vs<21,21>) log(prompt::para, "Corrupted glyph");
+                    auto [w1, h1, x1, y1] = (iter1++)->whxy();
+                    if (w1 == 2 && x1 == 1 && iter1 != end_1)
+                    {
+                        auto [w3, h3, x3, y3] = (iter1++)->whxy();
+                        if (w3 != 2 || x3 != 2) log(prompt::para, "Corrupted glyph");
+                    }
+                    auto [w2, h2, x2, y2] = (iter2++)->whxy();
+                    if (w1 == 2 && x2 == 1 && iter2 != end_2)
+                    {
+                        auto [w3, h3, x3, y3] = (iter2++)->whxy();
+                        if (w3 != 2 || x3 != 2) log(prompt::para, "Corrupted glyph");
+                    }
                 }
             }
             return faux;
@@ -1778,10 +1614,10 @@ namespace netxs::ui
     class rope
     {
         using iter = std::list<netxs::sptr<para>>::const_iterator;
-        iter source;
-        si32 prefix;
-        iter finish;
-        si32 suffix;
+        iter source; // rope: First segment.
+        si32 prefix; // rope: .
+        iter finish; // rope: Last segment (inclusive).
+        si32 suffix; // rope: .
         twod volume; // Rope must consist of text lines of the same height.
 
         rope(iter& source, si32 prefix, iter& finish, si32 suffix, twod volume)
@@ -2034,14 +1870,14 @@ namespace netxs::ui
         // page: Clear the list of paragraphs.
         page& clear(bool preserve_state = faux)
         {
-            if (!preserve_state) parser::brush.reset();
+            if (!preserve_state) parser::reset();
             parts.clear();
             batch.resize(1);
             layer = batch.begin();
             index = 0;
             auto& item = **layer;
             item.id(index);
-            item.wipe(parser::brush);
+            item.wipe<true>(parser::brush);
             reindex();
             return *this;
         }
@@ -2108,33 +1944,22 @@ namespace netxs::ui
             auto& item = **layer;
             item.locus.push(cmd);
         }
+        // page: .
         void meta(deco const& /*old_style*/) override
         {
             auto& item = **layer;
             item.style = parser::style;
         }
-        void post(utf::frag const& cluster)
-        {
-            if (cluster.attr.cdpoint == 0) // Override null character - set a narrow width.
-            {
-                auto c = cluster;
-                c.attr.cmatrix = netxs::utf::matrix::vs<11,11>;
-                ansi::parser::post(c);
-            }
-            else
-            {
-                ansi::parser::post(cluster);
-            }
-        }
-        void data(si32 count, grid const& proto) override
+        // page: .
+        void data(si32 width, si32 /*height*/, core::body const& proto) override
         {
             auto& item = **layer;
-            item.lyric->splice(item.caret, count, proto, cell::shaders::full);
-            item.caret += count;
+            item.lyric->splice(item.caret, width, proto, cell::shaders::full);
+            item.caret += width;
         }
         auto& current()       { return **layer; } // page: Access to the current paragraph.
         auto& current() const { return **layer; } // page: RO access to the current paragraph.
-        auto  size()    const { return static_cast<si32>(batch.size()); }
+        auto  size()    const { return (si32)batch.size(); }
         // page: Estimated page size calculation (use fake printing for accurate calc).
         auto  limits() const
         {
@@ -2210,11 +2035,11 @@ namespace netxs::ui
                          if (c =='\\') { data.push_back('\\'); data.push_back('\\'); }
                     else if (c == '{') { data.push_back('\\'); data.push_back('{' ); }
                     else if (c == '}') { data.push_back('\\'); data.push_back('}' ); }
-                    else if (c < 0x80) { data.push_back(static_cast<char>(c)); }
+                    else if (c < 0x80) { data.push_back((char)c); }
                     else
                     {
                         data.push_back('\\'); data.push_back('u');
-                        data += std::to_string(static_cast<si16>(c));
+                        data += std::to_string((si16)c);
                         data.push_back('?');
                     }
                 }
@@ -2420,6 +2245,7 @@ namespace netxs::ui
             auto stk(bool ) { }
             auto ovr(bool ) { }
             auto blk(bool ) { }
+            auto cursor0(si32 ) { }
         };
 
         auto to_html(text font = {}) const
@@ -2500,6 +2326,7 @@ namespace netxs::ui
             auto stk(bool ) { }
             auto ovr(bool ) { }
             auto blk(bool ) { }
+            auto cursor0(si32 ) { }
         };
 
         template<bool UseSGR = true>
@@ -2522,7 +2349,7 @@ namespace netxs::ui
                     auto [w, h, x, y] = c.whxy();
                     if (x == 1) // Capture the first cell only.
                     {
-                        c.scan<svga::vtrgb, UseSGR>(dest.base, dest);
+                        c.scan<svga::vt_2D, UseSGR>(dest.base, dest);
                     }
                 });
             }
@@ -2650,7 +2477,7 @@ namespace netxs::ui
             };
             object.stream(publish);
             auto& cover = flow::minmax();
-            size.y = cover.height() + 1;
+            size.y = cover.size.y;
             return cp;
         }
         // face: Reflow text page on the canvas and hold position
@@ -2675,7 +2502,7 @@ namespace netxs::ui
                     // Don't tie the first line if it's the only one. Make one step forward.
                     if (anker.y == 0
                      && anker.y == flow::cp().y
-                     && cover.height() > 1)
+                     && cover.size.y > 1)
                     {
                         //todo? the increment is removed bcos it shifts mc one row down on Ctrl+O and back
                         //basis.y++;
@@ -2690,7 +2517,7 @@ namespace netxs::ui
                 }
                 else
                 {
-                    basis.y = std::clamp(basis.y, -cover.b, region.size.y - cover.t - 1);
+                    basis.y = std::clamp(basis.y, -(cover.coor.y + cover.size.y - 1), region.size.y - cover.coor.y - 1);
                 }
 
                 moved = faux;
@@ -2706,7 +2533,7 @@ namespace netxs::ui
             core::wipe(args...);
             flow::reset();
         }
-        // face: Change current context. Return old context.
+        // face: Change current 2D context. Return old 2D context.
         auto bump(dent delta, bool bump_clip = true)
         {
             auto old_full = flow::full();
@@ -2720,13 +2547,13 @@ namespace netxs::ui
             flow::full(new_full);
             return std::pair{ old_full, old_clip };
         }
-        // face: Restore previously saved context.
+        // face: Restore previously saved 2D context.
         void bump(std::pair<rect, rect> ctx)
         {
             flow::full(ctx.first);
             core::clip(ctx.second);
         }
-        // face: Dive into object context.
+        // face: Dive into object 2D context.
         template<bool Forced = faux>
         auto change_basis(rect object_area, bool trim = true)
         {
@@ -2770,13 +2597,19 @@ namespace netxs::ui
             auto proceed = Forced || nested_clip;
             if (proceed)
             {
-                auto context = ctx{ *this, flow::full(), core::clip(), core::coor(), true };
+                auto context2D = ctx{ *this, flow::full(), core::clip(), core::coor(), true };
                 core::step(                       - object_area.coor);
                 core::clip({     nested_clip.coor - object_area.coor,   nested_clip.size });
                 flow::full({{ }/*object_area.coor - object_area.coor*/, object_area.size });
-                return context;
+                return context2D;
             }
             return ctx{ *this };
+        }
+        auto move_basis(twod new_coor)
+        {
+            region.coor = new_coor;
+            client.coor = new_coor;
+            pagerect.coor = new_coor;
         }
         // Use a two letter function if we don't need to return *this
         face& cup(twod p)     { flow::ac( p); return *this; } // face: Cursor 0-based absolute position.
@@ -2904,22 +2737,20 @@ namespace netxs::ui
 
     struct tone
     {
-        #define prop_list                              \
-        X(kb_focus  , "Keyboard focus indicator")      \
-        X(brighter  , "Highlighter modificator")       \
-        X(shadower  , "Darklighter modificator")       \
-        X(selector  , "Selection overlay")             \
-        X(highlight , "Hilighted item color")          \
-        X(warning   , "Warning color")                 \
-        X(danger    , "Danger color")                  \
-        X(action    , "Action color")                  \
-        X(selected  , "Selected item color")           \
-        X(active    , "Active item color")             \
-        X(focused   , "Focused item color")            \
-        X(label     , "Static label color")            \
-        X(inactive  , "Inactive label color")          \
-        X(menu_white, "Light menu color")              \
-        X(menu_black, "Dark menu color")
+        #define prop_list                         \
+        X(window_clr , "Window base color")       \
+        X(winfocus   , "Focused item color")      \
+        X(brighter   , "Highlighter modificator") \
+        X(shadower   , "Darklighter modificator") \
+        X(placeholder, "Placeholder overlay")     \
+        X(warning    , "Warning color")           \
+        X(danger     , "Danger color")            \
+        X(action     , "Action color")            \
+        X(selected   , "Selected item color")     \
+        X(active     , "Active item color")       \
+        X(focused    , "Focused item color")      \
+        X(label      , "Static label color")      \
+        X(inactive   , "Inactive label color")
 
         enum prop
         {

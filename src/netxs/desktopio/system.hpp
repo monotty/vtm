@@ -7,10 +7,6 @@
     #define __BSD__
 #endif
 
-#include <type_traits>
-#include <iostream>
-#include <filesystem>
-
 #if defined(_WIN32)
 
     #if not defined(NOMINMAX)
@@ -27,6 +23,7 @@
     #pragma comment(lib, "User32")
     #pragma comment(lib, "UserEnv")
     #pragma comment(lib, "AdvAPI32") // ::StartService() for arm arch
+    #pragma comment(lib, "Shell32")  // ::CommandLineToArgvW() for arm arch
 
 #else
 
@@ -37,7 +34,7 @@
     #include <sys/types.h>  // ::getaddrinfo
     #include <sys/socket.h> // ::shutdown() ::socket(2)
     #include <netdb.h>      //
-    #include <arpa/inet.h>  // ::inet_ntop()
+    //#include <arpa/inet.h>  // ::inet_ntop() ?This may require dynamic linking. #GH696
 
     #include <stdio.h>
     #include <unistd.h>     // ::read()
@@ -79,18 +76,6 @@
                     __VA_ARGS__; \
                     auto et_stop = datetime::round<si32, std::chrono::microseconds>(datetime::now() - et_start); \
                     os::logstd("et: ", (et_stop) / 1000.f, " ms\t expr: ", #__VA_ARGS__); }
-namespace netxs
-{
-    struct eccc
-    {
-        text env{}; // eccc: Environment var list delimited by \0.
-        text cwd{}; // eccc: Current working directory.
-        text cmd{}; // eccc: Command line to run.
-        text cfg{}; // eccc: Configuration patch.
-        twod win{}; // eccc: Console window size.
-        id_t hid{}; // eccc: Gear id.
-    };
-}
 namespace netxs::os
 {
     namespace fs = std::filesystem;
@@ -110,12 +95,11 @@ namespace netxs::os
     static constexpr auto ttysize = twod{ 2500, 50 };
     static constexpr auto app_wait_timeout = 5000;
     static constexpr auto unexpected = " returns unexpected result"sv;
+    static auto codepage = (std::setlocale(LC_CTYPE, ".UTF8"), 65001); // Set the UTF-8 character classification for STL.
     static auto autosync = true; // Auto sync viewport with cursor position (win7/8 console).
     static auto finalized = flag{ faux }; // Ready flag for clean exit.
-    static auto logbuffer = text{};
-    void release(bool clear_log = true)
+    void release()
     {
-        if (clear_log) os::logbuffer.clear(); // Graceful exit w/o errors.
         os::finalized.exchange(true);
         os::finalized.notify_all();
     }
@@ -243,63 +227,62 @@ namespace netxs::os
                     using NtOpenFile_ptr          = std::decay<decltype(::NtOpenFile)>::type;
                     using CsrClientCallServer_ptr = NTSTATUS(_stdcall *)(void*, void*, ui32, ui32);
                     using RtlGetVersion_ptr       = NTSTATUS(_stdcall *)(RTL_OSVERSIONINFOW*);
+                    using ConsoleControl_ptr      = NTSTATUS(_stdcall *)(ui32, void*, ui32);
                     //using TranslateMessageEx_ptr  = std::decay<decltype(::CallMsgFilterW)>::type;
                     //using TranslateMessageEx_ptr  = BOOL(_stdcall *)(MSG const* pmsg, UINT flags);
-                    //using ConsoleControl_ptr      = NTSTATUS(_stdcall *)(ui32, void*, ui32);
 
                     HMODULE                 ntdll_dll{};
+                    HMODULE                 user32_dll{};
                     NtOpenFile_ptr          NtOpenFile{};
                     RtlGetVersion_ptr       RtlGetVersion{};
                     CsrClientCallServer_ptr CsrClientCallServer{};
-
-                    //HMODULE                 user32_dll{};
+                    ConsoleControl_ptr      ConsoleControl{};
                     //TranslateMessageEx_ptr  TranslateMessageEx{};
-                    //ConsoleControl_ptr      ConsoleControl{};
 
                     refs()
                     {
-                        //user32_dll = ::LoadLibraryExA("user32.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
-                        ntdll_dll = ::LoadLibraryExA("ntdll.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
-                        //if (!ntdll_dll || !user32_dll) os::fail("LoadLibraryEx(ntdll.dll | user32.dll)");
-                        if (!ntdll_dll) os::fail("LoadLibraryEx(ntdll.dll)");
+                        user32_dll = ::LoadLibraryExA("user32.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
+                        ntdll_dll  = ::LoadLibraryExA("ntdll.dll",  nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
+                        if (!ntdll_dll || !user32_dll) os::fail("LoadLibraryEx(ntdll.dll | user32.dll)");
+                        //if (!ntdll_dll) os::fail("LoadLibraryEx(ntdll.dll)");
                         else
                         {
                             NtOpenFile          = reinterpret_cast<NtOpenFile_ptr>(         ::GetProcAddress(ntdll_dll, "NtOpenFile"));
                             RtlGetVersion       = reinterpret_cast<RtlGetVersion_ptr>(      ::GetProcAddress(ntdll_dll, "RtlGetVersion"));
                             CsrClientCallServer = reinterpret_cast<CsrClientCallServer_ptr>(::GetProcAddress(ntdll_dll, "CsrClientCallServer"));
+                            ConsoleControl      = reinterpret_cast<ConsoleControl_ptr>(::GetProcAddress(user32_dll, "ConsoleControl"));
                             //TranslateMessageEx  = reinterpret_cast<TranslateMessageEx_ptr> (::GetProcAddress(user32_dll, "TranslateMessageEx"));
-                            //ConsoleControl = reinterpret_cast<ConsoleControl_ptr>(::GetProcAddress(user32_dll, "ConsoleControl"));
                             if (!NtOpenFile)          os::fail("::GetProcAddress(NtOpenFile)");
                             if (!RtlGetVersion)       os::fail("::GetProcAddress(RtlGetVersion)");
                             if (!CsrClientCallServer) os::fail("::GetProcAddress(CsrClientCallServer)");
+                            if (!ConsoleControl)      os::fail("::GetProcAddress(ConsoleControl)");
                             //if (!TranslateMessageEx)  os::fail("::GetProcAddress(TranslateMessageEx)");
-                            //if (!ConsoleControl) os::fail("::GetProcAddress(ConsoleControl)");
                         }
                     }
 
-                    void operator=(refs const&) = delete;
+                    void operator = (refs const&) = delete;
                     refs(refs const&)           = delete;
                     refs(refs&& other)
                         :           ntdll_dll{ other.ntdll_dll           },
+                                   user32_dll{ other.user32_dll          },
                                    NtOpenFile{ other.NtOpenFile          },
                                 RtlGetVersion{ other.RtlGetVersion       },
-                          CsrClientCallServer{ other.CsrClientCallServer }
-                                   //user32_dll{ other.user32_dll          },
+                          CsrClientCallServer{ other.CsrClientCallServer },
+                               ConsoleControl{ other.ConsoleControl      }
                            //TranslateMessageEx{ other.TranslateMessageEx  }
-                               //ConsoleControl{ other.ConsoleControl      }
                     {
                         other.ntdll_dll           = {};
+                        other.user32_dll          = {};
                         other.NtOpenFile          = {};
                         other.RtlGetVersion       = {};
                         other.CsrClientCallServer = {};
+                        other.ConsoleControl      = {};
                         //other.TranslateMessageEx  = {};
-                        //other.user32_dll          = {};
-                        //other.ConsoleControl      = {};
                     }
                    ~refs()
                     {
                         if (ntdll_dll)  ::FreeLibrary(ntdll_dll);
-                        //if (user32_dll) ::FreeLibrary(user32_dll);
+                        if (user32_dll) ::FreeLibrary(user32_dll);
                     }
 
                     constexpr explicit operator bool () const { return NtOpenFile != nullptr; }
@@ -354,13 +337,13 @@ namespace netxs::os
             //todo: nt native api monobitness:
             //  We have to make a direct call to ntdll.dll!CsrClientCallServer
             //  due to a user32.dll!ConsoleControl does not work properly under WoW64.
-            //template<class ...Args>
-            //auto ConsoleControl(Args... args)
-            //{
-            //    auto& inst = get_ntdll();
-            //    return inst ? inst.ConsoleControl(std::forward<Args>(args)...)
-            //                : nt::status::not_found;
-            //}
+            template<class ...Args>
+            auto ConsoleControl(Args... args)
+            {
+                auto& inst = get_ntdll();
+                return inst ? inst.ConsoleControl(std::forward<Args>(args)...)
+                            : nt::status::not_found;
+            }
             //template<class Arch>
             //auto ConsoleTask(Arch proc_pid, ui32 what)
             //{
@@ -413,14 +396,26 @@ namespace netxs::os
                                                     (ui32)sizeof(nttask::payload)); //todo MSVC 17.7.0 requires type cast (ui32)
                 return stat;
             }
+            template<class Arch = size_t>
+            auto ConsoleFG(HANDLE h_proc, bool f_stat)
+            {
+                struct fgstat
+                {
+                    Arch h_proc;
+                    ui32 f_stat;
+                };
+                auto stat = fgstat{ .h_proc = (Arch)h_proc, .f_stat = f_stat };
+                auto rc = nt::ConsoleControl((ui32)sizeof("Stat"), &stat, (ui32)sizeof(stat));
+                return rc;
+            }
             template<class I = noop, class O = noop>
             auto ioctl(DWORD dwIoControlCode, fd_t hDevice, I&& send = {}, O&& recv = {}) -> NTSTATUS
             {
                 auto BytesReturned   = DWORD{};
-                auto lpInBuffer      = std::is_same_v<std::decay_t<I>, noop> ? nullptr : static_cast<void*>(&send);
-                auto nInBufferSize   = std::is_same_v<std::decay_t<I>, noop> ? 0       : static_cast<DWORD>(sizeof(send));
-                auto lpOutBuffer     = std::is_same_v<std::decay_t<O>, noop> ? nullptr : static_cast<void*>(&recv);
-                auto nOutBufferSize  = std::is_same_v<std::decay_t<O>, noop> ? 0       : static_cast<DWORD>(sizeof(recv));
+                auto lpInBuffer      = std::is_same_v<std::decay_t<I>, noop> ? nullptr : (void*)(&send);
+                auto nInBufferSize   = std::is_same_v<std::decay_t<I>, noop> ? 0       : (DWORD)(sizeof(send));
+                auto lpOutBuffer     = std::is_same_v<std::decay_t<O>, noop> ? nullptr : (void*)(&recv);
+                auto nOutBufferSize  = std::is_same_v<std::decay_t<O>, noop> ? 0       : (DWORD)(sizeof(recv));
                 auto lpBytesReturned = &BytesReturned;
                 auto ok = ::DeviceIoControl(hDevice,
                                             dwIoControlCode,
@@ -471,6 +466,76 @@ namespace netxs::os
                                   TRUE,
                                   DUPLICATE_SAME_ACCESS);
                 return handle_clone;
+            }
+            auto escape(view arg)
+            {
+                auto mscmd = text{};
+                if (std::find_if(arg.begin(), arg.end(), [&](char c){ return c == ' ' || c == '\t' || c == '\n' || c == '\v' || c == '\"'; }) != arg.end())
+                {
+                    mscmd.reserve(mscmd.size() + arg.size() * 2 + 2);
+                    mscmd.push_back('\"');
+                    auto head = arg.begin();
+                    auto tail = arg.end();
+                    while (head != tail)
+                    {
+                        auto c = *head++;
+                        if (c == '\\')
+                        {
+                            auto start = head;
+                            while (head != tail && *head == '\\') head++;
+                            auto count = head - start + 1;
+                            if (head == tail)
+                            {
+                                mscmd += text(count * 2, '\\');
+                                break;
+                            }
+                            c = *head++;
+                            mscmd += text(c != '\"' ? count : count * 2, '\\');
+                        }
+                        if (c == '\"') mscmd.push_back('\\');
+                        mscmd.push_back(c);
+                    }
+                    mscmd.push_back('\"');
+                }
+                else mscmd += arg;
+                return mscmd;
+            }
+            auto retokenize(view cmd)
+            {
+                auto mscmd = text{};
+                auto args = utf::tokenize(cmd, std::vector<text>{});
+                auto cmd_shim = args.size() && [&]
+                {
+                    auto cmd = args.front();
+                    utf::to_lower(cmd);
+                    return cmd == "cmd"
+                        || cmd == "cmd.exe"
+                        || cmd.ends_with("\\cmd")
+                        || cmd.ends_with("\\cmd.exe");
+                }();
+                for (auto& arg : args)
+                {
+                    mscmd += cmd_shim ? arg : nt::escape(arg);
+                    mscmd.push_back(' ');
+                }
+                if (args.size()) mscmd.pop_back(); // Pop last space.
+                if (cmd_shim) log("%%Command line: %mscmd% (special case for cmd.exe)", prompt::os, ansi::hi(utf::debase437(mscmd)));
+                else
+                {
+                    log("%%Command line: %mscmd%", prompt::os, ansi::hi(utf::debase437(mscmd)));
+                    auto original_cmd_line = utf::to_utf(mscmd);
+                    auto n = 0;
+                    auto ppWide = ::CommandLineToArgvW(original_cmd_line.data(), &n);
+                    auto test = text{};
+                    for (auto i = 0; i < n; i++)
+                    {
+                        test += ansi::hi(utf::to_utf(ppWide[i])) + " ";
+                    }
+                    ::LocalFree(ppWide);
+                    test.pop_back();
+                    log("%%Decomposited: %mscmd%", prompt::os, test);
+                }
+                return mscmd;
             }
 
             namespace console
@@ -563,7 +628,7 @@ namespace netxs::os
                     }
                     if (c.inv()) std::swap(f, b);
                     if (c.und()) std::swap(f, b);  // Interferes with the menu scrollbar mimics.
-                    auto attr = static_cast<ui16>((b << 4) | f);
+                    auto attr = (ui16)((b << 4) | f);
                     // LEADING/TRAILINGs only for OEMs.
                     //if (c.und()) attr |= COMMON_LVB_UNDERSCORE;  // LVB attributes historically available only for DBCS code pages.
                     //if (c.ovr()) attr |= COMMON_LVB_GRID_HORIZONTAL;
@@ -589,7 +654,7 @@ namespace netxs::os
                     if (size)
                     {
                         dest.Left = 0;
-                        if (size >= area.x) // Mid block.
+                        if (size >= area.x && area.x) // Mid block.
                         {
                             auto height = (SHORT)(size / area.x);
                             auto crop = COORD{ (SHORT)area.x, height };
@@ -662,9 +727,10 @@ namespace netxs::os
                     : public ansi::parser
                 {
                     using redo = std::list<std::pair<deco, ansi::mark>>;
+                    using body = core::body;
 
                     redo stack; // vtparser: Style state stack.
-                    grid cache; // vtparser: Temp buffer for console cells.
+                    body cache; // vtparser: Temp buffer for console cells.
                     twod coord; // vtparser: Current cursor position inside console::buffer.
                     twod saved; // vtparser: Saved cursor position.
                     bool shown; // vtparser: Cursor visibility state.
@@ -864,21 +930,21 @@ namespace netxs::os
                         }
                         coord = std::clamp(coord, dot_00, console::buffer - dot_11);
                     }
-                    void data(si32 count, grid const& proto)
+                    void data(si32 width, si32 /*height*/, core::body const& proto)
                     {
                         auto start = coord;
                         auto panel = std::max(dot_11, console::buffer);
-                        coord.x += count;
+                        coord.x += width;
                         coord.y += (coord.x + (panel.x - 1)) / panel.x - 1;
                         coord.x  = (coord.x - 1) % panel.x + 1;
                         start.y -= scroll();
                         auto seek = coord.x + coord.y * panel.x;
-                        if (count > seek)
+                        if (width > seek)
                         {
-                            count = seek;
+                            width = seek;
                             start = {};
                         }
-                        cache.resize(count);
+                        cache.resize(width);
                         auto head = cache.begin();
                         auto tail = cache.end();
                         auto data = proto.end();
@@ -1082,6 +1148,13 @@ namespace netxs::os
                                                            nullptr);
                 }
                 auto wenv = utf::to_utf(envars);
+                auto limits = JOBOBJECT_BASIC_LIMIT_INFORMATION{};
+                ::QueryInformationJobObject(nullptr,        // HANDLE hJob
+                                            JOBOBJECTINFOCLASS::JobObjectBasicLimitInformation, // JobObjectInformationClass
+                                            &limits,        // LPVOID  lpJobObjectInformation,
+                                            sizeof(limits), // DWORD   cbJobObjectInformationLength,
+                                            nullptr);       // LPDWORD lpReturnLength
+                auto allowed_job_breakway = limits.LimitFlags & JOB_OBJECT_LIMIT_BREAKAWAY_OK ? CREATE_BREAKAWAY_FROM_JOB : 0;
                 auto result = ::CreateProcessAsUserW(token,
                                                      nullptr,                      // lpApplicationName
                                                      cmdarg.data(),                // lpCommandLine
@@ -1091,7 +1164,7 @@ namespace netxs::os
                                                      DETACHED_PROCESS |            // dwCreationFlags
                                                      EXTENDED_STARTUPINFO_PRESENT |// override startupInfo type
                                                      CREATE_UNICODE_ENVIRONMENT |  // environment block in UTF-16
-                                                     CREATE_BREAKAWAY_FROM_JOB,    // disassociate with the job
+                                                     allowed_job_breakway,         // disassociate with the job if it is and it is allowed by parents
                                                      wenv.size() ? wenv.data()     // lpEnvironment
                                                                  : nullptr,
                                                      nullptr,                      // lpCurrentDirectory
@@ -1124,7 +1197,7 @@ namespace netxs::os
                 os::close(token);
                 if (rc && name.size())
                 {
-                    auto user_name = utf::to_low(utf::to_utf(name + L'@' + domain));
+                    auto user_name = utf::to_lower(utf::to_utf(name + L'@' + domain));
                     auto user_id = sid.empty() ? "unknown"s : sid;
                     return std::pair{ user_name, user_id };
                 }
@@ -1180,6 +1253,10 @@ namespace netxs::os
             auto platform = "macOS"s;
             #elif defined(__linux__)
             auto platform = "Linux"s;
+            if constexpr (!debugmode)
+            {
+                ::fedisableexcept(FE_ALL_EXCEPT);
+            }
             #elif defined(__BSD__)
             auto platform = "BSD"s;
             #else
@@ -1776,8 +1853,9 @@ namespace netxs::os
                 utf::split(subset, '\0', [&](qiew rec)
                 {
                     if (rec.empty()) return;
-                    auto var = utf::cutoff(rec, '=', true, 1); // 1: Skip the first char to support cmd.exe's strange subdirs like =A:=A:\Dir.
-                    auto val = rec.substr(var.size() + 1/*=*/);
+                    auto pos = rec.find('=', 1); // 1: Skip the first char to support cmd.exe's strange subdirs like =A:=A:\Dir.
+                    auto var = rec.substr(0, pos);
+                    auto val = rec.substr(pos + 1/*=*/);
                     env_map[var] = val;
                 });
             };
@@ -1818,6 +1896,15 @@ namespace netxs::os
                 auto val = value.str();
                 ok(::setenv(var.c_str(), val.c_str(), 1), "::setenv()", os::unexpected);
             #endif
+        }
+        // os::env: Set envvar value.
+        auto set(qiew variable_value)
+        {
+            if (variable_value.size() < 2) return;
+            auto pos = variable_value.find('=', 1); // 1: Skip the first char to support cmd.exe's strange subdirs like =A:=A:\Dir.
+            auto var = variable_value.substr(0, pos);
+            auto val = variable_value.substr(pos + 1/*=*/);
+            set(var, val);
         }
         // os::env: Unset envvar.
         auto unset(qiew variable)
@@ -1874,7 +1961,7 @@ namespace netxs::os
                 auto chars = text(255, '\0');
                 auto error = ::gethostname(chars.data(), chars.size());
                 auto usrid = ::geteuid();
-                #if defined(__BSD__)
+                #if defined(__BSD__) || defined(__ANDROID__)
                 auto uname = ::getlogin(); // username associated with a session, even if it has no controlling terminal.
                 #else
                 auto uname = ::cuserid(nullptr);
@@ -1892,6 +1979,13 @@ namespace netxs::os
             auto err = std::error_code{};
             auto cwd = std::filesystem::current_path(err).string();
             return cwd;
+        }
+        // os::env: Set current working directory.
+        auto cwd(text path)
+        {
+            auto err = std::error_code{};
+            if (path.size()) fs::current_path(path, err);
+            return !!err;
         }
     }
 
@@ -1946,8 +2040,7 @@ namespace netxs::os
             auto crop = path.starts_with("~/")    ? os::path::home / path.substr(2 /* trim `~` */)
                       : path.starts_with("/etc/") ? os::path::etc  / path.substr(5 /* trim "/etc" */)
                                                   : fs::path{ path };
-            auto crop_str = "'" + utf::to_utf(crop.wstring()) + "'";
-            utf::replace_all(crop_str, "\\", "/");
+            auto crop_str = '\"' + utf::to_utf(crop.make_preferred().wstring()) + '\"';
             return std::pair{ crop, crop_str };
         }
     }
@@ -1956,7 +2049,6 @@ namespace netxs::os
     {
         static constexpr auto ocs52head = "\033]52;"sv;
         #if defined(_WIN32)
-            static auto winhndl = HWND{};
             static auto sequence = std::numeric_limits<DWORD>::max();
             static auto mutex   = std::mutex();
             static auto cf_text = UINT{ CF_UNICODETEXT };
@@ -1997,7 +2089,7 @@ namespace netxs::os
                         sync(error, mime::textonly);
                         return;
                     }
-                    std::this_thread::yield();
+                    os::sleep(15ms);
                 }
                 if (auto seqno = ::GetClipboardSequenceNumber(); seqno != os::clipboard::sequence)
                 {
@@ -2302,11 +2394,12 @@ namespace netxs::os
 
         auto getid()
         {
-            #if defined(_WIN32)
-                auto id = static_cast<ui32>(::GetCurrentProcessId());
-            #else
-                auto id = static_cast<ui32>(::getpid());
-            #endif
+            auto id = (ui32)
+                #if defined(_WIN32)
+                    ::GetCurrentProcessId();
+                #else
+                    ::getpid();
+                #endif
             ui::console::id = std::pair{ id, datetime::now() };
             return ui::console::id;
         }
@@ -2335,15 +2428,21 @@ namespace netxs::os
             args([[maybe_unused]] int argc, [[maybe_unused]] char** argv)
             {
                 #if defined(_WIN32)
-                    auto line = utf::to_utf(::GetCommandLineW());
-                    utf::tokenize(line, data);
-                    if constexpr (debugmode) log(prompt::args, ansi::hi(utf::debase<faux, faux>(line)));
+                    auto n = 0;
+                    auto original_cmd_line = ::GetCommandLineW();
+                    log("%%Command line: '%cmd%'", prompt::os, ansi::hi(utf::debase437(utf::to_utf(original_cmd_line))));
+                    auto ppWide = ::CommandLineToArgvW(original_cmd_line, &n);
+                    for (auto i = 0; i < n; i++)
+                    {
+                        data.push_back(utf::to_utf(ppWide[i]));
+                    }
+                    ::LocalFree(ppWide);
                 #else
                     auto head = argv;
                     auto tail = argv + argc;
                     while (head != tail)
                     {
-                        data.push_back(utf::quote(*head++));
+                        data.push_back(*head++);
                     }
                 #endif
                 if (data.size())
@@ -2357,7 +2456,7 @@ namespace netxs::os
             auto show()
             {
                 auto crop = ansi::add(prompt::args);
-                auto line = [&](auto& arg){ crop.hi(utf::debase<faux, faux>(arg)).add(' '); };
+                auto line = [&](auto& arg){ crop.hi(utf::debase437(arg)).add(' '); };
                 if (process::arg0.size()) line(process::arg0);
                 for (auto& arg : data) line(arg);
                 if (crop.size()) crop.pop_back(); // Pop last space.
@@ -2401,7 +2500,12 @@ namespace netxs::os
                     while (iter != data.end())
                     {
                         crop.push_back(' ');
-                        crop += *iter++;
+                        auto& utf8 = *iter++;
+                        if (utf8.empty()
+                         || utf8.front() == '\"'
+                         || utf8.find(' ') != text::npos) utf::quote(utf8, crop, '\"');
+                        else if (utf8.front() == '\'')    utf::quote(utf8, crop, '\'');
+                        else                              crop += utf8;
                     }
                 }
                 return crop;
@@ -2418,10 +2522,10 @@ namespace netxs::os
                 auto buffer = wide(MAX_PATH, '\0');
                 while (buffer.size() <= 32768)
                 {
-                    auto length = ::GetModuleFileNameExW(handle,         // hProcess
-                                                         NULL,           // hModule
-                                                         buffer.data(),  // lpFilename
-                                      static_cast<DWORD>(buffer.size()));// nSize
+                    auto length = ::GetModuleFileNameExW(handle,        // hProcess
+                                                         NULL,          // hModule
+                                                         buffer.data(), // lpFilename
+                                                  (DWORD)buffer.size());// nSize
                     if (length == 0) break;
                     if (buffer.size() > length + 1)
                     {
@@ -2466,7 +2570,7 @@ namespace netxs::os
                     auto buff = std::vector<char>(size);
                     if (::sysctl(name.data(), name.size(), buff.data(), &size, nullptr, 0) == 0)
                     {
-                        result = text(buff.data(), size);
+                        result = utf::trim(view{ buff.data(), size }, '\0');
                     }
                 }
 
@@ -2546,7 +2650,7 @@ namespace netxs::os
             #if defined(_WIN32)
             #else
                 auto argv = std::vector<char*>{};
-                auto args = utf::tokenize(cmd, std::vector<text>{}, true);
+                auto args = utf::tokenize(cmd, std::vector<text>{});
                 for (auto& arg : args)
                 {
                     argv.push_back(arg.data());
@@ -2588,7 +2692,7 @@ namespace netxs::os
                 {
                     auto cfpath = utf::concat(prefix, os::path::cfg_suffix);
                     auto handle = process::memory::set(cfpath, config);
-                    auto cmdarg = utf::to_utf(utf::concat(os::process::binary(), " -s -p ", prefix, " -c :", cfpath, script.size() ? utf::concat(" -x ", script) : ""s));
+                    auto cmdarg = utf::to_utf(utf::concat(os::process::binary(), " -s -p ", nt::escape(prefix), " -c :", cfpath, script.size() ? utf::concat(" -x ", nt::escape(script)) : ""s));
                     if (os::nt::runas(cmdarg))
                     {
                         success.reset(handle); // Do not close until confirmation from the server process is received.
@@ -2861,11 +2965,64 @@ namespace netxs::os
             auto done = remove() || rename();
             return done;
         }
+        auto delete_reg_keys()
+        {
+            #if defined(_WIN32)
+            auto subtree1 = L"Directory\\shell\\vtm";
+            auto subtree2 = L"Directory\\Background\\shell\\vtm";
+            ::RegDeleteTreeW(HKEY_CLASSES_ROOT, subtree1);
+            ::RegDeleteTreeW(HKEY_CLASSES_ROOT, subtree2);
+            log("The following registry keys have been removed:"
+                "\n    HKEY_CLASSES_ROOT\\%subtree1%"
+                "\n    HKEY_CLASSES_ROOT\\%subtree2%", utf::to_utf(subtree1), utf::to_utf(subtree2));
+            #endif
+            return true;
+        }
+        auto create_reg_keys([[maybe_unused]] auto& file)
+        {
+            #if defined(_WIN32)
+            auto file_exe = utf::to_utf(file.filename().string());
+            if (file_exe.find(' ') != text::npos)
+            {
+                log("Registry keys were not created: The source binary file name contains spaces.");
+                return true;
+            }
+            auto key_vtm1 = L"Directory\\shell\\vtm";
+            auto key_cmd1 = L"Directory\\shell\\vtm\\command";
+            auto key_vtm2 = L"Directory\\Background\\shell\\vtm";
+            auto key_cmd2 = L"Directory\\Background\\shell\\vtm\\command";
+            auto verb_value = L"Run in vtm"s;
+            auto icon_value = file_exe;
+            auto exec_value = file_exe + L" --cwd \"%v\" --run term";
+            ::RegSetKeyValueW(HKEY_CLASSES_ROOT, key_vtm1, nullptr, REG_SZ, verb_value.data(), 2 * ((DWORD)verb_value.size() + 1/*terminating null*/));
+            ::RegSetKeyValueW(HKEY_CLASSES_ROOT, key_vtm1, L"Icon", REG_SZ, icon_value.data(), 2 * ((DWORD)icon_value.size() + 1));
+            ::RegSetKeyValueW(HKEY_CLASSES_ROOT, key_cmd1, nullptr, REG_SZ, exec_value.data(), 2 * ((DWORD)exec_value.size() + 1));
+            ::RegSetKeyValueW(HKEY_CLASSES_ROOT, key_vtm2, nullptr, REG_SZ, verb_value.data(), 2 * ((DWORD)verb_value.size() + 1));
+            ::RegSetKeyValueW(HKEY_CLASSES_ROOT, key_vtm2, L"Icon", REG_SZ, icon_value.data(), 2 * ((DWORD)icon_value.size() + 1));
+            ::RegSetKeyValueW(HKEY_CLASSES_ROOT, key_cmd2, nullptr, REG_SZ, exec_value.data(), 2 * ((DWORD)exec_value.size() + 1));
+            auto root_key1 = "HKEY_CLASSES_ROOT\\" + utf::to_utf(key_vtm1);
+            auto root_key2 = "HKEY_CLASSES_ROOT\\" + utf::to_utf(key_vtm2);
+            log("The following registry keys were created:"
+                "\n    %key_vtm1%\\Default=%verb%"
+                "\n    %key_vtm1%\\Icon=%icon%"
+                "\n    %key_cmd1%\\command\\Default=%exec%"
+                "\n    %key_vtm2%\\Default=%verb%"
+                "\n    %key_vtm2%\\Icon=%icon%"
+                "\n    %key_cmd2%\\command\\Default=%exec%",
+                    root_key1, utf::to_utf(verb_value),
+                    root_key1, utf::to_utf(icon_value),
+                    root_key1, utf::to_utf(exec_value),
+                    root_key2, utf::to_utf(verb_value),
+                    root_key2, utf::to_utf(icon_value),
+                    root_key2, utf::to_utf(exec_value));
+            #endif
+            return true;
+        }
         auto uninstall()
         {
             auto file = fs::path{};
             auto dest = fs::path{};
-            auto done = getpaths(file, dest, faux) && removefile(dest);
+            auto done = getpaths(file, dest, faux) && delete_reg_keys() && removefile(dest);
             return done;
         }
         auto install()
@@ -2913,10 +3070,10 @@ namespace netxs::os
                         ok(::chmod(dest.string().c_str(), 0755), "Failed to set a file's mode bits for '%path%'.", dest.string());
                     #endif
                 }
-                else log("Failed to copy process image to '%path%'.", dest.string());
+                else log("Failed to copy process image (%file%) to '%path%'.", file.string(), dest.string());
                 return done;
             };
-            auto done = getpaths(file, dest) && (fs::equivalent(file, dest, code) || (removefile(dest) && copy()));
+            auto done = getpaths(file, dest) && create_reg_keys(file) && (fs::equivalent(file, dest, code) || (removefile(dest) && copy()));
             return done;
         }
     }
@@ -3156,7 +3313,7 @@ namespace netxs::os
                 #elif defined(__linux__)
 
                     auto cred = ucred{};
-                    #ifdef __ANDROID__
+                    #if defined(__ANDROID__)
                         auto size = socklen_t{ sizeof(cred) };
                     #else
                         auto size = unsigned{ sizeof(cred) };
@@ -3441,12 +3598,12 @@ namespace netxs::os
                 return socket;
             }
 
-            static auto open([[maybe_unused]] text addr, [[maybe_unused]] text port, [[maybe_unused]] bool logs = faux)
+            //todo X11 support. #GH696
+            /*static auto open([[maybe_unused]] text addr, [[maybe_unused]] text port, [[maybe_unused]] bool logs = faux)
             {
                 auto r = os::invalid_fd;
                 auto w = os::invalid_fd;
                 auto socket = sptr<ipc::stdcon>{};
-
                 #if defined(_WIN32)
                     // N/A
                 #else
@@ -3556,13 +3713,12 @@ namespace netxs::os
                         }
                     }
                 #endif
-
                 if (r != os::invalid_fd && w != os::invalid_fd)
                 {
                     socket = ptr::shared<ipc::stdcon>(r, w);
                 }
                 return socket;
-            }
+            }*/
         };
 
         auto stdio()
@@ -3593,7 +3749,7 @@ namespace netxs::os
 
     namespace dtvt
     {
-        static auto vtmode = ui::console::vtrgb; // dtvt: VT-mode bit set.
+        static auto vtmode = si32{}; // dtvt: VT-mode bit set.
         static auto scroll = faux;   // dtvt: Viewport/scrollback selector for windows console.
         static auto active = faux;   // dtvt: DirectVT mode is active.
         static auto config = text{}; // dtvt: DirectVT configuration XML data.
@@ -3631,7 +3787,7 @@ namespace netxs::os
             }
             return std::max(dot_11, winsz);
         }
-        auto initialize(bool trygui = faux, [[maybe_unused]] bool forced = faux)
+        auto initialize(bool rungui = faux)
         {
             #if defined(_WIN32)
                 os::stdin_fd  = fd_t{ ptr::test(::GetStdHandle(STD_INPUT_HANDLE ), os::invalid_fd) };
@@ -3698,8 +3854,8 @@ namespace netxs::os
                     });
                 };
                 haspty = ::isatty(os::stdin_fd);
-                haspty ? proc([&](auto ...args){ return io::select<true>(args...); })
-                       : proc([&](auto ...args){ return io::select<faux>(args...); });
+                haspty ? proc([&](auto... args){ return io::select<true>(args...); })
+                       : proc([&](auto... args){ return io::select<faux>(args...); });
 
             #endif
             if (cfsize)
@@ -3743,136 +3899,120 @@ namespace netxs::os
             else
             {
                 dtvt::gridsz = dtvt::consize();
-                if (trygui)
+                if (rungui)
                 {
                     #if defined(_WIN32)
-
+                    if (nt::session()) // There is no gui mode in Session0.
+                    {
+                        dtvt::vtmode |= ui::console::gui;
                         auto processpid = DWORD{};
                         auto proc_count = ::GetConsoleProcessList(&processpid, 1);
-                        if (forced || 1 == proc_count) // Run gui console.
+                        if (1 == proc_count) // Run gui console. Close parent console when we are alone.
                         {
-                            //auto r = RECT{};
-                            //auto h = ::GetConsoleWindow();
-                            //ok(::GetWindowRect(h, &r));
-                            //auto modeflags = DWORD{};
-                            //ok(::GetConsoleDisplayMode(&modeflags));
-                            //auto maximized = modeflags == CONSOLE_FULLSCREEN;
-                            ////dtvt::iconic = maximized ? gui::window::state::fullscreen
-                            ////                         : ::IsIconic(h) ? gui::window::state::minimized
-                            ////                                         : gui::window::state::normal;
-                            //auto font_info = CONSOLE_FONT_INFOEX{ sizeof(CONSOLE_FONT_INFOEX) };
-                            //auto cell_height = 20;
-                            //if (ok(::GetCurrentConsoleFontEx(os::stdout_fd, maximized, &font_info)) && font_info.dwFontSize.Y)
-                            //{
-                            //    //dtvt::uifont.emplace_back(utf::to_utf(font_info.FaceName));
-                            //    cell_height = font_info.dwFontSize.Y;
-                            //}
-                            ////if (cell_height == 0) cell_height = 20;
-                            ////if (dtvt::uifont.empty()) dtvt::uifont.emplace_back("Courier New");
-                            ////dtvt::window.coor = { r.left + (r.right - r.left - cell_height / 2 * dtvt::gridsz.x) / 2, // Centrify window.
-                            ////                      r.top  + (r.bottom - r.top - cell_height * dtvt::gridsz.y) / 2 };
-                            //dtvt::window.coor = { r.left, r.top };
-                            ////dtvt::wingui = {{ r.left, r.top }, { r.right - r.left, r.bottom - r.top }}; // It doesn't work with WT.
-                            //dtvt::wingui = dtvt::window;
-                            //dtvt::wingui.size *= twod{ std::max(1, cell_height / 2), cell_height};
-                            dtvt::vtmode |= ui::console::gui;
                             os::stdin_fd  = os::invalid_fd;
                             os::stdout_fd = os::invalid_fd;
                             os::stderr_fd = os::invalid_fd;
                             //if constexpr (!debugmode) ::FreeConsole();
                             ::FreeConsole();
                         }
-                        // We are hosted by a shell.
+                    }
                     #else
-                        if (!haspty)
-                        {
-                            dtvt::vtmode |= ui::console::gui;
-                        }
+                    if (!haspty) //todo this never happens, see ui::console::redirio above
+                    {
+                        dtvt::vtmode |= ui::console::gui;
+                    }
                     #endif
-                    if (dtvt::vtmode & ui::console::gui)
-                    {
-                        auto term = "Native GUI console";
-                        log("%%Terminal type: %term%", prompt::os, term);
-                        return;
-                    }
                 }
-
-                #if defined(_WIN32)
+                if (dtvt::vtmode & ui::console::gui && os::stdout_fd == os::invalid_fd)
                 {
-                    //todo revise
-                    auto nt16 = os::env::get("VTM").empty() && nt::RtlGetVersion().dwBuildNumber < 19041; // Windows Server 2019's conhost doesn't handle truecolor well enough.
-                    dtvt::vtmode |= nt16 ? ui::console::nt | ui::console::nt16
-                                         : ui::console::nt;
+                    auto term = "Native GUI console";
+                    log("%%Terminal type: %term%", prompt::os, term);
                 }
-                #elif defined(__linux__)
-                    if (os::linux_console) dtvt::vtmode |= ui::console::mouse;
-                #endif
-                auto colorterm = os::env::get("COLORTERM");
-                auto term = text{ dtvt::vtmode & ui::console::nt16 ? "Windows Console" : "" };
-                if (term.empty()) term = os::env::get("TERM");
-                if (term.empty()) term = os::env::get("TERM_PROGRAM");
-                if (term.empty()) term = "xterm-compatible";
-                if (colorterm != "truecolor" && colorterm != "24bit")
+                else if (os::stdout_fd != os::invalid_fd)
                 {
-                    auto vt16colors = { // https://github.com//termstandard/colors
-                        "ansi",
-                        "linux",
-                        "xterm-color",
-                        "dvtm", //todo track: https://github.com/martanne/dvtm/issues/10
-                        "fbcon",
-                    };
-                    auto vt256colors = {
-                        "rxvt-unicode-256color",
-                    };
-
-                    if (term.ends_with("16color") || term.ends_with("16colour"))
+                    auto vtm_env = os::env::get("VTM");
+                    #if defined(_WIN32)
                     {
-                        dtvt::vtmode |= ui::console::vt16;
+                        //todo revise
+                        auto nt16 = vtm_env.empty() && nt::RtlGetVersion().dwBuildNumber < 19041; // Windows Server 2019's conhost doesn't handle truecolor well enough.
+                        dtvt::vtmode |= nt16 ? ui::console::nt | ui::console::nt16
+                                             : ui::console::nt;
                     }
-                    else
+                    #elif defined(__linux__)
+                        if (os::linux_console) dtvt::vtmode |= ui::console::mouse;
+                    #endif
+                    auto colorterm = os::env::get("COLORTERM");
+                    auto term = text{ dtvt::vtmode & ui::console::nt16 ? "Windows Console" : "" };
+                    if (term.empty()) term = os::env::get("TERM");
+                    if (term.empty()) term = os::env::get("TERM_PROGRAM");
+                    if (term.empty()) term = "xterm-compatible";
+                    if (colorterm != "truecolor" && colorterm != "24bit")
                     {
-                        for (auto& type : vt16colors)
+                        auto vt16colors = { // https://github.com//termstandard/colors
+                            "ansi",
+                            "linux",
+                            "xterm-color",
+                            "dvtm", //todo track: https://github.com/martanne/dvtm/issues/10
+                            "fbcon",
+                        };
+                        auto vt256colors = {
+                            "rxvt-unicode-256color",
+                        };
+
+                        if (term.ends_with("16color") || term.ends_with("16colour"))
                         {
-                            if (term == type)
-                            {
-                                dtvt::vtmode |= ui::console::vt16;
-                                break;
-                            }
+                            dtvt::vtmode |= ui::console::vt16;
                         }
-                        if (!(dtvt::vtmode & ui::console::vt16))
+                        else
                         {
-                            for (auto& type : vt256colors)
+                            for (auto& type : vt16colors)
                             {
                                 if (term == type)
                                 {
-                                    dtvt::vtmode |= ui::console::vt256;
+                                    dtvt::vtmode |= ui::console::vt16;
                                     break;
                                 }
                             }
+                            if (!(dtvt::vtmode & ui::console::vt16))
+                            {
+                                for (auto& type : vt256colors)
+                                {
+                                    if (term == type)
+                                    {
+                                        dtvt::vtmode |= ui::console::vt256;
+                                        break;
+                                    }
+                                }
+                            }
                         }
+                        #if defined(__APPLE__)
+                            if (!(dtvt::vtmode & ui::console::vt16)) // Apple terminal detection.
+                            {
+                                dtvt::vtmode |= ui::console::vt256;
+                            }
+                        #endif
                     }
-                    #if defined(__APPLE__)
-                        if (!(dtvt::vtmode & ui::console::vt16)) // Apple terminal detection.
-                        {
-                            dtvt::vtmode |= ui::console::vt256;
-                        }
-                    #endif
-                }
+                    if (!(dtvt::vtmode & (ui::console::nt16 | ui::console::vt16 | ui::console::vt256)))
+                    {
 
-                log(prompt::os, "Terminal type: ", term);
-                log(prompt::os, "Color mode: ", dtvt::vtmode & ui::console::vt16  ? "xterm 16-color"
-                                              : dtvt::vtmode & ui::console::nt16  ? "Win32 Console API 16-color"
-                                              : dtvt::vtmode & ui::console::vt256 ? "xterm 256-color"
-                                                                                  : "xterm truecolor");
-                log(prompt::os, "Mouse mode: ", dtvt::vtmode & ui::console::mouse ? "PS/2"
-                                              : dtvt::vtmode & ui::console::nt    ? "Win32 Console API"
-                                                                                  : "VT-style");
+                        dtvt::vtmode |= vtm_env.empty() ? ui::console::vtrgb
+                                                        : ui::console::vt_2D;
+                    }
+
+                    log(prompt::os, "Terminal type: ", term);
+                    log(prompt::os, "Color mode: ", dtvt::vtmode & ui::console::vt16  ? "xterm 16-color"
+                                                  : dtvt::vtmode & ui::console::nt16  ? "Win32 Console API 16-color"
+                                                  : dtvt::vtmode & ui::console::vt256 ? "xterm 256-color"
+                                                  : dtvt::vtmode & ui::console::vtrgb ? "xterm truecolor"
+                                                                                      : "xterm VT2D (truecolor with 2D Character Geometry support)");
+                    log(prompt::os, "Mouse mode: ", dtvt::vtmode & ui::console::mouse ? "PS/2"
+                                                  : dtvt::vtmode & ui::console::nt    ? "Win32 Console API"
+                                                                                      : "VT-style");
+                }
             }
-        }
-        auto checkpoint()
-        {
             if (dtvt::active || dtvt::vtmode & ui::console::redirio
-                             || dtvt::vtmode & ui::console::gui) return;
+                             || os::stdin_fd == os::invalid_fd
+                             || os::stdout_fd == os::invalid_fd) return;
             #if defined(_WIN32)
 
                 ok(::GetConsoleMode(os::stdout_fd, &dtvt::backup.omode), "::GetConsoleMode(os::stdout_fd)", os::unexpected);
@@ -3935,7 +4075,7 @@ namespace netxs::os
         }
         auto connect(eccc cfg, fdrw fds)
         {
-            log("%%New process '%cmd%' at the %path%", prompt::dtvt, utf::debase(cfg.cmd), cfg.cwd.empty() ? "current directory"s : "'" + cfg.cwd + "'");
+            log("%%New process '%cmd%' at the %path%", prompt::dtvt, ansi::hi(utf::debase437(cfg.cmd)), cfg.cwd.empty() ? "current directory"s : "'" + utf::debase437(cfg.cwd) + "'");
             auto result = true;
             auto onerror = [&]()
             {
@@ -3945,7 +4085,7 @@ namespace netxs::os
             };
             #if defined(_WIN32)
 
-                auto wcmd = utf::to_utf(cfg.cmd);
+                auto wcmd = utf::to_utf(os::nt::retokenize(cfg.cmd));
                 auto wcwd = utf::to_utf(cfg.cwd);
                 auto wenv = utf::to_utf(os::env::add(cfg.env));
                 auto startinf = STARTUPINFOEXW{ sizeof(STARTUPINFOEXW) };
@@ -3989,7 +4129,7 @@ namespace netxs::os
                     os::close(procsinf.hProcess);
                 }
                 else onerror();
-            
+
             #else
 
                 auto p_id = os::process::sysfork(); // dtvt-app can be either a real dtvt-app or a proxy
@@ -4009,8 +4149,11 @@ namespace netxs::os
                         {
                             auto err = std::error_code{};
                             fs::current_path(cfg.cwd, err);
-                            if (err) log("%%%err%Failed to change current directory to '%cwd%', error code: %code%%nil%", prompt::dtvt, ansi::err(), cfg.cwd, utf::to_hex_0x(err.value()), ansi::nil());
-                            else     log("%%Change current directory to '%cwd%'", prompt::dtvt, cfg.cwd);
+                            auto msg = !err ? utf::fprint("%%Change current directory to '%cwd%'", prompt::dtvt, cfg.cwd)
+                                            : utf::fprint("%%%err%Failed to change current directory to '%cwd%', error code: %code%%nil%", prompt::dtvt, ansi::err(), cfg.cwd, utf::to_hex_0x(err.value()), ansi::nil());
+                            auto logs = netxs::directvt::binary::logs_t{};
+                            logs.set(os::process::id.first, os::process::id.second, msg);
+                            logs.sendfx([](auto& data){ io::send(os::stdout_fd, data); });   // Send logs to the dtvt-app hoster.
                         }
                         os::fdscleanup();
                         cfg.env = os::env::add(cfg.env);
@@ -4120,7 +4263,7 @@ namespace netxs::os
                     {
                         serverfd = s_pipe_w;
                         clientfd = m_pipe_w;
-                        if constexpr (debugmode) log("%%DirectVT Gateway created for process '%cmd%'", prompt::dtvt, utf::debase(cmd));
+                        if constexpr (debugmode) log("%%DirectVT Gateway created for process '%cmd%'", prompt::dtvt, ansi::hi(utf::debase437(cmd)));
                         writesyn.notify_one(); // Flush temp buffer.
                         auto stdwrite = std::thread{ [&]{ writer(); } };
 
@@ -4131,7 +4274,7 @@ namespace netxs::os
                         if (attached.exchange(faux)) writesyn.notify_one(); // Interrupt writing thread.
                         if constexpr (debugmode) log(prompt::dtvt, "Writing thread joining", ' ', utf::to_hex_0x(stdinput.get_id()));
                         stdwrite.join();
-                        log("%%Process '%cmd%' disconnected", prompt::dtvt, utf::debase(cmd));
+                        log("%%Process '%cmd%' disconnected", prompt::dtvt, ansi::hi(utf::debase437(cmd)));
                         shutdown();
                     }
                 }};
@@ -4152,7 +4295,7 @@ namespace netxs::os
         struct vtty
         {
             std::thread             stdwrite{};
-            testy<twod>             termsize{};
+            twod                    termsize{};
             flag                    attached{};
             flag                    signaled{};
             escx                    writebuf{};
@@ -4177,18 +4320,18 @@ namespace netxs::os
             void create(auto& terminal, eccc cfg, fdrw fds)
             {
                 if (terminal.io_log) log("%%New TTY of size %win_size%", prompt::vtty, cfg.win);
-                log("%%New process '%cmd%' at the %path%", prompt::vtty, utf::debase(cfg.cmd), cfg.cwd.empty() ? "current directory"s : "'" + cfg.cwd + "'");
+                log("%%New process '%cmd%' at the %path%", prompt::vtty, ansi::hi(utf::debase437(cfg.cmd)), cfg.cwd.empty() ? "current directory"s : "'" + utf::debase437(cfg.cwd) + "'");
                 if (!termlink)
                 {
                     termlink = consrv::create(terminal);
                 }
-                termsize(cfg.win);
+                termsize = cfg.win;
                 auto trailer = [&, cmd = cfg.cmd]
                 {
+                    auto exitcode = termlink->wait(); // Wait all attached processes to exit (waiting for conversations to complete, send pending writebuf).
                     if (attached.exchange(faux))
                     {
-                        auto exitcode = termlink->wait();
-                        log("%%Process '%cmd%' exited with code %code%", prompt::vtty, utf::debase(cmd), utf::to_hex_0x(exitcode));
+                        log("%%Process '%cmd%' exited with code %code%", prompt::vtty, ansi::hi(utf::debase437(cmd)), utf::to_hex_0x(exitcode));
                         writesyn.notify_one(); // Interrupt writing thread.
                         terminal.onexit(exitcode, "", signaled.exchange(true)); // Only if the process terminates on its own (not forced by sighup).
                     }
@@ -4373,313 +4516,10 @@ namespace netxs::os
             {
                 if (attached) termlink->undo(undoredo);
             }
-        };
-    }
-
-    namespace runspace
-    {
-        template<class Term>
-        struct base_tty
-        {
-            Term& terminal;
-
-            base_tty(Term& terminal)
-                : terminal{ terminal }
-            { }
-            virtual ~base_tty() = default;
-
-            virtual void write(view data) = 0;
-            virtual void runapp(eccc cfg, std::function<void(view)> input_hndl,
-                                          std::function<void(si32, view)> shutdown_hndl) = 0;
-            virtual void shut() = 0;
-            virtual bool connected() = 0;
-        };
-        template<class Term>
-        struct raw : public base_tty<Term>
-        {
-            using base_tty = runspace::base_tty<Term>;
-
-            ipc::stdcon               termlink;
-            std::thread               stdinput;
-            std::thread               stdwrite;
-            std::thread               waitexit;
-            fd_t                      prochndl;
-            pidt                      proc_pid;
-            text                      writebuf;
-            std::mutex                writemtx;
-            std::condition_variable   writesyn;
-            std::function<void(view)> receiver;
-            std::function<void(si32, view)> shutdown;
-
-            raw(Term& terminal)
-                : base_tty{ terminal       },
-                  prochndl{ os::invalid_fd },
-                  proc_pid{                }
-            { }
-           ~raw()
+            auto get_current_line()
             {
-                if constexpr (debugmode) log(prompt::task, "Destructor started");
-                stop();
-                if constexpr (debugmode) log(prompt::task, "Destructor complete");
+                return termlink->get_current_line();
             }
-
-            operator bool () { return termlink; }
-
-            virtual bool connected() override
-            {
-                return !!termlink;
-            }
-            void disconnect()
-            {
-                auto guard = std::lock_guard{ writemtx };
-                termlink.stop();
-            }
-            // task: Cleaning in order to be able to restart.
-            void payoff()
-            {
-                if (stdwrite.joinable())
-                {
-                    writesyn.notify_one();
-                    if constexpr (debugmode) log(prompt::task, "Writing thread joining", ' ', utf::to_hex_0x(stdwrite.get_id()));
-                    stdwrite.join();
-                }
-                if (stdinput.joinable())
-                {
-                    if constexpr (debugmode) log(prompt::task, "Reading thread joining", ' ', utf::to_hex_0x(stdinput.get_id()));
-                    stdinput.join();
-                }
-                if (waitexit.joinable())
-                {
-                    if constexpr (debugmode) log(prompt::task, "Process waiter joining", ' ', utf::to_hex_0x(waitexit.get_id()));
-                    waitexit.join();
-                }
-                auto guard = std::lock_guard{ writemtx };
-                termlink = {};
-                writebuf = {};
-            }
-            virtual void shut() override
-            {
-                if (termlink)
-                {
-                    termlink.shut();
-                }
-            }
-            auto wait_child()
-            {
-                disconnect();
-                auto exit_code = 0;// os::process::wait(prompt::task, proc_pid, prochndl);
-                return exit_code;
-            }
-            virtual void runapp(eccc cfg, std::function<void(view)> input_hndl,
-                                          std::function<void(si32, view)> shutdown_hndl) override
-            {
-                receiver = input_hndl;
-                shutdown = shutdown_hndl;
-                log("%%New process '%cmd%' at the %cwd%", prompt::task, utf::debase(cfg.cmd), cfg.cwd.empty() ? "current directory"s
-                                                                                                              : "'" + cfg.cwd + "'");
-                #if defined(_WIN32)
-
-                    auto s_pipe_r = os::invalid_fd;
-                    auto s_pipe_w = os::invalid_fd;
-                    auto m_pipe_r = os::invalid_fd;
-                    auto m_pipe_w = os::invalid_fd;
-                    auto startinf = STARTUPINFOEXW{ sizeof(STARTUPINFOEXW) };
-                    auto procsinf = PROCESS_INFORMATION{};
-                    auto attrbuff = std::vector<byte>{};
-                    auto attrsize = SIZE_T{ 0 };
-                    auto stdhndls = std::array<HANDLE, 2>{};
-
-                    auto tunnel = [&]
-                    {
-                        auto sa = SECURITY_ATTRIBUTES{};
-                        sa.nLength = sizeof(SECURITY_ATTRIBUTES);
-                        sa.lpSecurityDescriptor = NULL;
-                        sa.bInheritHandle = TRUE;
-                        if (::CreatePipe(&s_pipe_r, &m_pipe_w, &sa, 0)
-                         && ::CreatePipe(&m_pipe_r, &s_pipe_w, &sa, 0))
-                        {
-                            startinf.StartupInfo.dwFlags    = STARTF_USESTDHANDLES;
-                            startinf.StartupInfo.hStdInput  = s_pipe_r;
-                            startinf.StartupInfo.hStdOutput = s_pipe_w;
-                            startinf.StartupInfo.hStdError  = s_pipe_w;
-                            return true;
-                        }
-                        else
-                        {
-                            os::close(m_pipe_w);
-                            os::close(m_pipe_r);
-                            os::close(s_pipe_w);
-                            os::close(s_pipe_r);
-                            return faux;
-                        }
-                    };
-                    auto fillup = [&]
-                    {
-                        stdhndls[0] = s_pipe_r;
-                        stdhndls[1] = s_pipe_w;
-                        ::InitializeProcThreadAttributeList(nullptr, 1, 0, &attrsize);
-                        attrbuff.resize(attrsize);
-                        startinf.lpAttributeList = reinterpret_cast<LPPROC_THREAD_ATTRIBUTE_LIST>(attrbuff.data());
-
-                        if (::InitializeProcThreadAttributeList(startinf.lpAttributeList, 1, 0, &attrsize)
-                         && ::UpdateProcThreadAttribute(startinf.lpAttributeList,
-                                                        0,
-                                                        PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
-                                                        &stdhndls,
-                                                        sizeof(stdhndls),
-                                                        nullptr,
-                                                        nullptr))
-                        {
-                            return true;
-                        }
-                        else return faux;
-                    };
-                    auto create = [&]
-                    {
-                        auto wcmd = utf::to_utf(cfg.cmd);
-                        auto wcwd = utf::to_utf(cfg.cwd);
-                        auto wenv = utf::to_utf(os::env::add(cfg.env));
-                        return ::CreateProcessW(nullptr,                             // lpApplicationName
-                                                wcmd.data(),                         // lpCommandLine
-                                                nullptr,                             // lpProcessAttributes
-                                                nullptr,                             // lpThreadAttributes
-                                                TRUE,                                // bInheritHandles
-                                                DETACHED_PROCESS |                   // create without attached console, dwCreationFlags
-                                                EXTENDED_STARTUPINFO_PRESENT |       // override startupInfo type
-                                                CREATE_UNICODE_ENVIRONMENT,          // Environment block in UTF-16.
-                                                wenv.data(),                         // lpEnvironment
-                                                wcwd.size() ? wcwd.c_str()           // lpCurrentDirectory
-                                                            : nullptr,
-                                                &startinf.StartupInfo,               // lpStartupInfo (ptr to STARTUPINFO)
-                                                &procsinf);                          // lpProcessInformation
-                    };
-
-                    if (tunnel()
-                     && fillup()
-                     && create())
-                    {
-                        os::close( procsinf.hThread );
-                        prochndl = procsinf.hProcess;
-                        proc_pid = procsinf.dwProcessId;
-                        termlink = { m_pipe_r, m_pipe_w };
-                    }
-                    else os::fail(prompt::task, "Process creation error");
-
-                    os::close(s_pipe_w); // Close inheritable handles to avoid deadlocking at process exit.
-                    os::close(s_pipe_r); // Only when all write handles to the pipe are closed, the ReadFile function returns zero.
-
-                #else
-
-                    auto to_server = std::to_array({ os::invalid_fd, os::invalid_fd });
-                    auto to_client = std::to_array({ os::invalid_fd, os::invalid_fd });
-                    ok(::pipe(to_server.data()), "::pipe(to_server)", os::unexpected);
-                    ok(::pipe(to_client.data()), "::pipe(to_client)", os::unexpected);
-                    termlink = { to_server[0], to_client[1] };
-                    proc_pid = os::process::sysfork();
-                    if (proc_pid == 0) // Child branch.
-                    {
-                        os::dtvt::active = faux; // Update tty::logger.
-                        os::dtvt::client = {};   //
-                        ::dup2(to_client[0], STDIN_FILENO);  os::stdin_fd  = STDIN_FILENO;
-                        ::dup2(to_server[1], STDOUT_FILENO); os::stdout_fd = STDOUT_FILENO;
-                        ::dup2(to_server[1], STDERR_FILENO); os::stderr_fd = STDERR_FILENO;
-                        os::fdscleanup();
-                        cfg.env = os::env::add(cfg.env);
-                        os::signals::listener.reset();
-                        os::process::spawn(cfg.cmd, cfg.cwd, cfg.env);
-                    }
-                    // Parent branch.
-                    os::close(to_client[0]);
-                    os::close(to_server[1]);
-
-                #endif
-
-                stdinput = std::thread{ [&]{ read_socket_thread(); } };
-                stdwrite = std::thread{ [&]{ send_socket_thread(); } };
-
-                if (termlink) log(prompt::task, "Standard I/O has been redirected for process ", proc_pid);
-            }
-            void stop()
-            {
-                if (termlink)
-                {
-                    wait_child();
-                }
-                payoff();
-            }
-            void read_socket_thread()
-            {
-                if constexpr (debugmode) log(prompt::task, "Reading thread started", ' ', utf::to_hex_0x(stdinput.get_id()));
-                auto flow = text{};
-                while (termlink)
-                {
-                    auto shot = termlink.recv();
-                    if (shot && termlink)
-                    {
-                        flow += shot;
-                        auto crop = view{ flow };
-                        utf::purify(crop);
-                        receiver(crop);
-                        flow.erase(0, crop.size()); // Delete processed data.
-                    }
-                    else break;
-                }
-                if (termlink) // Skip if stop was called via dtor.
-                {
-                    auto exit_code = wait_child();
-                    shutdown(exit_code, "");
-                }
-                if constexpr (debugmode) log(prompt::task, "Reading thread ended", ' ', utf::to_hex_0x(stdinput.get_id()));
-            }
-            void send_socket_thread()
-            {
-                if constexpr (debugmode) log(prompt::task, "Writing thread started", ' ', utf::to_hex_0x(stdwrite.get_id()));
-                auto guard = std::unique_lock{ writemtx };
-                auto cache = text{};
-                while ((void)writesyn.wait(guard, [&]{ return writebuf.size() || !termlink; }), termlink)
-                {
-                    std::swap(cache, writebuf);
-                    guard.unlock();
-                    if (termlink.send(cache)) cache.clear();
-                    else                      break;
-                    guard.lock();
-                }
-                if constexpr (debugmode) log(prompt::task, "Writing thread ended", ' ', utf::to_hex_0x(stdwrite.get_id()));
-            }
-            virtual void write(view data) override
-            {
-                auto guard = std::lock_guard{ writemtx };
-                writebuf += data;
-                if (termlink) writesyn.notify_one();
-            }
-        };
-
-        template<class Term>
-        struct tty : public base_tty<Term>, vt::vtty
-        {
-            using vtty = vt::vtty;
-            using base_tty = runspace::base_tty<Term>;
-
-            virtual void write(view data) override
-            {
-                vtty::write(data);
-            }
-            virtual bool connected() override
-            {
-                return vtty::operator bool();
-            }
-            virtual void shut() override
-            {
-                vtty::sighup();
-            }
-            virtual void runapp(eccc appcfg, std::function<void(view)> /*input_hndl*/,
-                                             std::function<void(si32, view)> /*shutdown_hndl*/) override
-            {
-                vtty::runapp(base_tty::terminal, appcfg);
-            }
-            tty(Term& terminal)
-                : base_tty{ terminal }
-            { }
         };
     }
 
@@ -4694,7 +4534,7 @@ namespace netxs::os
                 parser.cout(utf8);
                 #endif
             }
-            else if (!(dtvt::vtmode & ui::console::redirio))
+            else if (!(dtvt::vtmode & (ui::console::redirio | ui::console::direct)))
             {
                 io::send(utf8);
             }
@@ -4703,9 +4543,14 @@ namespace netxs::os
         {
             struct adapter : s11n
             {
+                id_t gear_id = 1;
+                ui64 tree_id = datetime::uniqueid();
+                ui64 digest{};
+
                 void direct(s11n::xs::bitmap_vt16    /*lock*/, view& data) { io::send(data); }
                 void direct(s11n::xs::bitmap_vt256   /*lock*/, view& data) { io::send(data); }
                 void direct(s11n::xs::bitmap_vtrgb   /*lock*/, view& data) { io::send(data); }
+                void direct(s11n::xs::bitmap_vt_2D   /*lock*/, view& data) { io::send(data); }
                 void direct(s11n::xs::bitmap_dtvt      lock,   view& data) // Decode for nt16 mode.
                 {
                     auto& bitmap = lock.thing;
@@ -4764,7 +4609,7 @@ namespace netxs::os
                     else                             item.set();
                     os::clipboard::set(item);
                     auto crop = utf::trunc(item.utf8, dtvt::gridsz.y / 2); // Trim preview before sending.
-                    s11n::sysboard.send(dtvt::client, id_t{}, item.size, crop.str(), item.form);
+                    s11n::sysboard.send(dtvt::client, gear_id, item.size, crop.str(), item.form);
                 }
                 void handle(s11n::xs::clipdata_request lock)
                 {
@@ -4799,30 +4644,8 @@ namespace netxs::os
         auto logger()
         {
             static auto dtvt_output = [](auto& data){ io::send(os::stdout_fd, data); };
-            if (dtvt::vtmode & ui::console::gui)
-            {
-                auto errmsg = []
-                {
-                    if (os::logbuffer.size())
-                    {
-                        #if defined(_WIN32)
-                        auto utf8log = ui::page{ utf::trunc(os::logbuffer, 32) }.to_utf8<faux>();
-                        auto message = utf::to_utf(utf::trim_front(view{ utf8log }, '\n'));
-                        auto caption = utf::to_utf(os::process::binary());
-                        ::MessageBoxW(NULL, message.data(), caption.data(), MB_OK);
-                        #else
-                        #endif
-                    }
-                };
-                std::atexit(errmsg);
-            }
             return netxs::logger::attach([](qiew utf8)
             {
-                if (dtvt::vtmode & ui::console::gui) // Deferred logs in gui mode.
-                {
-                    os::logbuffer += utf8;
-                    utf8 = os::logbuffer;
-                }
                 if (utf8.empty()) return;
                 if (dtvt::active || dtvt::client)
                 {
@@ -4830,9 +4653,8 @@ namespace netxs::os
                     logs.set(os::process::id.first, os::process::id.second, utf8);
                     dtvt::active ? logs.sendfx(dtvt_output)   // Send logs to the dtvt-app hoster.
                                  : logs.sendby(dtvt::client); // Send logs to the dtvt-app.
-                    os::logbuffer.clear();
                 }
-                else if (os::stdout_fd != os::invalid_fd)
+                if (os::stdout_fd != os::invalid_fd && !(dtvt::vtmode & ui::console::tui))
                 {
                     tty::cout(utf8);
                 }
@@ -4862,18 +4684,21 @@ namespace netxs::os
         {
             if constexpr (debugmode) log(prompt::tty, "Reading thread started", ' ', utf::to_hex_0x(std::this_thread::get_id()));
             auto alive = true;
+            auto gear_id = id_t{ 1 }; // Non-zero id.
             auto p_txtdata = text{};
+            auto chords = input::key::kmap{};
             auto m = input::sysmouse{};
             auto k = input::syskeybd{};
-            auto f = input::sysfocus{};
             auto c = input::sysclose{};
             auto w = input::syswinsz{};
             m.enabled = input::hids::stat::ok;
             m.coordxy = { si16min, si16min };
             c.fast = true;
-            f.state = true;
             w.winsize = os::dtvt::gridsz;
-            focus(f);
+            k.gear_id = gear_id;
+            m.gear_id = gear_id;
+            w.gear_id = gear_id;
+            focus(alive);
 
             #if defined(_WIN32)
 
@@ -4904,8 +4729,8 @@ namespace netxs::os
                      || (quest_key & 0xff) != VK_OEM_2)
                     {
                         true_null = input::key::find(true_null & 0xff, input::key::Key2);
-                        slash_key = input::key::find(slash_key & 0xff, input::key::Slash) | (slash_key & 0xff00);
-                        quest_key = input::key::find(quest_key & 0xff, input::key::Slash) | (quest_key & 0xff00);
+                        slash_key = input::key::find(slash_key & 0xff, input::key::KeySlash) | (slash_key & 0xff00);
+                        quest_key = input::key::find(quest_key & 0xff, input::key::KeySlash) | (quest_key & 0xff00);
                         k.keycode = input::key::config;
                         k.cluster.clear();
                         utf::to_utf_from_code(true_null, k.cluster);
@@ -4929,20 +4754,24 @@ namespace netxs::os
                                 k.extflag = faux;
                                 k.virtcod = 'C';
                                 k.scancod = ::MapVirtualKeyW('C', MAPVK_VK_TO_VSC);
-                                k.pressed = true;
                                 k.keycode = input::key::KeyC;
+                                k.keystat = input::key::pressed;
                                 k.cluster = "\x03";
+                                chords.build(k);
                                 keybd(k);
+                                // Release key is auto generated by someone.
                             }
                             else if (signal == os::signals::ctrl_break)
                             {
                                 k.extflag = faux;
                                 k.virtcod = ansi::c0_etx;
                                 k.scancod = ansi::ctrl_break;
-                                k.pressed = true;
                                 k.keycode = input::key::Break;
+                                k.keystat = input::key::pressed;
                                 k.cluster = "\x03";
+                                chords.build(k);
                                 keybd(k);
+                                // Release key is auto generated by someone.
                             }
                             else if (signal == os::signals::close
                                   || signal == os::signals::logoff
@@ -4959,7 +4788,6 @@ namespace netxs::os
                     if (count == 0) continue;
                     items.resize(count);
                     if (!::ReadConsoleInputW(os::stdin_fd, items.data(), count, &count)) break;
-                    auto timecode = datetime::now();
                     auto head = items.begin();
                     auto tail = items.end();
                     while (alive && head != tail)
@@ -4985,7 +4813,7 @@ namespace netxs::os
                                 m.hzwheel = faux;
                                 m.wheelfp = 0;
                                 m.wheelsi = 0;
-                                m.timecod = timecode;
+                                m.timecod = datetime::now();
                                 m.changed++;
                                 mouse(m); // Fire mouse event to update kb modifiers.
                             }
@@ -4995,14 +4823,16 @@ namespace netxs::os
                                 k.extflag = r.Event.KeyEvent.dwControlKeyState & ENHANCED_KEY;
                                 k.virtcod = r.Event.KeyEvent.wVirtualKeyCode;
                                 k.scancod = r.Event.KeyEvent.wVirtualScanCode;
-                                k.pressed = r.Event.KeyEvent.bKeyDown;
                                 k.keycode = input::key::xlat(k.virtcod, k.scancod, (si32)r.Event.KeyEvent.dwControlKeyState);
+                                k.keystat = r.Event.KeyEvent.bKeyDown ? (chords.exist(k.keycode) ? input::key::repeated : input::key::pressed) : input::key::released;
                                 k.cluster = toutf;
-                                do
+                                chords.build(k);
+                                if (r.Event.KeyEvent.wRepeatCount-- > 0) keybd(k);
+                                if (k.keystat != input::key::released) while (r.Event.KeyEvent.wRepeatCount-- > 0)
                                 {
+                                    k.keystat = input::key::repeated;
                                     keybd(k);
                                 }
-                                while (r.Event.KeyEvent.wRepeatCount-- > 1);
                             }
                             else if (std::distance(head, tail) > 2) // Surrogate pairs special case.
                             {
@@ -5021,14 +4851,20 @@ namespace netxs::os
                                     k.scancod = r.Event.KeyEvent.wVirtualScanCode;
                                     k.cluster = toutf;
                                     k.keycode = input::key::xlat(k.virtcod, k.scancod, (si32)r.Event.KeyEvent.dwControlKeyState);
-                                    do
+                                    if (r.Event.KeyEvent.wRepeatCount-- > 0)
                                     {
-                                        k.pressed = true;
-                                        keybd(k);
-                                        k.pressed = faux;
+                                        k.keystat = input::key::pressed;
+                                        chords.build(k);
                                         keybd(k);
                                     }
-                                    while (r.Event.KeyEvent.wRepeatCount-- > 1);
+                                    while (r.Event.KeyEvent.wRepeatCount-- > 0)
+                                    {
+                                        k.keystat = input::key::repeated;
+                                        keybd(k);
+                                    }
+                                    k.keystat = input::key::released;
+                                    chords.build(k);
+                                    keybd(k);
                                 }
                             }
                             point = {};
@@ -5054,6 +4890,7 @@ namespace netxs::os
                                     utf::to_utf(wcopy, p_txtdata);
                                     k.payload = input::keybd::type::keypaste;
                                     k.cluster = p_txtdata;
+                                    chords.reset(k);
                                     keybd(k);
                                     k.payload = input::keybd::type::keypress;
                                     wcopy.clear();
@@ -5065,7 +4902,6 @@ namespace netxs::os
                         {
                             auto changed = 0;
                             check(changed, m.ctlstat, kbmod);
-                            check(changed, m.buttons, (si32)(r.Event.MouseEvent.dwButtonState & 0b00011111));
                             check(changed, m.hzwheel, !!(r.Event.MouseEvent.dwEventFlags & MOUSE_HWHEELED));
                             auto wheeldt = (si16)((0xFFFF0000 & r.Event.MouseEvent.dwButtonState) >> 16); // dwButtonState too large when mouse scrolls. Use si16 to preserve dt sign.
                             if (wheeldt) // Same code in gui.hpp.
@@ -5083,14 +4919,27 @@ namespace netxs::os
                                 m.wheelsi = {};
                                 m.hzwheel = {};
                             }
+                            auto new_button_state = (si32)(r.Event.MouseEvent.dwButtonState & 0b00011111);
+                            auto new_coords_state = twod{ r.Event.MouseEvent.dwMousePosition.X, r.Event.MouseEvent.dwMousePosition.Y };
                             if (!((dtvt::vtmode & ui::console::nt16) && wheeldt)) // Skip the mouse coord update when wheeling on win7/8 (broken coords).
                             {
-                                check(changed, m.coordxy, twod{ r.Event.MouseEvent.dwMousePosition.X, r.Event.MouseEvent.dwMousePosition.Y });
+                                if (m.coordxy != new_coords_state)
+                                {
+                                    changed++;
+                                    m.coordxy = new_coords_state;
+                                    if (new_button_state && !m.buttons) // Update mouse cursor position before mouse pressed (to avoid unexpected drag). WT don't track mouse when it unfocused and they send new position with pressed button in a single event when clicking over unfocused WT.
+                                    {
+                                        m.changed++;
+                                        m.timecod = datetime::now();
+                                        mouse(m);
+                                    }
+                                }
                             }
+                            check(changed, m.buttons, new_button_state);
                             if (changed || wheeldt) // Don't fire the same state (conhost fires the same events every second).
                             {
                                 m.changed++;
-                                m.timecod = timecode;
+                                m.timecod = datetime::now();
                                 mouse(m);
                             }
                         }
@@ -5102,9 +4951,10 @@ namespace netxs::os
                         }
                         else if (r.EventType == FOCUS_EVENT)
                         {
-                            f.state = r.Event.FocusEvent.bSetFocus;
-                            focus(f);
-                            if (!f.state) kbmod = {}; // To keep the modifiers from sticking.
+                            chords.reset(k);
+                            auto state = !!r.Event.FocusEvent.bSetFocus;
+                            focus(state);
+                            if (!state) kbmod = {}; // To keep the modifiers from sticking.
                         }
                     }
                 }
@@ -5267,33 +5117,33 @@ namespace netxs::os
                     using namespace input;
                     auto keymask = std::vector<std::pair<si32, text>>
                     {
-                        { key::PageUp,     "\033[5; ~"  },
-                        { key::PageDown,   "\033[6; ~"  },
-                        { key::End,        "\033[1; F"  },
-                        { key::Home,       "\033[1; H"  },
-                        { key::LeftArrow,  "\033[1; D"  },
-                        { key::UpArrow,    "\033[1; A"  },
-                        { key::RightArrow, "\033[1; C"  },
-                        { key::DownArrow,  "\033[1; B"  },
-                        { key::Insert,     "\033[2; ~"  },
-                        { key::Delete,     "\033[3; ~"  },
-                        { key::F1,         "\033[1; P"  },
-                        { key::F2,         "\033[1; Q"  },
-                        { key::F3,         "\033[1; R"  },
-                        { key::F4,         "\033[1; S"  },
-                        { key::F5,         "\033[15; ~" },
-                        { key::F6,         "\033[17; ~" },
-                        { key::F7,         "\033[18; ~" },
-                        { key::F8,         "\033[19; ~" },
-                        { key::F9,         "\033[20; ~" },
-                        { key::F10,        "\033[21; ~" },
-                        { key::F11,        "\033[23; ~" },
-                        { key::F12,        "\033[24; ~" },
+                        { key::KeyPageUp,     "\033[5; ~"  },
+                        { key::KeyPageDown,   "\033[6; ~"  },
+                        { key::KeyEnd,        "\033[1; F"  },
+                        { key::KeyHome,       "\033[1; H"  },
+                        { key::KeyLeftArrow,  "\033[1; D"  },
+                        { key::KeyUpArrow,    "\033[1; A"  },
+                        { key::KeyRightArrow, "\033[1; C"  },
+                        { key::KeyDownArrow,  "\033[1; B"  },
+                        { key::KeyInsert,     "\033[2; ~"  },
+                        { key::KeyDelete,     "\033[3; ~"  },
+                        { key::F1,            "\033[1; P"  },
+                        { key::F2,            "\033[1; Q"  },
+                        { key::F3,            "\033[1; R"  },
+                        { key::F4,            "\033[1; S"  },
+                        { key::F5,            "\033[15; ~" },
+                        { key::F6,            "\033[17; ~" },
+                        { key::F7,            "\033[18; ~" },
+                        { key::F8,            "\033[19; ~" },
+                        { key::F9,            "\033[20; ~" },
+                        { key::F10,           "\033[21; ~" },
+                        { key::F11,           "\033[23; ~" },
+                        { key::F12,           "\033[24; ~" },
                     };
-                    auto m = std::unordered_map<text, std::pair<text, si32>, qiew::hash, qiew::equal>
+                    auto m = utf::unordered_map<text, std::pair<text, si32>>
                     {
                         //{ "\033\x7f"  , { "\x08", key::Backspace     | hids::LAlt   << 8 }},
-                        { "\033\x7f"  , { "",     key::Slash         |(hids::LCtrl | hids::LAlt | hids::LShift) << 8 }},
+                        { "\033\x7f"  , { "",     key::KeySlash      |(hids::LCtrl | hids::LAlt | hids::LShift) << 8 }},
                         { "\033\x00"s , { "",     key::Space         | hids::AltGr  << 8 }},
                         { "\x00"s     , { " ",    key::Space         | hids::LCtrl  << 8 }},
                         { "\x08"      , { "\x7f", key::Backspace     | hids::LCtrl  << 8 }},
@@ -5303,8 +5153,8 @@ namespace netxs::os
                         { "\033\033"  , { "",     key::Esc           | hids::LAlt   << 8 }},
                         { "\x7f"      , { "\x08", key::Backspace                         }},
                         { "\x09"      , { "\x09", key::Tab                               }},
-                        { "\x0d"      , { "\x0d", key::Enter                             }},
-                        { "\x0a"      , { "\x0a", key::Enter         | hids::LCtrl  << 8 }},
+                        { "\x0d"      , { "\x0d", key::KeyEnter                          }},
+                        { "\x0a"      , { "\x0a", key::KeyEnter      | hids::LCtrl  << 8 }},
 
                         //{ "\x1a"      , { "",     key::Pause                             }},
                         //{ "\x1a"      , { "\x1a", key::KeyZ          | hids::LCtrl  << 8 }},
@@ -5312,8 +5162,8 @@ namespace netxs::os
                         { "\x1c"      , { "",     key::Key4          | hids::LCtrl  << 8 }},
                         { "\x1d"      , { "",     key::Key5          | hids::LCtrl  << 8 }},
                         { "\x1e"      , { "",     key::Key6          | hids::LCtrl  << 8 }},
-                        { "\x1f"      , { "",     key::Slash         | hids::LCtrl  << 8 }},
-                        { "\033\x1f"  , { "",     key::Slash         | hids::AltGr  << 8 }},
+                        { "\x1f"      , { "",     key::KeySlash      | hids::LCtrl  << 8 }},
+                        { "\033\x1f"  , { "",     key::KeySlash      | hids::AltGr  << 8 }},
                         { "\x20"      , { " ",    key::Space                             }},
                         { "\x21"      , { "!",    key::Key1          | hids::LShift << 8 }},
                         { "\x22"      , { "\"",   key::SingleQuote   | hids::LShift << 8 }},
@@ -5324,26 +5174,26 @@ namespace netxs::os
                         { "\x27"      , { "'",    key::SingleQuote                       }},
                         { "\x28"      , { "(",    key::Key9          | hids::LShift << 8 }},
                         { "\x29"      , { ")",    key::Key0          | hids::LShift << 8 }},
-                        { "\x2a"      , { "*",    key::Multiply                          }},
-                        { "\x2b"      , { "+",    key::Plus                              }},
+                        { "\x2a"      , { "*",    key::KeyMultiply                       }},
+                        { "\x2b"      , { "+",    key::KeyPlus                           }},
                         { "\x2c"      , { ",",    key::Comma                             }},
-                        { "\x2d"      , { "-",    key::Minus                             }},
-                        { "\x2e"      , { ".",    key::Period                            }},
-                        { "\x2f"      , { "/",    key::Slash                             }},
+                        { "\x2d"      , { "-",    key::KeyMinus                          }},
+                        { "\x2e"      , { ".",    key::KeyPeriod                         }},
+                        { "\x2f"      , { "/",    key::KeySlash                          }},
 
                         { "\x3a"      , { ":",    key::Semicolon     | hids::LShift << 8 }},
                         { "\x3b"      , { ";",    key::Semicolon                         }},
                         { "\x3c"      , { "<",    key::Comma         | hids::LShift << 8 }},
                         { "\x3d"      , { "=",    key::Equal                             }},
-                        { "\x3e"      , { ">",    key::Period        | hids::LShift << 8 }},
-                        { "\x3f"      , { "?",    key::Slash         | hids::LShift << 8 }},
+                        { "\x3e"      , { ">",    key::KeyPeriod     | hids::LShift << 8 }},
+                        { "\x3f"      , { "?",    key::KeySlash      | hids::LShift << 8 }},
                         { "\x40"      , { "@",    key::Key2          | hids::LShift << 8 }},
 
                         { "\x5b"      , { "[",    key::OpenBracket                       }},
                         { "\x5c"      , { "\\",   key::BackSlash                         }},
                         { "\x5d"      , { "]",    key::ClosedBracket                     }},
                         { "\x5e"      , { "^",    key::Key6          | hids::LShift << 8 }},
-                        { "\x5f"      , { "_",    key::Minus         | hids::LShift << 8 }},
+                        { "\x5f"      , { "_",    key::KeyMinus      | hids::LShift << 8 }},
                         { "\x60"      , { "`",    key::BackQuote                         }},
 
                         { "\x7b"      , { "{",    key::OpenBracket   | hids::LShift << 8 }},
@@ -5351,16 +5201,16 @@ namespace netxs::os
                         { "\x7d"      , { "}",    key::ClosedBracket | hids::LShift << 8 }},
                         { "\x7e"      , { "~",    key::BackQuote     | hids::LShift << 8 }},
 
-                        { "\033[5~"   , { "",     key::PageUp                            }},
-                        { "\033[6~"   , { "",     key::PageDown                          }},
-                        { "\033[F"    , { "",     key::End                               }},
-                        { "\033[H"    , { "",     key::Home                              }},
-                        { "\033[D"    , { "",     key::LeftArrow                         }},
-                        { "\033[A"    , { "",     key::UpArrow                           }},
-                        { "\033[C"    , { "",     key::RightArrow                        }},
-                        { "\033[B"    , { "",     key::DownArrow                         }},
-                        { "\033[2~"   , { "",     key::Insert                            }},
-                        { "\033[3~"   , { "",     key::Delete                            }},
+                        { "\033[5~"   , { "",     key::KeyPageUp                         }},
+                        { "\033[6~"   , { "",     key::KeyPageDown                       }},
+                        { "\033[F"    , { "",     key::KeyEnd                            }},
+                        { "\033[H"    , { "",     key::KeyHome                           }},
+                        { "\033[D"    , { "",     key::KeyLeftArrow                      }},
+                        { "\033[A"    , { "",     key::KeyUpArrow                        }},
+                        { "\033[C"    , { "",     key::KeyRightArrow                     }},
+                        { "\033[B"    , { "",     key::KeyDownArrow                      }},
+                        { "\033[2~"   , { "",     key::KeyInsert                         }},
+                        { "\033[3~"   , { "",     key::KeyDelete                         }},
                         { "\033OP"    , { "",     key::F1                                }},
                         { "\033OQ"    , { "",     key::F2                                }},
                         { "\033OR"    , { "",     key::F3                                }},
@@ -5404,6 +5254,7 @@ namespace netxs::os
                 {
                     k.payload = input::keybd::type::keypaste;
                     k.cluster = cluster;
+                    chords.reset(k);
                     keybd(k);
                     k.payload = input::keybd::type::keypress;
                 };
@@ -5496,8 +5347,43 @@ namespace netxs::os
                     }
                     k.extflag = {};
                     k.handled = {};
-                    k.pressed = true; keybd(k);
-                    k.pressed = faux; keybd(k);
+                    k.keystat = input::key::pressed;
+                    if (auto mods = std::exchange(k.ctlstat, 0))
+                    {
+                        auto cluster = std::exchange(k.cluster, ""s);
+                        auto keycode = std::exchange(k.keycode, 0);
+                        auto virtcod = std::exchange(k.virtcod, 0);
+                        auto scancod = std::exchange(k.scancod, 0);
+                        if (mods & hids::LCtrl)  k.ctlstat |= hids::LCtrl,  k.keycode = input::key::LeftCtrl,  k.virtcod = input::key::map::data(k.keycode).vkey, k.scancod = input::key::map::data(k.keycode).scan, chords.build(k), keybd(k);
+                        if (mods & hids::LAlt)   k.ctlstat |= hids::LAlt,   k.keycode = input::key::LeftAlt,   k.virtcod = input::key::map::data(k.keycode).vkey, k.scancod = input::key::map::data(k.keycode).scan, chords.build(k), keybd(k);
+                        if (mods & hids::LShift) k.ctlstat |= hids::LShift, k.keycode = input::key::LeftShift, k.virtcod = input::key::map::data(k.keycode).vkey, k.scancod = input::key::map::data(k.keycode).scan, chords.build(k), keybd(k);
+                        if (mods & hids::LWin)   k.ctlstat |= hids::LWin,   k.keycode = input::key::LeftWin,   k.virtcod = input::key::map::data(k.keycode).vkey, k.scancod = input::key::map::data(k.keycode).scan, chords.build(k), keybd(k);
+                        std::swap(k.cluster, cluster);
+                        std::swap(k.keycode, keycode);
+                        std::swap(k.virtcod, virtcod);
+                        std::swap(k.scancod, scancod);
+                    }
+                    chords.build(k);
+                    keybd(k);
+                    k.keystat = input::key::released;
+                    chords.build(k);
+                    keybd(k);
+                    if (auto mods = k.ctlstat)
+                    {
+                        auto cluster = std::exchange(k.cluster, ""s);
+                        auto keycode = std::exchange(k.keycode, 0);
+                        auto virtcod = std::exchange(k.virtcod, 0);
+                        auto scancod = std::exchange(k.scancod, 0);
+                        if (mods & hids::LWin  ) k.ctlstat &= ~hids::LWin,   k.keycode = input::key::LeftWin,   k.virtcod = input::key::map::data(k.keycode).vkey, k.scancod = input::key::map::data(k.keycode).scan, chords.build(k), keybd(k);
+                        if (mods & hids::LShift) k.ctlstat &= ~hids::LShift, k.keycode = input::key::LeftShift, k.virtcod = input::key::map::data(k.keycode).vkey, k.scancod = input::key::map::data(k.keycode).scan, chords.build(k), keybd(k);
+                        if (mods & hids::LAlt  ) k.ctlstat &= ~hids::LAlt,   k.keycode = input::key::LeftAlt,   k.virtcod = input::key::map::data(k.keycode).vkey, k.scancod = input::key::map::data(k.keycode).scan, chords.build(k), keybd(k);
+                        if (mods & hids::LCtrl ) k.ctlstat &= ~hids::LCtrl,  k.keycode = input::key::LeftCtrl,  k.virtcod = input::key::map::data(k.keycode).vkey, k.scancod = input::key::map::data(k.keycode).scan, chords.build(k), keybd(k);
+                        k.ctlstat = mods;
+                        std::swap(k.cluster, cluster);
+                        std::swap(k.keycode, keycode);
+                        std::swap(k.virtcod, virtcod);
+                        std::swap(k.scancod, scancod);
+                    }
                 };
 
                 auto parser = [&, input = text{}, pflag = faux](view accum) mutable
@@ -5569,9 +5455,9 @@ namespace netxs::os
                                 m.wheelsi = {};
                                 m.ctlstat = {};
                                 // 000 000 00
-                                //   | ||| ||
-                                //   | ||| └----- button number
-                                //   | └--------- ctl state
+                                //   │ │││ ││
+                                //   │ |││ └----- button number
+                                //   │ └--------- ctl state
                                 if (ctl & 0x04) m.ctlstat |= input::hids::LShift;
                                 if (ctl & 0x08) m.ctlstat |= input::hids::LAlt;
                                 if (ctl & 0x10) m.ctlstat |= input::hids::LCtrl;
@@ -5588,9 +5474,9 @@ namespace netxs::os
                                 m.coordxy = twod{ x, y };
                                 switch (ctl)
                                 {
-                                    case 0: netxs::set_bit<input::hids::left  >(m.buttons, ispressed); break;
-                                    case 1: netxs::set_bit<input::hids::middle>(m.buttons, ispressed); break;
-                                    case 2: netxs::set_bit<input::hids::right >(m.buttons, ispressed); break;
+                                    case 0: netxs::set_bit<input::hids::buttons::left  >(m.buttons, ispressed); break;
+                                    case 1: netxs::set_bit<input::hids::buttons::middle>(m.buttons, ispressed); break;
+                                    case 2: netxs::set_bit<input::hids::buttons::right >(m.buttons, ispressed); break;
                                     case 64:
                                         m.wheelfp = 1;
                                         m.wheelsi = 1;
@@ -5599,6 +5485,17 @@ namespace netxs::os
                                         m.wheelfp = -1;
                                         m.wheelsi = -1;
                                         break;
+                                    case 66:
+                                        m.hzwheel = true;
+                                        m.wheelfp = 1;
+                                        m.wheelsi = 1;
+                                        break;
+                                    case 67:
+                                        m.hzwheel = true;
+                                        m.wheelfp = -1;
+                                        m.wheelsi = -1;
+                                        break;
+                                    //todo impl ext mouse buttons 129-131
                                 }
                                 m.changed++;
                                 m.timecod = timecode;
@@ -5606,8 +5503,8 @@ namespace netxs::os
                             }
                             else if (t == type::focus)
                             {
-                                f.state = s.back() == 'I';
-                                focus(f);
+                                auto state = s.back() == 'I';
+                                focus(state);
                             }
                             else if (t == type::style)
                             {
@@ -5686,7 +5583,7 @@ namespace netxs::os
                         ok(::ioctl(os::stdout_fd, VT_GETSTATE, &vt_state), "::ioctl(VT_GETSTATE)", os::unexpected);
                         if (vt_state.v_active == ttynum) // Proceed current active tty only.
                         {
-                            auto scale = twod{ 6,12 }; //todo magic numbers
+                            auto scale = twod{ 6, 12 }; //todo magic numbers
                             auto limit = w.winsize * scale;
                             auto bttns = data[0] & 7;
                             mcoord.x  += data[1];
@@ -5744,6 +5641,7 @@ namespace netxs::os
         }
         auto legacy()
         {
+            dtvt::vtmode |= ui::console::tui;
             auto& proxy = binary::proxy();
             auto clipbd = []([[maybe_unused]] auto& alarm)
             {
@@ -5755,14 +5653,27 @@ namespace netxs::os
                     auto wndproc = [](auto hWnd, auto uMsg, auto wParam, auto lParam)
                     {
                         static auto alive = flag{ true };
+                        static auto timers_clipboard = 1u;
                         switch (uMsg)
                         {
                             case WM_CREATE:
                                 ok(::AddClipboardFormatListener(hWnd), "::AddClipboardFormatListener()", os::unexpected);
-                                // Continue processing the switch to initialize the clipboard state after startup.
-                            case WM_CLIPBOARDUPDATE:
                                 os::clipboard::sync((arch)hWnd, binary::proxy(), dtvt::client, dtvt::gridsz);
                                 break;
+                            case WM_TIMER:
+                                if (wParam == timers_clipboard)
+                                {
+                                    ::KillTimer(hWnd, timers_clipboard);
+                                    os::clipboard::sync((arch)hWnd, binary::proxy(), dtvt::client, dtvt::gridsz);
+                                }
+                                else return DefWindowProc(hWnd, uMsg, wParam, lParam);
+                                break;
+                            case WM_CLIPBOARDUPDATE:
+                            {
+                                auto random_delay = 150ms + datetime::milliseconds(os::process::id.second) / 2; // Delay in random range from 150ms upto 650ms.
+                                ::SetTimer(hWnd, timers_clipboard, datetime::round<ui32>(random_delay), nullptr);
+                                break;
+                            }
                             case WM_DESTROY:
                                 ok(::RemoveClipboardFormatListener(hWnd), "::RemoveClipboardFormatListener()", os::unexpected);
                                 ::PostQuitMessage(0);
@@ -5828,14 +5739,6 @@ namespace netxs::os
                 inpmode &=~nt::console::inmode::quickedit;
                 ok(::SetConsoleMode(os::stdin_fd, inpmode), "::SetConsoleMode()", os::unexpected);
 
-                // Switch to altbuf.
-                auto saved_fd = os::stdout_fd;
-                if (!ok(os::stdout_fd = ::CreateConsoleScreenBuffer(GENERIC_READ | GENERIC_WRITE, 0, nullptr, CONSOLE_TEXTMODE_BUFFER, nullptr), "::CreateConsoleScreenBuffer()", os::unexpected))
-                {
-                    os::stdout_fd = saved_fd;
-                    saved_fd = os::invalid_fd;
-                }
-                else ok(::SetConsoleActiveScreenBuffer(os::stdout_fd), "::SetConsoleActiveScreenBuffer(", utf::to_hex_0x(os::stdout_fd), ")", os::unexpected);
                 io::send(os::stdout_fd, ansi::altbuf(true).cursor(faux).bpmode(true)); // Windows 10 console compatibility (turning scrollback off, cursor not hidden by WinAPI).
                 auto palette = CONSOLE_SCREEN_BUFFER_INFOEX{ .cbSize = sizeof(CONSOLE_SCREEN_BUFFER_INFOEX), .wAttributes = {} };
                 ok(::GetConsoleScreenBufferInfoEx(os::stdout_fd, &palette), "::GetConsoleScreenBufferInfoEx()", os::unexpected);
@@ -5847,11 +5750,13 @@ namespace netxs::os
                 if (dtvt::vtmode & ui::console::nt16)
                 {
                     auto c16 = palette;
+                    c16.dwSize = { (si16)dtvt::gridsz.x, (si16)dtvt::gridsz.y };
                     c16.srWindow = { .Right = (si16)dtvt::gridsz.x, .Bottom = (si16)dtvt::gridsz.y }; // Suppress unexpected scrollbars.
+                    c16.dwCursorPosition = {};
                     argb::set_vtm16_palette([&](auto index, auto color){ c16.ColorTable[index] = argb::swap_rb(color); }); // conhost crashes if alpha non zero.
                     ok(::SetConsoleScreenBufferInfoEx(os::stdout_fd, &c16), "::SetConsoleScreenBufferInfoEx()", os::unexpected);
                 }
-            #else 
+            #else
                 auto vtrun = ansi::altbuf(true).bpmode(true).cursor(faux).vmouse(true).set_palette(dtvt::vtmode & ui::console::vt16);
                 auto vtend = ansi::scrn_reset().altbuf(faux).bpmode(faux).cursor(true).vmouse(faux).rst_palette(dtvt::vtmode & ui::console::vt16);
                 io::send(os::stdout_fd, vtrun);
@@ -5874,10 +5779,17 @@ namespace netxs::os
 
             auto alarm = fire{};
             auto alive = flag{ true };
-            auto keybd = [&](auto& data){ if (alive)                proxy.syskeybd.send(intio, data); };
+            auto keybd = [&](auto& data)
+            {
+                if (alive)
+                {
+                    data.timecod = datetime::now();
+                    proxy.syskeybd.send(intio, data);
+                }
+            };
             auto mouse = [&](auto& data){ if (alive)                proxy.sysmouse.send(intio, data); };
+            auto focus = [&](auto state){ if (alive)                proxy.sysfocus.send(intio, proxy.gear_id, state, 0, proxy.tree_id, ++proxy.digest); };
             auto winsz = [&](auto& data){ if (alive)                proxy.syswinsz.send(intio, data); };
-            auto focus = [&](auto& data){ if (alive)                proxy.sysfocus.send(intio, data); };
             auto close = [&](auto& data){ if (alive.exchange(faux)) proxy.sysclose.send(intio, data); };
             auto input = std::thread{ [&]{ tty::reader(alarm, keybd, mouse, winsz, focus, close, noop{}); }};
             auto clips = std::thread{ [&]{ clipbd(alarm); } };
@@ -5902,25 +5814,13 @@ namespace netxs::os
                     ok(::FillConsoleOutputAttribute(os::stdout_fd, 0, dtvt::gridsz.x * dtvt::gridsz.y, {}, &count), "::FillConsoleOutputAttribute()", os::unexpected); // To avoid palette flickering.
                     ok(::SetConsoleScreenBufferInfoEx(os::stdout_fd, &palette), "::SetConsoleScreenBufferInfoEx()", os::unexpected);
                 }
-                if (saved_fd != os::invalid_fd)
-                {
-                    auto s = dtvt::consize();
-                    os::close(os::stdout_fd);
-                    os::stdout_fd = saved_fd;
-                    if (ok(::SetConsoleActiveScreenBuffer(os::stdout_fd), "::SetConsoleActiveScreenBuffer()", os::unexpected))
-                    {
-                        if (!(dtvt::vtmode & ui::console::nt16) && s != dtvt::consize()) // wt issue GH #16231
-                        {
-                            std::cout << prompt::os << ansi::err("Terminal size is out of sync. See https://github.com/microsoft/terminal/issues/16231 for details.") << "\n";
-                        }
-                    }
-                }
-            #else 
+            #else
                 io::send(os::stdout_fd, vtend);
             #endif
 
             os::sleep(200ms); // Wait for delayed input events (e.g. mouse reports lagging over remote ssh).
             io::drop(); // Discard delayed events to avoid garbage in the shell's readline.
+            dtvt::vtmode &= ~ui::console::tui;
         }
         auto splice(xipc client)
         {
@@ -5985,7 +5885,7 @@ namespace netxs::os
                     auto mutex = std::mutex{};
                     auto panel = dtvt::consize();
                     auto wraps = true;
-                    auto clear = [&](auto&& ...args) // Erase the readline block and output the args.
+                    auto clear = [&](auto&&... args) // Erase the readline block and output the args.
                     {
                         if (width)
                         {
@@ -6017,7 +5917,7 @@ namespace netxs::os
                         osout(yield);
                         yield.clear();
                     };
-                    auto enter = [&](auto&& ...args)
+                    auto enter = [&](auto&&... args)
                     {
                         if (block.length()) yield.add("\r\n");
                         if constexpr (sizeof...(args)) yield.add(std::forward<decltype(args)>(args)...);
@@ -6055,11 +5955,11 @@ namespace netxs::os
                                 print(true);
                                 break;
                             case input::keybd::type::keypress:
-                                if (!data.pressed) return;
+                                if (!data.keystat) return;
                                 [[fallthrough]];
                             case input::keybd::type::imeinput:
                                 if (!alive || data.cluster.empty()) return;
-                                switch (data.cluster.front()) 
+                                switch (data.cluster.front())
                                 {
                                     case 0x03: enter(ansi::err("Ctrl+C\r\n")); alarm.bell(); break;
                                     case 0x04: enter(ansi::err("Ctrl+D\r\n")); alarm.bell(); break;
@@ -6102,7 +6002,7 @@ namespace netxs::os
                         auto guard = std::lock_guard{ mutex };
                         panel = data.winsize;
                     };
-                    auto focus = [&](auto& /*data*/){ if (!alive) return;/*if (data.state) log<faux>('-');*/ };
+                    auto focus = [&](auto& /*data*/){ if (!alive) return;/*if (data) log<faux>('-');*/ };
                     auto close = [&](auto& /*data*/)
                     {
                         if (alive.exchange(faux))
@@ -6119,7 +6019,7 @@ namespace netxs::os
                             shut();
                         }
                     };
-                    auto style = [&](deco format) 
+                    auto style = [&](deco format)
                     {
                         if (!alive) return;
                         wraps = format.wrp() != wrap::off;

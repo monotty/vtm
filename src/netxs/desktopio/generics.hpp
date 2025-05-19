@@ -3,19 +3,6 @@
 
 #pragma once
 
-#include "intmath.hpp"
-
-#include <type_traits>
-#include <list>
-#include <vector>
-#include <map>
-#include <unordered_map>
-#include <mutex>
-#include <condition_variable>
-#include <deque>
-#include <thread>
-#include <functional>
-
 namespace netxs::generics
 {
     // generics: .
@@ -728,7 +715,7 @@ namespace netxs::generics
         {
             auto head = begin() + from;
             auto tail = begin() + upto;
-            if constexpr (std::is_same_v< decltype(proc(*head)), bool >)
+            if constexpr (std::is_same_v<decltype(proc(*head)), bool>)
             {
                      if (from < upto) while (proc(*head) && ++head != tail);
                 else if (from > upto) while (proc(*head) && --head != tail);
@@ -882,29 +869,29 @@ namespace netxs::generics
     template<class Key, class Val>
     class imap
     {
-        std::unordered_map<Key, Val> storage{};
-        std::unordered_map<Key, int> reverse{};
-        std::map          <int, Key> forward{};
-        int                          counter{};
+        std::unordered_map<Key,  Val> storage;
+        std::unordered_map<Key, si32> reverse;
+        std::map          <si32, Key> forward;
+        si32                          counter;
 
-        template<class IMAP>
+        template<class Imap>
         struct iter
         {
-            using it_t = decltype(IMAP{}.forward.begin());
+            using it_t = decltype(Imap{}.forward.begin());
             using type = typename std::iterator_traits<it_t>::difference_type; //todo "typename" keyword is required by clang 13.0.0
 
-            IMAP& buff;
+            Imap& buff;
             it_t  addr;
 
-            iter(IMAP& buff, it_t&& addr)
+            iter(Imap& buff, it_t&& addr)
               : buff{ buff },
                 addr{ addr }
             { }
 
-            auto  operator -  (type n)        const { return iter<IMAP>{ buff, addr - n };         }
-            auto  operator +  (type n)        const { return iter<IMAP>{ buff, addr + n };         }
-            auto  operator ++ (int)                 { return iter<IMAP>{ buff, addr++   };         }
-            auto  operator -- (int)                 { return iter<IMAP>{ buff, addr--   };         }
+            auto  operator -  (type n)        const { return iter<Imap>{ buff, addr - n };         }
+            auto  operator +  (type n)        const { return iter<Imap>{ buff, addr + n };         }
+            auto  operator ++ (int)                 { return iter<Imap>{ buff, addr++   };         }
+            auto  operator -- (int)                 { return iter<Imap>{ buff, addr--   };         }
             auto& operator ++ ()                    {                        ++addr; return *this; }
             auto& operator -- ()                    {                        --addr; return *this; }
             auto  operator -> ()                    { return buff.storage.find(addr->second);      }
@@ -914,10 +901,10 @@ namespace netxs::generics
         };
 
     public:
-        auto   begin()       { return iter<      imap>{ *this, forward.begin() }; }
-        auto     end()       { return iter<      imap>{ *this, forward.end()   }; }
-        auto   begin() const { return iter<const imap>{ *this, forward.begin() }; }
-        auto     end() const { return iter<const imap>{ *this, forward.end()   }; }
+        auto   begin()       { return iter<imap      >{ *this, forward.begin() }; }
+        auto     end()       { return iter<imap      >{ *this, forward.end()   }; }
+        auto   begin() const { return iter<imap const>{ *this, forward.begin() }; }
+        auto     end() const { return iter<imap const>{ *this, forward.end()   }; }
         auto  length() const { return forward.size();                             }
         auto    size() const { return forward.size();                             }
         auto&   back()       { return storage[std::prev(forward.end()) ->second]; }
@@ -930,7 +917,7 @@ namespace netxs::generics
             forward.clear();
         }
         template<class K>
-        auto erase(K&& key )
+        auto erase(K&& key)
         {
             auto storage_it = storage.find(std::forward<K>(key));
             if (storage_it != storage.end())
@@ -946,7 +933,7 @@ namespace netxs::generics
             return faux;
         }
         template<class K>
-        auto contains(K&& key )
+        auto contains(K&& key)
         {
             return storage.contains(std::forward<K>(key));
         }
@@ -967,8 +954,10 @@ namespace netxs::generics
         auto& operator [] (K&& key) { return at(std::forward<K>(key)); }
 
         imap()
+            : counter{}
         { }
         imap(std::initializer_list<std::pair<Key, Val>> list)
+            : imap{}
         {
             for (auto& [key, val] : list) at(key) = val;
         }

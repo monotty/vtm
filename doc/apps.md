@@ -1,6 +1,6 @@
 # Text-based Desktop Environment
 
-## Desktop Objects / Built-in Applications
+## Desktop Objects and Built-in Applications
 
  Type      | Object                         | Description
 -----------|--------------------------------|----------------------
@@ -13,271 +13,204 @@
 `tile`     | `Tiling Window Manager`        | A window container with an organization of the hosting window area into mutually non-overlapping panes for nested windows.
 `site`     | `Desktop Region Marker`        | A transparent resizable frame for marking the specific desktop region for quick navigation across the borderless workspace.
 
-## Teletype / Terminal Console
+## Terminal and Teletype Console
 
 ### Features
 
-- UTF-8 Everywhere
-- TrueColor aware
-- Horizontal scrolling
-- Infinite* scrollback (40k lines by default, * `< max_int32`)
-- Scrollback buffer searching and matching
-- Line-based/rect-block text selection:
-  - Ctrl: Extend selection.
-  - Alt/Option: Change selection mode (line/block).
-  - Double left click: Select a word.
-  - Triple left click: Select paragraph.
-  - Quadruple left click: Select the entire scrollback buffer or semantic block (when using OSC 133).
-  - Quintuple left click: Select the entire scrollback buffer.
-- Widely used clipboard formats support:
+- Non-wrapped text output with horizontal scrolling support.
+- Configurable scrollback buffer size (100k lines by default, limited by `max_int32` and system RAM).
+- Search for text in the scrollback buffer.
+- Linear and rectangular text selection for copying and searching.
+- Support for several formats of copying the selected text:
   - Plain text
   - RTF
   - HTML
   - ANSI/VT
-  - Protected (Windows only: `ExcludeClipboardContentFromMonitorProcessing`, `CanIncludeInClipboardHistory`, `CanUploadToCloudClipboard`)
-- [VT-100 terminal emulation](https://invisible-island.net/xterm/ctlseqs/ctlseqs.html) compatible (pass vttest 1 and 2 sections)
-- Built-in Windows Console API server:
-  - Legacy Win32 Console API support
-  - No Windows Console Host (conhost.exe) dependency
-  - Fullduplex pass-through VT input/output
-  - OEM/National, UTF-8 and UTF-16 encoding, even in cmd.exe
-  - Enforced ENABLE_WINDOW_INPUT mode  
-    Note: In fact it is a viewport resize event reporting. Viewport dimensions is always equal to the win32 console buffer dimensions.
-  - Enforced ENABLE_PROCESSED_OUTPUT and ENABLE_VIRTUAL_TERMINAL_PROCESSING modes
-  - Disabled ENABLE_QUICK_EDIT_MODE mode
-  - Per process instance (not per process name) cmd.exe input history, aka "line input"/"cooked read"
-  - Disabled DOSKEY functionality (cmd.exe's F7 input history popups too)  
-    Note: Sharing the input history as well as a bunch of command aliases among processes (which could have different elevation levels) is a huge security threat. So DOSKEY functionality is absolutely incompatible with any sort of sudo-like commands/applications.
-- Outside terminal viewport mouse tracking (See #62 for details)
-- Stdin/stdout parser log on demand
-- Configurable at startup via `settings.xml`
-- Configurable in runtime using VT-sequences
+  - Protected (Windows platform only: `ExcludeClipboardContentFromMonitorProcessing`, `CanIncludeInClipboardHistory`, `CanUploadToCloudClipboard`)
+- In-process Windows Console API Server of our implementation:
+  - Win32 Console API support without Windows Console Host (conhost.exe) dependency.
+  - Fullduplex passthrough VT input/output.
+  - Support for OEM/National, UTF-8 and UTF-16 encodings.
+  - Enforced ENABLE_WINDOW_INPUT mode.  
+    Note: In fact it is a viewport resize event reporting. Viewport dimensions is always equal to the classic win32 console buffer dimensions.
+  - Enforced ENABLE_PROCESSED_OUTPUT and ENABLE_VIRTUAL_TERMINAL_PROCESSING modes.
+  - Disabled ENABLE_QUICK_EDIT_MODE mode.
+  - Per process (not per process name) Windows Command Prompt (cmd.exe) input history, aka "Line input" or "Cooked read".
+- Stdin/stdout logging.
 
-### Custom SGR attributes
-
-Name               | Sequence                         | Description
--------------------|----------------------------------|------------
-`grid color`       | `CSI` 68 : 2 :: r : g : b `m`<br>`CSI` 68 : 5 : n `m`<br>`CSI` 68 : n `m`    | Set grid color.
-`reset grid color` | `CSI` 69 `m`                     | Reset grid color (sync with foreground color).
-
-### Runtime configuraion vt-sequences
+### Private control sequences
 
 Name         | Sequence                         | Description
 -------------|----------------------------------|------------
-`CCC_SBS`    | `CSI` 24 : n : m : q `p`         | Scrollback buffer configuration<br>`n` Initial buffer size<br>`m` Grow step<br>`q` Grow limit
-`CCC_SGR`    | `CSI` 28 : Pm `p`                | Set terminal background using SGR attributes (one attribute at once)<br>`Pm` Colon-separated list of attributes, 0 — reset all attributes, _default is 0_
-`CCC_SEL`    | `CSI` 29 : n `p`                 | Set selection mode<br>`n = 0` Selection is off (default)<br>`n = 1` Select and copy as plaintext<br>`n = 2` Select and copy as ANSI/VT text<br>`n = 3` Select and copy as RTF-document<br>`n = 4` Select and copy as HTML-code<br>`n = 5` Select and copy as protected plaintext (suppressed preview, [details](https://learn.microsoft.com/en-us/windows/win32/dataxchg/clipboard-formats#cloud-clipboard-and-clipboard-history-formats))
-`CCC_PAD`    | `CSI` 30 : n `p`                 | Set scrollbuffer side padding<br>`n` Width in cells, _max = 255, default is 0_
+`CCC_SBS`    | `CSI` 24 : n : m : q `p`         | Set scrollback buffer limits:<br>`n` Initial buffer size<br>`m` Grow step<br>`q` Grow limit
+`CCC_SGR`    | `CSI` 28 : Pm `p`                | Set terminal background using SGR attributes (one attribute per call):<br>`Pm` Colon-separated list of attributes, 0 — reset all attributes, _default is 0_
+`CCC_SEL`    | `CSI` 29 : n `p`                 | Set text selection mode:<br>`n = 0` Selection is off<br>`n = 1` Select and copy as plaintext (default)<br>`n = 2` Select and copy as ANSI/VT text<br>`n = 3` Select and copy as RTF-document<br>`n = 4` Select and copy as HTML-code<br>`n = 5` Select and copy as protected plaintext (suppressed preview, [details](https://learn.microsoft.com/en-us/windows/win32/dataxchg/clipboard-formats#cloud-clipboard-and-clipboard-history-formats))
+`CCC_PAD`    | `CSI` 30 : n `p`                 | Set scrollback buffer left and right side padding:<br>`n` Width in cells, _max = 255, default is 0_
 `CCC_RST`    | `CSI` 1 `p`                      | Reset all parameters to default
-`CCC_TBS`    | `CSI` 5 : n `p`                  | Set tab length<br>`n` Length in cells, _max = 256, default is 8_
-`CCC_JET`    | `CSI` 11 : n `p`                 | Set text alignment, _default is Left_<br>`n = 0` default<br>`n = 1` Left<br>`n = 2` Right<br>`n = 3` Center
-`CCC_WRP`    | `CSI` 12 : n `p`                 | Set text autowrap mode, _default is On_<br>`n = 0` default<br>`n = 1` On<br>`n = 2` Off (_enable horizontal scrolling_)
-`CCC_RTL`    | `CSI` 13 : n `p`                 | Set text right-to-left mode, _default is Off_<br>`n = 0` default<br>`n = 1` On<br>`n = 2` Off
+`CCC_TBS`    | `CSI` 5 : n `p`                  | Set tab length in cells:<br>`n` Length in cells, _max = 256, default is 8_
+`CCC_JET`    | `CSI` 11 : n `p`                 | Set text alignment, _default is Left_:<br>`n = 0`<br>`n = 1` Left<br>`n = 2` Right<br>`n = 3` Center
+`CCC_WRP`    | `CSI` 12 : n `p`                 | Set text autowrap mode, _default is On_:<br>`n = 0`<br>`n = 1` On<br>`n = 2` Off (_enables horizontal scrolling_)
+`CCC_RTL`    | `CSI` 13 : n `p`                 | Set text right-to-left mode, _default is Off_:<br>`n = 0`<br>`n = 1` On<br>`n = 2` Off
 
-Note: It is possible to combine multiple command into a single sequence using a semicolon. For example, the following sequence disables wrapping, enables text selection, and sets background to blue: `CSI 12 : 2 ; 29 : 1 ; 28 : 44 p` or `CSI 12 : 2 ; 29 : 1 ; 28 : 48 : 2 : 0 : 0 : 255 p`.
+Note: It is possible to combine multiple command into a single sequence using a semicolon. For example, the following sequence disables line wrapping, enables text selection, and sets background to blue: `\e[12:2;29:1;28:44p` or `\e[12:2;29:1;28:48:2:0:0:255p`.
 
-### Custom menu configuration
-      
-Terminal window menu can be composed from scratch by specifying a list of menu items in the `<config/term/menu/>` configuration file section.
+It is possible to create your own terminal window menu from scratch by configuring own menu items in the `<config/terminal/menu/>` subsection of the configuration file. See (`doc/settings.md#event-scripting`)[https://github.com/directvt/vtm/blob/master/doc/settings.md#event-scripting] for details.
 
-### Attributes for the `<config/term/menu/item>` object
+Common syntax for window menu item declaration:
 
-Attribute  | Description
------------|------------
-type       | Menu item type. `type=Command` is used by default.
-label      | Menu item label list. One or more textual representations selected by `data=` value.
-notes      | Tooltip.
-action     | The function name which called on item activation. Inherited by the label attribute.
-data       | Textual parameter for function call. Inherited by the label attribute.
-hotkey     | Keyboard shortcut for this menu item. Inherited by the label attribute (not implemented).
-
-### Attributes for the `<config/term/menu/item/label>` sub-object
-
-Attribute        | Description
------------------|------------
-_internal_value_ | Label display variation `label="_internal_value_"`.
-notes            | Tooltip. Inherited from item if not specified.
-action           | The function name which called on item activation. Inherited from item if not specified.
-data             | Textual parameter for function call. Inherited from item if not specified.
-hotkey           | Keyboard shortcut for this menu item. Inherited from item if not specified (not implemented).
-
-#### Attribute `type=`
-
-Value     | Description
-----------|------------
-Option    | Cyclically selects the next label in the list and exec the function specified by the `action=` with `data=` as its parameter.
-Command   | Exec the function specified by the `action=` with `data=` as its parameter.
-Repeat    | Selects the next label and exec the function specified by the `action=` with `data=` as its parameter repeatedly from the time it is pressed until it is released.
-
-#### Attribute `action=`
-
-`*` - Not implemented.
-
-Value                        | Description
------------------------------|------------
-TerminalCwdSync              | Current working directory sync toggle. The command to send for synchronization is configurable via the `<config><term cwdsync=" cd $P\n"/></config>` setting's option. Where `$P` is a variable containing current path received via OSC 9;9 notification. <br>To enable OSC9;9 shell notifications:<br>- Windows Command Prompt:<br>  `setx PROMPT $e]9;9;$P$e\$P$G`<br>- PowerShell:<br>  `function prompt{ $e=[char]27; "$e]9;9;$(Convert-Path $pwd)$e\PS $pwd$('>' * ($nestedPromptLevel + 1)) " }`<br>- Bash:<br>  `export PS1='\[\033]9;9;\w\033\\\]${debian_chroot:+($debian_chroot)}\[\033[01;32m\]\u@\h\[\033[00m\]:\[\033[01;34m\]\w\[\033[00m\]\$ '`
-TerminalWrapMode             | Set terminal scrollback lines wrapping mode. Applied to the active selection if it is. The `data=` attribute can have the following values `on`, `off`.
-TerminalAlignMode            | Set terminal scrollback lines aligning mode. Applied to the active selection if it is. The `data=` attribute can have the following values `left`, `right`, `center`.
-TerminalFindNext             | Highlight next match of selected text fragment. Clipboard content is used if no active selection.
-TerminalFindPrev             | Highlight previous match of selected text fragment. Clipboard content is used if no active selection.
-TerminalOutput               | Direct output the `data=` value to the terminal scrollback.
-TerminalSendKey              | Simulating keypresses using the `data=` string.
-TerminalQuit                 | Terminate runnning console apps and close terminal.
-TerminalRestart              | Terminate runnning console apps and restart current session.
-TerminalFullscreen           | Toggle fullscreen mode.
-TerminalUndo                 | (Win32 Cooked/ENABLE_LINE_INPUT mode only) Discard the last input.
-TerminalRedo                 | (Win32 Cooked/ENABLE_LINE_INPUT mode only) Discard the last Undo command.
-TerminalClipboardPaste       | Paste from clipboard.
-TerminalClipboardWipe        | Reset clipboard.
-TerminalSelectionMode        | Set terminal text selection mode.<br>The `data=` attribute can have the following values `none`, `text`, `ansi`, `rich`, `html`, `protected`.
-TerminalSelectionCopy        | Сopy selection to clipboard.
-TerminalSelectionRect        | Set linear(false) or rectangular(true) selection form using boolean value.
-TerminalSelectionClear       | Deselect a selection.
-TerminalSelectionOneShot     | One-shot toggle to copy text while mouse tracking is active. Keep selection if `Ctrl` key is pressed.<br>The `data=` attribute can have the following values `none`, `text`, `ansi`, `rich`, `html`, `protected`.
-TerminalViewportCopy         | Сopy viewport to clipboard.
-TerminalViewportPageUp       | Scroll one page up.
-TerminalViewportPageDown     | Scroll one page down.
-TerminalViewportLineUp       | Scroll N lines up.
-TerminalViewportLineDown     | Scroll N lines down.
-TerminalViewportPageLeft     | Scroll one page to the left.
-TerminalViewportPageRight    | Scroll one page to the right.
-TerminalViewportColumnLeft   | Scroll N cells to the left.
-TerminalViewportColumnRight  | Scroll N cells to the right.
-TerminalViewportTop          | Scroll to the scrollback top.
-TerminalViewportEnd          | Scroll to the scrollback bottom (reset viewport position).
-TerminalStdioLog             | Stdin/stdout log toggle.
-*TerminalLogStart            | Start logging to file.
-*TerminalLogPause            | Pause logging.
-*TerminalLogStop             | Stop logging.
-*TerminalLogAbort            | Abort logging.
-*TerminalLogRestart          | Restart logging to file.
-*TerminalVideoRecStart       | Start DirectVT(dtvt) video recording to file.
-*TerminalVideoRecStop        | Stop dtvt-video recording.
-*TerminalVideoRecPause       | Pause dtvt-video recording.
-*TerminalVideoRecAbort       | Abort dtvt-video recording.
-*TerminalVideoRecRestart     | Restart dtvt-video recording to file.
-*TerminalVideoPlay           | Play dtvt-video from file.
-*TerminalVideoPause          | Pause dtvt-video.
-*TerminalVideoStop           | Stop dtvt-video.
-*TerminalVideoForward        | Fast forward dtvt-video by N ms.
-*TerminalVideoBackward       | Rewind dtvt-video by N ms.
-*TerminalVideoHome           | Rewind dtvt-video to the beginning.
-*TerminalVideoEnd            | Rewind dtvt-video to the end.
-
-#### Terminal configuration example
 ```xml
 <config>
-    <term>
+    <terminal>
+        <menu>
+            <item label="SomeLabelText">
+                <script="Lua script body..." on="LeftClick"/>
+                <tooltip>
+                    " Tooltip text.      \n"
+                    " Can be multi-line. "
+                </tooltip>
+            </item>
+            ...
+        </menu>
+    </terminal>
+</config>
+```
+
+### Default Hotkeys
+
+List of hotkeys defined in the default configuration.
+
+Hotkey                       | Description
+-----------------------------|------------
+`Ctrl-Alt \| Alt-Ctrl`       | Win32: Toggle exclusive keyboard mode.
+`Alt+Shift+B`                | Unix: Toggle exclusive keyboard mode.
+`Alt+RightArrow`             | Highlight next match of selected text fragment. Clipboard content is used if no active selection.
+`Alt+LeftArrow`              | Highlight previous match of selected text fragment. Clipboard content is used if no active selection.
+`Ctrl+Shift+PageUp`          | Scroll one page up.
+`Ctrl+Shift+PageDown`        | Scroll one page down.
+`Alt+Shift+LeftArrow`        | Scroll one page to the left.
+`Alt+Shift+RightArrow`       | Scroll one page to the right.
+`Ctrl+Shift+UpArrow`         | Scroll one line up.
+`Ctrl+Shift+DownArrow`       | Scroll one line down.
+`Ctrl+Shift+LeftArrow`       | Scroll one cell to the left.
+`Ctrl+Shift+RightArrow`      | Scroll one cell to the right.
+`Ctrl+Shift+Home`            | Scroll to the scrollback top.
+`Ctrl+Shift+End`             | Scroll to the scrollback bottom (reset viewport position).
+`Ctrl+Insert`                | Copy selection to the clipboard if it is.
+`Shift+Insert`               | Paste from clipboard.
+`Esc`                        | Deselect a selection if it is.
+
+### Configuration example
+
+```xml
+<config>
+    <terminal>
         <menu item*>
-            <autohide=true />  <!-- If true, show menu only on hover. -->
-            <enabled=1 />
-            <slim=1 />
-            <item label="<" action=TerminalFindPrev>  <!-- type=Command is a default item's attribute. -->
-                <label="\e[38:2:0:255:0m<\e[m"/>
-                <notes>
-                    " Previous match                                  \n"
-                    "   LeftClick to jump to previous match or scroll \n"
-                    "             one page up if nothing to search    \n"
-                    "   Match clipboard data if no selection          \n"
-                    "   Left+RightClick to clear clipboard            "
-                </notes>
+            <item label="  " tooltip=" just empty menu item "/>
+            <item id="test_button" label=" Repeatable button " tooltip=" test ">
+                <script on="MouseDown" on="Enter" on="Space">  <!-- Script to colorize the pressed label (by any mouse button) and printing 'Test' while it is pressed. -->
+                    if (not vtm.gear.IsKeyRepeated()) then    -- First run - colorize label and activate the mouse button to repeat.
+                        vtm.test_button.Label("\e[44m Repeatable button \e[m")
+                        vtm.test_button.Deface()
+                        vtm.gear.RepeatWhilePressed(vtm.test_button)    -- Capture (by vtm.test_button) the mouse and trigger the mouse button event to repeat while pressed.
+                    end
+                    vtm.terminal.Print('Test\\n')
+                </script>
+                <script on="MouseUp" on="-Enter" on="-Space">  <!-- Script to restore default label state. -->
+                    vtm.test_button.Label(" Repeatable button ")    -- Restore default colors.
+                    vtm.test_button.Deface()
+                </script>
             </item>
-            <item label=">" action=TerminalFindNext>
-                <label="\e[38:2:0:255:0m>\e[m"/>
-                <notes>
-                    " Next match                                     \n"
-                    "   LeftClick to jump to next match or scroll    \n"
-                    "             one page down if nothing to search \n"
-                    "   Match clipboard data if no selection         \n"
-                    "   Left+RightClick to clear clipboard           "
-                </notes>
-            </item>
-            <item label="Wrap" type=Option action=TerminalWrapMode data="off">
-                <label="\e[38:2:0:255:0mWrap\e[m" data="on"/>
-                <notes>
-                    " Wrapping text lines on/off      \n"
-                    " - applied to selection if it is "
-                </notes>
-            </item>
-            <item label="Selection" notes=" Text selection mode " type=Option action=TerminalSelectionMode data="none">  <!-- type=Option means that the тext label will be selected when clicked.  -->
-                <label="\e[38:2:0:255:0mPlaintext\e[m" data="text"/>
-                <label="\e[38:2:255:255:0mANSI-text\e[m" data="ansi"/>
-                <label data="rich">
-                    "\e[38:2:109:231:237m""R"
-                    "\e[38:2:109:237:186m""T"
-                    "\e[38:2:60:255:60m"  "F"
-                    "\e[38:2:189:255:53m" "-"
-                    "\e[38:2:255:255:49m" "s"
-                    "\e[38:2:255:189:79m" "t"
-                    "\e[38:2:255:114:94m" "y"
-                    "\e[38:2:255:60:157m" "l"
-                    "\e[38:2:255:49:214m" "e" "\e[m"
-                </label>
-                <label="\e[38:2:0:255:255mHTML-code\e[m" data="html"/>
-                <label="\e[38:2:0:255:255mProtected\e[m" data="protected"/>
-            </item>
-            <item label="Log" notes=" Stdin/out logging is off " type=Option action=TerminalStdioLog data="off">
-                <label="\e[38:2:0:255:0mLog\e[m" notes=" Stdin/out logging is on \n Run Logs to see output  " data="on"/>
-            </item>
-            <item label="  "    notes=" ...empty menu block/splitter for safety "/>
-            <item label="Clear" notes=" Clear TTY viewport "                  action=TerminalOutput data="\e[2J"/>
-            <item label="Reset" notes=" Clear scrollback and SGR-attributes " action=TerminalOutput data="\e[!p"/>
-            <item label="Restart" type=Command action=TerminalRestart/>
-            <item label="Top" action=TerminalViewportTop/>
-            <item label="End" action=TerminalViewportEnd/>
+            <item label="  Restart  ">      <script=TerminalRestart                    on="LeftClick"/></item>
+            <item label="  End  ">          <script=TerminalScrollViewportToEnd        on="LeftClick"/></item>
+            <item label="  Top  ">          <script=TerminalScrollViewportToTop        on="LeftClick"/></item>
+            <item label="  PgLeft  ">       <script=TerminalScrollViewportOnePageLeft  on="LeftClick"/></item>
+            <item label="  PgRight  ">      <script=TerminalScrollViewportOnePageRight on="LeftClick"/></item>
+            <item label="  PgUp  ">         <script=TerminalScrollViewportOnePageUp    on="LeftClick"/></item>
+            <item label="  PgDn  ">         <script=TerminalScrollViewportOnePageDown  on="LeftClick"/></item>
+            <item label="  CharLeft  ">     <script=TerminalScrollViewportOneCellLeft  on="LeftClick"/></item>
+            <item label="  CharRight  ">    <script=TerminalScrollViewportOneCellRight on="LeftClick"/></item>
+            <item label="  LineUp  ">       <script=TerminalScrollViewportOneLineUp    on="LeftClick"/></item>
+            <item label="  LineDn  ">       <script=TerminalScrollViewportOneLineDown  on="LeftClick"/></item>
+            <item label="  PrnScr  ">       <script=TerminalCopyViewport               on="LeftClick"/></item>
+            <item label="  Deselect  ">     <script=TerminalSelectionCancel            on="LeftClick"/></item>
+            <item label="  SelectionForm  "><script=TerminalSelectionForm              on="LeftClick"/></item>
+            <item label="  Copy  ">         <script=TerminalCopySelection              on="LeftClick"/></item>
+            <item label="  Paste  ">        <script=TerminalClipboardPaste             on="LeftClick"/></item>
+            <item label="  Wipe  ">         <script=TerminalClipboardWipe              on="LeftClick"/></item>
+            <item label="  Undo  ">         <script=TerminalUndo                       on="LeftClick"/></item>
+            <item label="  Redo  ">         <script=TerminalRedo                       on="LeftClick"/></item>
 
-            <item label="PgLeft"    type=Repeat action=TerminalViewportPageLeft/>
-            <item label="PgRight"   type=Repeat action=TerminalViewportPageRight/>
-            <item label="CharLeft"  type=Repeat action=TerminalViewportCharLeft/>
-            <item label="CharRight" type=Repeat action=TerminalViewportCharRight/>
+            <item label="  Quit  ">         <script=CloseApplet                        on="LeftClick"/></item>
+            <item label="  Fullscreen  ">   <script=FullscreenApplet                   on="LeftClick"/></item>
+            <item label="  Maximize  ">     <script=MaximizeApplet                     on="LeftClick"/></item>
+            <item label="  Minimize  ">     <script=MinimizeApplet                     on="LeftClick"/></item>
 
-            <item label="PgUp"   type=Repeat action=TerminalViewportPageUp/>
-            <item label="PgDn"   type=Repeat action=TerminalViewportPageDown/>
-            <item label="LineUp" type=Repeat action=TerminalViewportLineUp/>
-            <item label="LineDn" type=Repeat action=TerminalViewportLineDown/>
-
-            <item label="PrnScr" action=TerminalViewportCopy/>
-            <item label="Deselect" action=TerminalSelectionClear/>
-            
-            <item label="Line" type=Option action=TerminalSelectionRect data="false">
-                <label="Rect" data="true"/>
-            </item>
-            <item label="Copy" type=Repeat action=TerminalSelectionCopy/>
-            <item label="Paste" type=Repeat action=TerminalClipboardPaste/>
-            <item label="Undo" type=Command action=TerminalUndo/>
-            <item label="Redo" type=Command action=TerminalRedo/>
-            <item label="Quit" type=Command action=TerminalQuit/>
-            <item label="Fullscreen" type=Command action=TerminalFullscreen/>
-
-            <item label="Hello, World!" notes=" Simulating keypresses "       action=TerminalSendKey data="Hello World!"/>
-            <item label="Push Me" notes=" test " type=Repeat action=TerminalOutput data="pressed ">
-                <label="\e[37mPush Me\e[m"/>
+            <item label="  CwdSync  ">
+                <script=TerminalCwdSync on="LeftClick"/>
+                <script>  <!-- A binding to update the menu item label at runtime. -->
+                    <on="preview: terminal::events::toggle::cwdsync" source="terminal"/>
+                    local state=vtm()                   -- Use event arguments to get the current state.
+                    vtm.item.Label(state==1 and "\\x1b[38:2:0:255:0m  CwdSync  \\x1b[m" or "  CwdSync  ")
+                    vtm.item.Tooltip(state==1 and " CWD sync is on                          \\n Make sure your shell has OSC9;9 enabled " or " CWD sync is off ")
+                    vtm.item.Deface()
+                </script>
             </item>
 
-            <item label=" HTML " data=none type=Option action=TerminalSelectionOneShot>
-                <label="\e[48:2:0:128:128;38:2:0:255:255m HTML \e[m" data=html/>
-                <notes>
-                    " One-shot toggle to copy as HTML \n"
-                    " while mouse tracking is active. "
-                </notes>
+            <item label="  Hello, World! " tooltip=" Simulate keypresses ">
+                <script=TerminalSendKey on="LeftClick"/>
             </item>
-            <item label=" Text " data=none type=Option action=TerminalSelectionOneShot>
-                <label="\e[48:2:0:128:0;38:2:0:255:0m Text \e[m" data=text/>
-                <notes>
-                    " One-shot toggle to copy as Text \n"
-                    " while mouse tracking is active. "
-                </notes>
+            <item label="  Push Me  " tooltip=" test ">
+                <script="vtm.terminal.Print('\\x1b[37mPush Me\\x1b[m')" on="LeftClick"/>
             </item>
-            <item label="One-Shot" data=none type=Option action=TerminalSelectionOneShot>
-                <label="\e[48:2:0:128:0;38:2:0:255:0m  Text  \e[m" data=text/>
-                <label="\e[48:2:0:128:128;38:2:0:255:255m  HTML  \e[m" data=html/>
-                <notes>
-                    " One-shot toggle to copy as Text/HTML \n"
-                    " while mouse tracking is active.      "
-                </notes>
+
+            <item label="  One-Shot  ">
+                <script=TerminalSelectionOneShot on="LeftClick"/>
+                <tooltip>
+                    " One-shot toggle to select and copy text \n"
+                    " while mouse tracking is active.         "
+                </tooltip>
             </item>
         </menu>
-    </term>
+    </terminal>
+    <events>  <!-- The required key combination sequence can be generated on the Info page, accessible by clicking on the label in the lower right corner of the vtm desktop. The 'key*' statement here is to clear all previous bindings and start a new list. -->
+        <terminal script*>  <!-- Terminal bindings. -->
+            <script=ExclusiveKeyboardMode              on="preview: Alt+Shift+B"/>
+            <script="vtm.gear.SetHandled()"            on="Esc"/> <!-- Do nothing. We use the Esc key as a modifier. Its press+release events will only be sent after the key is physically released, and only if no other keys were pressed along with Esc. -->
+            <script                                    on="-Esc">  --  Clear selection if it is and send Esc press and release events.
+                vtm.terminal.ClearSelection()
+                vtm.terminal.KeyEvent({ virtcod=0x1b, scancod=1, keystat=1, cluster='\\u{1b}' }, { virtcod=0x1b, scancod=1, keystat=0 })
+            </script>
+            <script=TerminalFindNext                   on="Alt+RightArrow"       />
+            <script=TerminalFindPrev                   on="Alt+LeftArrow"        />
+            <script=TerminalScrollViewportOnePageUp    on="Shift+Ctrl+PageUp"    />
+            <script=TerminalScrollViewportOnePageDown  on="Shift+Ctrl+PageDown"  />
+            <script=TerminalScrollViewportOnePageLeft  on="Shift+Alt+LeftArrow"  />
+            <script=TerminalScrollViewportOnePageRight on="Shift+Alt+RightArrow" />
+            <script=TerminalScrollViewportOneLineUp    on="Shift+Ctrl+UpArrow"   />
+            <script=TerminalScrollViewportOneLineDown  on="Shift+Ctrl+DownArrow" />
+            <script=TerminalScrollViewportOneCellLeft  on="Shift+Ctrl+LeftArrow" />
+            <script=TerminalScrollViewportOneCellRight on="Shift+Ctrl+RightArrow"/>
+            <script=TerminalScrollViewportToTop        on="Shift+Ctrl+Home"      />
+            <script=TerminalScrollViewportToEnd        on="Shift+Ctrl+End"       />
+            <script=TerminalSendKey                    on=""                     />
+            <script=TerminalReset                      on=""                     />
+            <script=TerminalClearScrollback            on=""                     />
+            <script=TerminalCopyViewport               on=""                     />
+            <script=TerminalCopySelection              on="preview:Ctrl+Insert"  />
+            <script=TerminalClipboardPaste             on="preview:Shift+Insert" />
+            <script=TerminalClipboardWipe              on=""                     />
+            <script=TerminalClipboardFormat            on=""                     />
+            <script=TerminalSelectionRect              on=""                     />
+            <script=TerminalSelectionOneShot           on=""                     />
+            <script=TerminalUndo                       on=""                     />
+            <script=TerminalRedo                       on=""                     />
+            <script=TerminalCwdSync                    on=""                     />
+            <script=TerminalWrapMode                   on=""                     />
+            <script=TerminalAlignMode                  on=""                     />
+            <script=TerminalStdioLog                   on=""                     />
+            <script=TerminalRestart                    on=""                     />
+        </terminal>
+    </events>
 </config>
 ```
 
@@ -309,10 +242,79 @@ Tiling Window Manager is a window container that organizes the workspace into mu
 
 ### Features
 
-- Supports Drag and Drop for panes (like tabs in a browser).
-- Use any modifier (`Ctrl` or `Alt`) while pane dragging to deactivate drag&drop mode.
-- List of panes (outside the right side of the `Tile` window)
-  - `LeftClick` -- Set exclusive focus
-  - `Ctrl+LeftClick` -- Set/Unset group focus
-  - `double LeftClick` -- Maxixmize/restore
-- Configurable via settings (See configuration example in doc\settings.md`).
+- Supports Drag and Drop for panes (like tabs in a browser). Use any modifiers (`Ctrl` or `Alt`) while pane dragging to suppress this functionality.
+- For convenient management of running applets, there is a parallel list of them on the right side of the Tile Manager window:
+  - `LeftClick` -- To set exclusive focus for applet.
+  - `Ctrl+LeftClick` -- To set/unset group focus.
+  - `LeftDoubleClick` -- Maximize/Restore selected applet.
+- It is configurable via settings (See configuration example in doc\settings.md`).
+
+### Configuration example
+
+```xml
+<config>
+    <tile>
+        <menu item*>
+            <autohide=menu/autohide/>
+            <slim=menu/slim/>
+            <item label="  " tooltip=" AlwaysOnTop off ">
+                <script=AlwaysOnTopApplet on="LeftClick"/> <!-- The default event source is the parent object, i.e. source="item" (aka vtm.item). -->
+                <script>  <!-- A binding to update the menu item label at runtime. -->
+                    <on="release: e2::form::prop::zorder" source="applet"/>
+                    local is_topmost=vtm()                   -- Use event arguments to get the current state.
+                    -- local is_topmost=vtm.applet.ZOrder()  -- or ask the object iteslf for the current state.
+                    vtm.item.Label(is_topmost==1 and "\\x1b[38:2:0:255:0m▀ \\x1b[m" or "  ")
+                    vtm.item.Tooltip(is_topmost==1 and " AlwaysOnTop on " or " AlwaysOnTop off ")
+                    vtm.item.Deface()
+                </script>
+            </item>
+            <item label="   +   ">
+                <script=TileRunApplication on="LeftClick"/>
+                <tooltip>
+                    " Launch application instances in active empty slots.     \n"
+                    " The app to run can be set by RightClick on the taskbar. "
+                </tooltip>
+            </item>
+            <item label="  :::  " tooltip=" Select all panes "                                    ><script=TileSelectAllPanes     on="LeftClick"/></item>
+            <item label="   │   " tooltip=" Split active panes horizontally "                     ><script=TileSplitHorizontally  on="LeftClick"/></item>
+            <item label="  ──  "  tooltip=" Split active panes vertically "                       ><script=TileSplitVertically    on="LeftClick"/></item>
+            <item label="  ┌┘  "  tooltip=" Change split orientation "                            ><script=TileSplitOrientation   on="LeftClick"/></item>
+            <item label="  <->  " tooltip=" Swap two or more panes "                              ><script=TileSwapPanes          on="LeftClick"/></item>
+            <item label="  >|<  " tooltip=" Equalize split ratio "                                ><script=TileEqualizeSplitRatio on="LeftClick"/></item>
+            <item label='  "…"  ' tooltip=" Set tiling window manager title using clipboard data "><script=TileSetManagerTitle    on="LeftClick"/></item>
+            <item label="  ×  "   tooltip=" Close active application "                            ><script=TileClosePane          on="LeftClick"/></item>
+            <!-- <item label="  <  "   tooltip=" Focus the previous pane or the split grip "><script=TileFocusPrev      on="LeftClick"/></item> -->
+            <!-- <item label="  >  "   tooltip=" Focus the next pane or the split grip "    ><script=TileFocusNext      on="LeftClick"/></item> -->
+            <!-- <item label="  <-  "  tooltip=" Focus the previous pane "                  ><script=TileFocusPrevPane  on="LeftClick"/></item> -->
+            <!-- <item label="  ->  "  tooltip=" Focus the next pane "                      ><script=TileFocusNextPane  on="LeftClick"/></item> -->
+        </menu>
+    </tile>
+    <events>
+        <tile script*>
+            <script=TileFocusPrev          on="Ctrl+PageUp"    />
+            <script=TileFocusNext          on="Ctrl+PageDown"  />
+            <script=TileFocusPrevPane      on=""               />
+            <script=TileFocusNextPane      on=""               />
+            <script=TileRunApplication     on="Alt+Shift+N"    />
+            <script=TileSelectAllPanes     on="Alt+Shift+A"    />
+            <script=TileSplitHorizontally  on="Alt+Shift+'|'"  />
+            <script=TileSplitVertically    on="Alt+Shift+Minus"/>
+            <script=TileSplitOrientation   on="Alt+Shift+R"    />
+            <script=TileSwapPanes          on="Alt+Shift+S"    />
+            <script=TileEqualizeSplitRatio on="Alt+Shift+E"    />
+            <script=TileSetManagerTitle    on="Alt+Shift+F2"   />
+            <script=TileClosePane          on="Alt+Shift+W"    />
+            <grip script*>
+                <script=TileMoveGripLeft      on="LeftArrow"                         />
+                <script=TileMoveGripRight     on="RightArrow"                        />
+                <script=TileMoveGripUp        on="UpArrow"                           />
+                <script=TileMoveGripDown      on="DownArrow"                         />
+                <script=TileDecreaseGripWidth on="'-'"                               />
+                <script=TileIncreaseGripWidth on="Shift+'+' | '+' | '=' | NumpadPlus"/>
+                <script=TileFocusPrevGrip     on="Shift+Tab"                         />
+                <script=TileFocusNextGrip     on="Tab"                               />
+            </grip>
+        </tile>
+    </events>
+</config>
+```

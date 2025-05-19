@@ -5,9 +5,9 @@
 
 namespace netxs::events::userland
 {
-    struct shop
+    namespace shop
     {
-        EVENTPACK( shop, netxs::events::userland::root::custom )
+        EVENTPACK( app::shop::events, netxs::events::userland::seed::custom )
         {
             GROUP_XS( ui, input::hids ),
 
@@ -22,7 +22,7 @@ namespace netxs::events::userland
                 };
             };
         };
-    };
+    }
 }
 
 // shop: App manager.
@@ -31,7 +31,7 @@ namespace netxs::app::shop
     static constexpr auto id = "gems";
     static constexpr auto name = "Application Distribution Hub (DEMO)";
 
-    using events = netxs::events::userland::shop;
+    namespace events = netxs::events::userland::shop;
 
     namespace
     {
@@ -187,7 +187,7 @@ namespace netxs::app::shop
 
         auto build = [](eccc /*appcfg*/, xmls& config)
         {
-            auto highlight_color = skin::color(tone::highlight);
+            auto highlight_color = skin::color(tone::winfocus);
             auto c3 = highlight_color;
             //auto x3 = cell{ c3 }.alpha(0x00);
 
@@ -195,21 +195,20 @@ namespace netxs::app::shop
             auto window = ui::cake::ctor();
             window->plugin<pro::focus>(pro::focus::mode::focused)
                   ->colors(whitelt, 0x60000000)
-                  ->plugin<pro::track>()
+                  ->plugin<pro::keybd>()
                   ->plugin<pro::acryl>()
                   ->plugin<pro::cache>()
                   ->invoke([](auto& boss)
                   {
-                        //boss.keybd.accept(true);
                         boss.LISTEN(tier::anycast, e2::form::proceed::quit::any, fast)
                         {
-                            boss.RISEUP(tier::release, e2::form::proceed::quit::one, fast);
+                            boss.base::riseup(tier::release, e2::form::proceed::quit::one, fast);
                         };
                   });
             auto object = window->attach(ui::fork::ctor(axis::Y))
                                 ->colors(whitelt, 0);
                 auto menu_object = object->attach(slot::_1, ui::fork::ctor(axis::Y));
-                    config.cd("/config/gems/", "/config/defapp/");
+                    config.cd("/config/defapp");
                     auto [menu_block, cover, menu_data] = app::shared::menu::create(config, {});
                     menu_object->attach(slot::_1, menu_block);
                     menu_object->attach(slot::_2, ui::post::ctor())
@@ -217,8 +216,7 @@ namespace netxs::app::shop
                                ->active();
                 auto layers = object->attach(slot::_2, ui::cake::ctor());
                     auto scroll = layers->attach(ui::rail::ctor())
-                                        ->active()
-                                        ->colors(whitedk, 0xFF0f0f0f)
+                                        ->active(whitedk, 0xFF0f0f0f)
                                         ->limits({ -1,-1 }, { -1,-1 });
                         auto items = scroll->attach(ui::list::ctor());
                         for (auto& body : appstore_body) items->attach(ui::post::ctor())
@@ -227,11 +225,15 @@ namespace netxs::app::shop
                                                               ->plugin<pro::focus>()
                                                               ->plugin<pro::grade>()
                                                               ->shader(cell::shaders::xlight, e2::form::state::hover)
-                                                              ->shader(cell::shaders::color(c3), e2::form::state::keybd::focus::count);
+                                                              ->shader(cell::shaders::color(c3), e2::form::state::focus::count);
                         items->attach(ui::post::ctor())
                              ->upload(desktopio_body)
                              ->plugin<pro::grade>();
                 layers->attach(app::shared::scroll_bars(scroll));
+            window->invoke([&](auto& boss)
+            {
+                app::shared::base_kb_navigation(config, scroll, boss);
+            });
             return window;
         };
     };

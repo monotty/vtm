@@ -3,13 +3,11 @@
 
 #pragma once
 
-#include "../desktopio/application.hpp"
-
 namespace netxs::events::userland
 {
-    struct calc
+    namespace calc
     {
-        EVENTPACK( calc, netxs::events::userland::root::custom )
+        EVENTPACK( app::calc::events, netxs::events::userland::seed::custom )
         {
             GROUP_XS( ui, input::hids ),
 
@@ -24,31 +22,23 @@ namespace netxs::events::userland
                 };
             };
         };
-    };
+    }
 }
 
 namespace netxs::ui
 {
-    // console: Template modules for the base class behavior extension.
     namespace pro
     {
-        //todo PoC, unify, too hacky
         // pro: Cell Highlighter.
         class cell_highlight
-            : public skill
         {
-            struct sock
+            struct actor
             {
-                twod curpos; // sock: Current coor.
-                bool inside; // sock: Is active.
-                bool seized; // sock: Is seized.
-                rect region; // sock: Selected region.
+                twod curpos{}; // actor: Current coor.
+                bool inside{}; // actor: Is active.
+                bool seized{}; // actor: Is seized.
+                rect region{}; // actor: Selected region.
 
-                sock()
-                    : inside{ faux },
-                      seized{ faux }
-                { }
-                operator bool () { return inside || seized || region.size; }
                 auto grab(twod coord, bool resume)
                 {
                     if (inside)
@@ -82,18 +72,132 @@ namespace netxs::ui
                     seized = faux;
                 }
             };
-            using list = socks<sock>;
-            using skill::boss,
-                  skill::memo;
+            using umap = std::unordered_map<id_t, actor>;
 
-            list items;
+            base& boss;
+            subs  memo;
+            umap  gears;
+
+            auto& take(hids& gear)
+            {
+                auto iter = gears.find(gear.id);
+                if (iter == gears.end())
+                {
+                    iter = gears.emplace(gear.id, actor{}).first;
+                }
+                return iter->second;
+            }
+            void recalc()
+            {
+                auto data = text{};
+                auto step = twod{ 5, 1 };
+                auto size = boss.base::size();
+                size.x += boss.base::oversz.r;
+                for (auto& [id, g] : gears)
+                {
+                    if (g.region.size)
+                    {
+                        auto region = g.region.normalize();
+                        auto pos1 = region.coor / step;
+                        auto pos2 = (region.coor + region.size) / step;
+                        pos1 = std::clamp(pos1, dot_00, twod{ 25, 98 } );
+                        pos2 = std::clamp(pos2, dot_00, twod{ 25, 98 } );
+                        data += 'A' + (char)pos1.x;
+                        data += std::to_string(pos1.y + 1);
+                        data += ':';
+                        data += 'A' + (char)pos2.x;
+                        data += std::to_string(pos2.y + 1);
+                        data += ", ";
+                    }
+                }
+                if (data.size())
+                {
+                    data.pop_back(); // pop", "
+                    data.pop_back(); // pop", "
+                    data = " =SUM(" + ansi::fgc(bluedk).add(data).fgc(blacklt).add(")");
+                }
+                else data = " =SUM(" + ansi::itc(true).fgc(reddk).add("select cells by dragging").itc(faux).fgc(blacklt).add(")");
+                log(prompt::calc, "DATA ", data, ansi::nil());
+                boss.base::signal(tier::release, e2::data::utf8, data);
+            }
 
         public:
             cell_highlight(base&&) = delete;
             cell_highlight(base& boss)
-                : skill{ boss },
-                  items{ boss }
+                : boss{ boss }
             {
+                boss.on(tier::mouserelease, input::key::MouseMove, memo, [&](hids& gear)
+                {
+                    take(gear).calc(boss, gear.coord);
+                    boss.base::deface();
+                });
+                boss.on(tier::mouserelease, input::key::LeftClick, memo, [&](hids& gear)
+                {
+                    auto& g = take(gear);
+                    if (g.region.size)
+                    {
+                        if (gear.meta(hids::anyCtrl)) g.region.size = gear.coord - g.region.coor;
+                        else                          g.region.size = dot_00;
+                    }
+                    recalc();
+                });
+                boss.on(tier::mouserelease, input::key::LeftDoubleClick, memo, [&](hids& gear)
+                {
+                    auto& g = take(gear);
+                    auto area = boss.base::size();
+                    area.x += boss.base::oversz.r;
+                    g.region.coor = dot_00;
+                    g.region.size = area;
+                    recalc();
+                    gear.dismiss();
+                });
+                boss.on(tier::mouserelease, input::key::MouseEnter, memo, [&](hids& gear)
+                {
+                    take(gear);
+                });
+                boss.on(tier::mouserelease, input::key::MouseLeave, memo, [&](hids& gear)
+                {
+                    auto& g = take(gear);
+                    if (g.region.size)
+                    {
+                        g.inside = faux;
+                    }
+                    else gears.erase(gear.id);
+                    recalc();
+                });
+                boss.LISTEN(tier::general, input::events::die, gear, memo)
+                {
+                    gears.erase(gear.id);
+                    recalc();
+                    boss.base::deface();
+                };
+                boss.LISTEN(tier::release, e2::form::drag::start::left, gear, memo)
+                {
+                    auto& g = take(gear);
+                    g.calc(boss, gear.click);
+                    if (g.grab(gear.click, gear.meta(hids::anyCtrl)))
+                    {
+                        gear.dismiss();
+                    }
+                };
+                boss.LISTEN(tier::release, e2::form::drag::pull::left, gear, memo)
+                {
+                    if (take(gear).drag(gear.coord))
+                    {
+                        recalc();
+                        gear.dismiss();
+                    }
+                };
+                boss.LISTEN(tier::release, e2::form::drag::cancel::left, gear, memo)
+                {
+                    take(gear).drop();
+                    recalc();
+                };
+                boss.LISTEN(tier::release, e2::form::drag::stop::left, gear, memo)
+                {
+                    take(gear).drop();
+                    recalc();
+                };
                 boss.LISTEN(tier::release, e2::postrender, parent_canvas, memo)
                 {
                     auto full = parent_canvas.full();
@@ -103,133 +207,26 @@ namespace netxs::ui
                     auto step = twod{ 5, 1 };
                     auto area = full;
                     area.size.x += boss.base::oversz.r;
-                    items.foreach([&](sock& item)
+                    for (auto& [id, g] : gears)
                     {
-                        if (item.region.size)
+                        if (g.region.size)
                         {
-                            auto region = item.region.normalize();
+                            auto region = g.region.normalize();
                             auto pos1 = region.coor / step * step;
                             auto pos2 = (region.coor + region.size + step) / step * step;
                             auto pick = rect{ full.coor + pos1, pos2 - pos1 }.trimby(area).trimby(clip);
                             parent_canvas.fill(pick, fill);
                         }
-                        if (item.inside)
+                        if (g.inside)
                         {
-                            auto pos1 = item.curpos / step * step;
+                            auto pos1 = g.curpos / step * step;
                             auto pick = rect{ full.coor + pos1, step }.trimby(clip);
                             parent_canvas.fill(pick, fill);
                         }
-                    });
-                };
-                boss.LISTEN(tier::release, hids::events::mouse::button::click::left, gear, memo)
-                {
-                    auto& item = items.take(gear);
-                    if (item.region.size)
-                    {
-                        if (gear.meta(hids::anyCtrl)) item.region.size = gear.coord - item.region.coor;
-                        else                          item.region.size = dot_00;
-                    }
-                    recalc();
-                };
-                boss.LISTEN(tier::release, hids::events::mouse::button::dblclick::left, gear, memo)
-                {
-                    auto& item = items.take(gear);
-                    auto area = boss.base::size();
-                    area.x += boss.base::oversz.r;
-                    item.region.coor = dot_00;
-                    item.region.size = area;
-                    recalc();
-                    gear.dismiss();
-                };
-                boss.LISTEN(tier::general, hids::events::die, gear, memo)
-                {
-                    recalc();
-                    boss.deface();
-                };
-                boss.LISTEN(tier::release, hids::events::notify::mouse::enter, gear, memo)
-                {
-                    items.add(gear);
-                };
-                boss.LISTEN(tier::release, hids::events::notify::mouse::leave, gear, memo)
-                {
-                    auto& item = items.take(gear);
-                    if (item.region.size)
-                    {
-                        item.inside = faux;
-                    }
-                    else items.del(gear);
-                    recalc();
-                };
-                engage<hids::buttons::left>();
-            }
-            void recalc()
-            {
-                auto data = text{};
-                auto step = twod{ 5, 1 };
-                auto size = boss.base::size();
-                size.x += boss.base::oversz.r;
-                items.foreach([&](sock& item)
-                {
-                    if (item.region.size)
-                    {
-                        auto region = item.region.normalize();
-                        auto pos1 = region.coor / step;
-                        auto pos2 = (region.coor + region.size) / step;
-                        pos1 = std::clamp(pos1, dot_00, twod{ 25, 98 } );
-                        pos2 = std::clamp(pos2, dot_00, twod{ 25, 98 } );
-                        data += 'A'+ (char)pos1.x;
-                        data += std::to_string(pos1.y + 1);
-                        data += ':';
-                        data += 'A' + (char)pos2.x;
-                        data += std::to_string(pos2.y + 1);
-                        data += ", ";
-                    }
-                });
-                if (data.size())
-                {
-                    data.pop_back(); // pop", "
-                    data.pop_back(); // pop", "
-                    data = " =SUM(" + ansi::fgc(bluedk).add(data).fgc(blacklt).add(")");
-                }
-                else data = " =SUM(" + ansi::itc(true).fgc(reddk).add("select cells by dragging").itc(faux).fgc(blacklt).add(")");
-                log(prompt::calc, "DATA ", data, ansi::nil());
-                boss.SIGNAL(tier::release, e2::data::utf8, data);
-            }
-            // pro::cell_highlight: Configuring the mouse button to operate.
-            template<hids::buttons Button>
-            void engage()
-            {
-                boss.SIGNAL(tier::release, e2::form::draggable::_<Button>, true);
-                boss.LISTEN(tier::release, hids::events::mouse::move, gear, memo)
-                {
-                    items.take(gear).calc(boss, gear.coord);
-                    boss.base::deface();
-                };
-                boss.LISTEN(tier::release, e2::form::drag::start::_<Button>, gear, memo)
-                {
-                    if (items.take(gear).grab(gear.coord, gear.meta(hids::anyCtrl)))
-                    {
-                        gear.dismiss();
                     }
                 };
-                boss.LISTEN(tier::release, e2::form::drag::pull::_<Button>, gear, memo)
-                {
-                    if (items.take(gear).drag(gear.coord))
-                    {
-                        recalc();
-                        gear.dismiss();
-                    }
-                };
-                boss.LISTEN(tier::release, e2::form::drag::cancel::_<Button>, gear, memo)
-                {
-                    items.take(gear).drop();
-                    recalc();
-                };
-                boss.LISTEN(tier::release, e2::form::drag::stop::_<Button>, gear, memo)
-                {
-                    items.take(gear).drop();
-                    recalc();
-                };
+                auto& mouse = boss.base::plugin<pro::mouse>();
+                mouse.draggable<hids::buttons::left>(true);
             }
         };
     }
@@ -241,7 +238,7 @@ namespace netxs::app::calc
     static constexpr auto id = "calc";
     static constexpr auto name = "Spreadsheet calculator (DEMO)";
 
-    using events = ::netxs::events::userland::calc;
+    namespace events = ::netxs::events::userland::calc;
 
     namespace
     {
@@ -319,8 +316,8 @@ namespace netxs::app::calc
         };
         auto build = [](eccc /*appcfg*/, xmls& config)
         {
-            auto highlight_color = skin::globals().highlight;
-            auto label_color     = skin::globals().label;
+            auto highlight_color = cell{ skin::globals().winfocus };
+            auto label_color     = cell{ whitespace }.fgc(blackdk).bgc(whitedk);
             auto c3 = highlight_color;
             //auto x3 = cell{ c3 }.alpha(0x00);
             auto c7 = label_color;
@@ -331,32 +328,32 @@ namespace netxs::app::calc
             window->plugin<pro::focus>(pro::focus::mode::focused)
                   ->colors(whitelt, 0x60'00'5f'1A)
                   ->limits({ 10,7 }, { -1,-1 })
-                  ->plugin<pro::track>()
-                  ->shader(c3, e2::form::state::keybd::focus::count)
+                  ->plugin<pro::keybd>()
+                  ->shader(c3, e2::form::state::focus::count)
                   //->plugin<pro::acryl>()
                   ->plugin<pro::cache>()
                   ->invoke([&](auto& boss)
                   {
-                      //boss.keybd.accept(true);
                       boss.LISTEN(tier::anycast, e2::form::proceed::quit::any, fast)
                       {
-                          boss.RISEUP(tier::release, e2::form::proceed::quit::one, fast);
+                          boss.base::riseup(tier::release, e2::form::proceed::quit::one, fast);
                       };
                       boss.LISTEN(tier::release, e2::form::upon::vtree::attached, parent)
                       {
                           static auto i = 0; i++;
                           auto title = ansi::jet(bias::right).add("Spreadsheet\n ~/Untitled ", i, ".ods");
-                          boss.RISEUP(tier::preview, e2::form::prop::ui::header, title);
+                          boss.base::riseup(tier::preview, e2::form::prop::ui::header, title);
                       };
                   });
             auto object = window->attach(ui::fork::ctor(axis::Y))
                                 ->colors(whitelt, 0);
+                config.cd("/config/defapp");
                 auto menu = object->attach(slot::_1, app::shared::menu::demo(config));
                 auto all_rail = object->attach(slot::_2, ui::rail::ctor());
                 auto all_stat = all_rail->attach(ui::fork::ctor(axis::Y))
                                         ->limits({ -1,-1 },{ 136,102 });
-                    auto func_body_pad = all_stat->attach(slot::_1, ui::pads::ctor(dent{ 1,1 }));
-                        auto func_body = func_body_pad->attach(ui::fork::ctor(axis::Y));
+                        auto func_body = all_stat->attach(slot::_1, ui::fork::ctor(axis::Y))
+                            ->setpad({ 1,1 });
                             auto func_line = func_body->attach(slot::_1, ui::fork::ctor());
                                 auto fx_sum = func_line->attach(slot::_1, ui::fork::ctor());
                                     auto fx = fx_sum->attach(slot::_1, ui::post::ctor())
@@ -379,11 +376,10 @@ namespace netxs::app::calc
                                     auto scroll = layers->attach(ui::rail::ctor())
                                                         ->active()
                                                         ->limits({ -1,1 }, { -1,-1 });
-                                        auto grid = scroll->attach(ui::post::ctor())
-                                                          ->active()
-                                                          ->colors(0xFF000000, 0xFFffffff)
-                                                          ->plugin<pro::cell_highlight>()
-                                                          ->upload(cellatix_text);
+                                        auto sheet_body = scroll->attach(ui::post::ctor())
+                                                                ->active(0xFF000000, 0xFFffffff)
+                                                                ->plugin<pro::cell_highlight>()
+                                                                ->upload(cellatix_text);
                                     auto sum = fx_sum->attach(slot::_2, ui::post::ctor())
                                                      ->colors(0, whitelt)
                                                      ->upload(ansi::bgc(whitelt).fgc(blacklt)
@@ -391,7 +387,7 @@ namespace netxs::app::calc
                                                      .fgc(blacklt).add(")"))
                                                      ->invoke([&](ui::post& boss)
                                                      {
-                                                         grid->LISTEN(tier::release, e2::data::utf8, data)
+                                                         sheet_body->LISTEN(tier::release, e2::data::utf8, data)
                                                          {
                                                             boss.upload(ansi::bgc(whitelt).fgc(blacklt).add(data));
                                                          };
@@ -422,6 +418,10 @@ namespace netxs::app::calc
                                 auto pad = plus_pad->attach(slot::_2, ui::mock::ctor())
                                                    ->limits({ 1,1 }, { 1,1 });
                     layers->attach(app::shared::scroll_bars(scroll));
+            window->invoke([&](auto& boss)
+            {
+                app::shared::base_kb_navigation(config, scroll, boss);
+            });
             return window;
         };
     }

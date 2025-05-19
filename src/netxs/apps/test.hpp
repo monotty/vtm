@@ -5,9 +5,9 @@
 
 namespace netxs::events::userland
 {
-    struct test
+    namespace test
     {
-        EVENTPACK( test, netxs::events::userland::root::custom )
+        EVENTPACK( app::test::events, netxs::events::userland::seed::custom )
         {
             GROUP_XS( ui, input::hids ),
 
@@ -22,7 +22,7 @@ namespace netxs::events::userland
                 };
             };
         };
-    };
+    }
 }
 
 // test: Test window.
@@ -31,7 +31,7 @@ namespace netxs::app::test
     static constexpr auto id = "test";
     static constexpr auto name = "Text Layout Test (DEMO)";
 
-    using events = netxs::events::userland::test;
+    namespace events = netxs::events::userland::test;
 
     namespace
     {
@@ -65,8 +65,33 @@ namespace netxs::app::test
                 .add("\n")
                 .add(header("Subcell Size"))
                 .add("\n")
-                .add("\2 Hello ", utf::vs10, vss<11>, "\2World!", utf::vs10, vss<11>, " "
-                     "\2 Hello ", utf::vs07, vss<21>, " \2World!", utf::vs07, vss<21>, "\n")
+                .add("\2Cell", utf::vs10, utf::vs08, vss<11>)
+                .add("        ")
+                .add("\2Word", utf::vs10, vss<11>)
+                .add("        ")
+                .add("\2Cell", utf::vs07, utf::vs05, vss<21>)
+                .add("        ")
+                .add("\2Word", utf::vs07, vss<21>)
+                .add("        ")
+                .eol()
+                .bgc(greendk)
+                .add("\2Cell", utf::vs10, utf::vs08, vss<11>)
+                .nil().add("        ")
+                .bgc(magentadk)
+                .add("\2Word", utf::vs10, vss<11>)
+                .nil().add("        ")
+                .bgc(reddk)
+                .add("\2Cell", utf::vs07, utf::vs05, utf::vs08, vss<21>)
+                .nil().add("        ")
+                .bgc(yellowdk).fgc(blackdk)
+                .add("\2Word", utf::vs07, utf::vs08, vss<21>)
+                .nil().add("        ")
+                .eol()
+                .add("\2Cell", utf::vs10, utf::vs08, vss<11>)
+                .add("\2Word", utf::vs10, vss<11>)
+                .add("\2Cell", utf::vs07, utf::vs05, vss<21>)
+                .add("\2Word", utf::vs12, vss<11>)
+                .eol()
                 .add("\n")
                 .add(header("Powerline"))
                 .add("\n")
@@ -172,11 +197,16 @@ namespace netxs::app::test
                 .add("\n")
                 .add(header("Font Style"))
                 .add("\n")
-                .bld(faux).itc(faux).add("Normal        WVMQWERTYUIOPASDFGHJKLZXCVBNM韓M😎M 🥵🥵", vss<11>, "🦚😀⛷🏂😁😂😃😄😅😆👌🐞😎👪\n")
-                .blk(true)          .add("Blinking      WVMQWERTYUIOPASDFGHJKLZXCVBNM韓M😎M 🥵🥵", vss<11>, "🦚😀⛷🏂😁😂😃😄😅😆👌🐞😎👪\n")
-                .bld(true).blk(faux).add("Bold          WVMQWERTYUIOPASDFGHJKLZXCVBNM韓M😎M 🥵🥵", vss<11>, "🦚😀⛷🏂😁😂😃😄😅😆👌🐞😎👪\n")
-                .bld(true).itc(true).add("Bold + Italic WVMQWERTYUIOPASDFGHJKLZXCVBNM韓M😎M 🥵🥵", vss<11>, "🦚😀⛷🏂😁😂😃😄😅😆👌🐞😎👪\n")
-                .bld(faux).itc(true).add("       Italic WVMQWERTYUIOPASDFGHJKLZXCVBNM韓M😎M 🥵🥵", vss<11>, "🦚😀⛷🏂😁😂😃😄😅😆👌🐞😎👪\n")
+                .bld(faux).itc(faux).add("Normal        ABCDEFGHIJKLMNOPQRSTUVWXYZ 1234567890M韓M😎M 🥵🥵", vss<11>, "🦚😀⛷🏂😁😂😃😄😅😆👌🐞😎👪\n")
+                                    .add("              abcdefghijklmnopqrstuvwxyz\n")
+                .blk(true)          .add("Blinking      ABCDEFGHIJKLMNOPQRSTUVWXYZ 1234567890M韓M😎M 🥵🥵", vss<11>, "🦚😀⛷🏂😁😂😃😄😅😆👌🐞😎👪\n")
+                                    .add("              abcdefghijklmnopqrstuvwxyz\n")
+                .bld(true).blk(faux).add("Bold          ABCDEFGHIJKLMNOPQRSTUVWXYZ 1234567890M韓M😎M 🥵🥵", vss<11>, "🦚😀⛷🏂😁😂😃😄😅😆👌🐞😎👪\n")
+                                    .add("              abcdefghijklmnopqrstuvwxyz\n")
+                .bld(true).itc(true).add("Bold + Italic ABCDEFGHIJKLMNOPQRSTUVWXYZ 1234567890M韓M😎M 🥵🥵", vss<11>, "🦚😀⛷🏂😁😂😃😄😅😆👌🐞😎👪\n")
+                                    .add("              abcdefghijklmnopqrstuvwxyz\n")
+                .bld(faux).itc(true).add("       Italic ABCDEFGHIJKLMNOPQRSTUVWXYZ 1234567890M韓M😎M 🥵🥵", vss<11>, "🦚😀⛷🏂😁😂😃😄😅😆👌🐞😎👪\n")
+                                    .add("              abcdefghijklmnopqrstuvwxyz\n")
                 .nil()
                 .add("\n")
                 .add(header("Character Width"))
@@ -184,6 +214,8 @@ namespace netxs::app::test
                 .add(">👩‍👩‍👧‍👧", vss<11>, "<VS11_00  >👩‍👩‍👧‍👧", vss<21>, "<VS21_00  >👩‍👩‍👧‍👧", vss<31>, "<VS31_00  >👩‍👩‍👧‍👧", vss<41>, "<VS41_00", "  >\2अनुच्छेद", vss<51>, "<VS51_00\n")
                 .add(">❤"  , vss<11>, "<VS11_00  >❤" , vss<21>, "<VS21_00\n")
                 .add(">😎" , vss<11>, "<VS11_00  >😎" , vss<21>, "<VS21_00\n")
+                .add("\n")
+                .add("The longest word in the Hindi language: >\2विश्वविज्ञानकोशनिर्माणसमिति", vss<161>, "<VSG1_00 (16x1)\n")
                 .add("\n")
                 .add(header("Variation Selectors VS15/16"))
                 .add("\n")
@@ -600,27 +632,25 @@ namespace netxs::app::test
             auto topic = get_text();
             auto window = ui::cake::ctor()
                 ->plugin<pro::focus>(pro::focus::mode::focused)
-                ->plugin<pro::track>()
-                ->plugin<pro::acryl>()
+                ->plugin<pro::keybd>()
+                //->plugin<pro::acryl>()
                 ->plugin<pro::cache>()
                 ->invoke([](auto& boss)
                 {
-                    //boss.keybd.accept(true);
                     boss.LISTEN(tier::anycast, e2::form::proceed::quit::any, fast)
                     {
-                        boss.RISEUP(tier::release, e2::form::proceed::quit::one, fast);
+                        boss.base::riseup(tier::release, e2::form::proceed::quit::one, fast);
                     };
                 });
             auto object0 = window->attach(ui::fork::ctor(axis::Y))
                                  ->colors(whitelt, 0xA0'00'37'db);
-                config.cd("/config/test/", "/config/defapp/");
+                config.cd("/config/defapp");
                 auto [menu_block, cover, menu_data] = app::shared::menu::create(config, {});
                 auto menu = object0->attach(slot::_1, menu_block);
                 auto test_stat_area = object0->attach(slot::_2, ui::fork::ctor(axis::Y));
                     auto layers = test_stat_area->attach(slot::_1, ui::cake::ctor());
                         auto scroll = layers->attach(ui::rail::ctor())
-                                            ->active()
-                                            ->colors(cyanlt, bluedk);
+                                            ->active(cyanlt, bluedk);
                             auto object = scroll->attach(ui::post::ctor())
                                                 ->upload(topic)
                                                 ->invoke([&](auto& self)
@@ -656,7 +686,10 @@ namespace netxs::app::test
                     b.grad(argb{ 0xFF00FFFF }, argb{ 0x40FFFFFF });
                     b[{5, 0}].alpha(0);
                     b[{5, 1}].alpha(0);
-
+            window->invoke([&](auto& boss)
+            {
+                app::shared::base_kb_navigation(config, scroll, boss);
+            });
             return window;
         };
     }

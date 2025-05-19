@@ -5,13 +5,6 @@
 
 #include "intmath.hpp"
 
-#include <string>
-#include <thread>
-#include <mutex>
-#include <chrono>
-#include <optional>
-#include <condition_variable>
-
 namespace netxs
 {
     using span = std::chrono::steady_clock::duration;
@@ -44,31 +37,54 @@ namespace netxs::datetime
     // quartz: Return current moment.
     auto now()
     {
-        return std::chrono::steady_clock::now();
+        return std::chrono::steady_clock::now(); // Note: steady_clock does not contain the current time (it is a monotonic clock).
+    }
+    // quartz: Return unique ui64 id.
+    auto uniqueid()
+    {
+        return std::chrono::duration_cast<std::chrono::nanoseconds>(now().time_since_epoch()).count();
     }
     auto breakdown(span t)
     {
-        auto days    = datetime::round<ui32, std::chrono::   days>(t);
-        auto hours   = datetime::round<ui32, std::chrono::  hours>(t -= std::chrono::   days{ days    });
-        auto minutes = datetime::round<ui32, std::chrono::minutes>(t -= std::chrono::  hours{ hours   });
-        auto seconds = datetime::round<ui32, std::chrono::seconds>(t -= std::chrono::minutes{ minutes });
-        return std::tuple{ days, hours, minutes, seconds };
+        auto days         = datetime::round<ui32, std::chrono::        days>(t);
+        auto hours        = datetime::round<ui32, std::chrono::       hours>(t -= std::chrono::   days{ days    });
+        auto minutes      = datetime::round<ui32, std::chrono::     minutes>(t -= std::chrono::  hours{ hours   });
+        auto seconds      = datetime::round<ui32, std::chrono::     seconds>(t -= std::chrono::minutes{ minutes });
+        auto milliseconds = datetime::round<ui32, std::chrono::milliseconds>(t -= std::chrono::seconds{ seconds });
+        return std::tuple{ days, hours, minutes, seconds, milliseconds };
+    }
+    auto breakdown(time t)
+    {
+        auto d = t.time_since_epoch();
+        auto hours        = datetime::round<ui32, std::chrono::       hours>(d);
+        auto minutes      = datetime::round<ui32, std::chrono::     minutes>(d -= std::chrono::       hours{ hours        });
+        auto seconds      = datetime::round<ui32, std::chrono::     seconds>(d -= std::chrono::     minutes{ minutes      });
+        auto milliseconds = datetime::round<ui32, std::chrono::milliseconds>(d -= std::chrono::     seconds{ seconds      });
+        auto microseconds = datetime::round<ui32, std::chrono::microseconds>(d -= std::chrono::milliseconds{ milliseconds });
+        return std::tuple{ hours % 24, minutes, seconds, milliseconds, microseconds };
+    }
+    auto milliseconds(time t)
+    {
+        auto period = t.time_since_epoch();
+        auto seconds = std::chrono::duration_cast<std::chrono::seconds>(period).count();
+        auto milliseconds = std::chrono::duration_cast<std::chrono::milliseconds>(period -= std::chrono::seconds{ seconds });
+        return milliseconds;
     }
 
-    template<class Bell, auto Tier, auto Deed>
+    template<class T>
     class quartz
     {
         using cond = std::condition_variable;
         using work = std::thread;
 
-        Bell& owner;
-        flag  alive;
-        flag  letup;
-        span  delay;
-        span  watch;
-        span  pulse;
-        work  fiber;
-        cond  synch;
+        T&   owner;
+        flag alive;
+        flag letup;
+        span delay;
+        span watch;
+        span pulse;
+        work fiber;
+        cond synch;
 
         void worker()
         {
@@ -84,7 +100,7 @@ namespace netxs::datetime
                 prior =  now;
 
                 now = datetime::now();
-                owner.template signal<Tier>(Deed, now);
+                owner.timer(now);
 
                 if (letup.exchange(faux))
                 {
@@ -100,7 +116,7 @@ namespace netxs::datetime
         }
 
     public:
-        quartz(Bell& owner)
+        quartz(T& owner)
             : owner{ owner        },
               alive{ faux         },
               letup{ faux         },
@@ -121,7 +137,7 @@ namespace netxs::datetime
                 fiber = std::thread{ &quartz::worker, this };
             }
         }
-        void ignite(int frequency)
+        void ignite(si32 frequency)
         {
             ignite(span{ span::period::den / frequency });
         }

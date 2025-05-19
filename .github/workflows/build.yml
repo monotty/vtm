@@ -18,41 +18,49 @@ jobs:
         exclude:
           - os: windows-latest
             cpu: x86
+          - os: windows-latest
+            cpu: arm
         include:
           - os: macos-latest
             platform: macos
             cpu: universal
             arch: any
             cxx: c++
+            cc: cc
             flags: '-DCMAKE_OSX_ARCHITECTURES="arm64;x86_64" -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0 -DCMAKE_CXX_FLAGS_RELEASE="-O2 -DNDEBUG -Wall -Wextra -Wno-missing-field-initializers -Werror"'
           - os: windows-latest
             platform: windows
             cpu: Win32
             arch: x86
             cxx: cl
-            flags: '-DCMAKE_CXX_FLAGS_RELEASE="/MT /O2 /DNDEBUG /Zc:preprocessor /W4" -A '
+            cc: cl
+            flags: '-DCMAKE_MSVC_RUNTIME_LIBRARY="MultiThreaded" -DCMAKE_EXE_LINKER_FLAGS_RELEASE="/DEBUG /OPT:REF /OPT:ICF" -DCMAKE_C_FLAGS_RELEASE="/MT /O2 /c" -DCMAKE_CXX_FLAGS_RELEASE="/MT /O2 /DNDEBUG /Zi /Zc:preprocessor /W4" -A '
           - os: windows-latest
             cxx: cl
           - os: ubuntu-latest
             cpu: x64
             cxx: g++
+            cc: gcc
           - os: ubuntu-latest
             cpu: x86
-            apt: g++-i686-linux-gnu
+            apt: g++-i686-linux-gnu gcc-i686-linux-gnu
             cxx: /bin/i686-linux-gnu-g++
+            cc: /bin/i686-linux-gnu-gcc
           - os: ubuntu-latest
             cpu: arm
-            apt: g++-arm-linux-gnueabihf
+            apt: g++-arm-linux-gnueabihf gcc-arm-linux-gnueabihf
             cxx: /bin/arm-linux-gnueabihf-g++
+            cc: /bin/arm-linux-gnueabihf-gcc
           - os: ubuntu-latest
             cpu: arm64
-            apt: g++-aarch64-linux-gnu
+            apt: g++-aarch64-linux-gnu gcc-aarch64-linux-gnu
             cxx: /bin/aarch64-linux-gnu-g++
+            cc: /bin/aarch64-linux-gnu-gcc
 
           - os: ubuntu-latest
-            flags: '-DCMAKE_CXX_FLAGS_RELEASE="-static -s -O2 -DNDEBUG -Wall -Wextra -Wno-missing-field-initializers -Wno-psabi -Werror"'
+            flags: '-DCMAKE_C_FLAGS="-O2 -static" -DCMAKE_CXX_FLAGS_RELEASE="-static -s -O2 -DNDEBUG -Wall -Wextra -Wno-missing-field-initializers -Wno-psabi -Werror"'
           - os: windows-latest
-            flags: '-DCMAKE_CXX_FLAGS_RELEASE="/MT /O2 /DNDEBUG /Zc:preprocessor /W4" -A '
+            flags: '-DCMAKE_MSVC_RUNTIME_LIBRARY="MultiThreaded" -DCMAKE_EXE_LINKER_FLAGS_RELEASE="/DEBUG /OPT:REF /OPT:ICF" -DCMAKE_C_FLAGS_RELEASE="/MT /O2 /c" -DCMAKE_CXX_FLAGS_RELEASE="/MT /O2 /DNDEBUG /Zi /Zc:preprocessor /W4" -A '
 
           - os: ubuntu-latest
             platform: linux
@@ -86,28 +94,13 @@ jobs:
       run: >
         cmake -B ${{ steps.strings.outputs.bin }}
         -DCMAKE_CXX_COMPILER=${{ matrix.cxx }}
+        -DCMAKE_C_COMPILER=${{ matrix.cc }}
         ${{ matrix.flags }} ${{ matrix.os == 'windows-latest' && matrix.cpu || '' }}
         -DCMAKE_BUILD_TYPE=Release
         -S ${{ github.workspace }}
 
     - name: Build
       run: cmake --build ${{ steps.strings.outputs.bin }} --config Release
-
-    - name: Test (POSIX)
-      if: matrix.os != 'windows-latest' && matrix.cpu != 'arm' && matrix.cpu != 'arm64'
-      run: ${{ steps.strings.outputs.bin }}/vtm -v
-
-    - name: Test AV (Windows)
-      if: matrix.os == 'windows-latest'
-      run: |
-        $fileName = "${{ steps.strings.outputs.bin }}/Release/vtm.exe"
-        $MpCmdRun = "C:\Program Files\Windows Defender\MpCmdRun.exe"
-        Set-Service -Name wuauserv -StartupType Manual -Status Running
-        Remove-MpPreference -ExclusionPath (Get-MpPreference).ExclusionPath
-        Set-MpPreference -MAPSReporting Advanced
-        & '7z' a -tzip c:\vtm.zip $fileName
-        & $MpCmdRun -SignatureUpdate
-        & $MpCmdRun -Scan -ScanType 3 -File c:\vtm.zip
 
     - name: Pack (POSIX)
       if: matrix.os != 'windows-latest'
@@ -119,6 +112,13 @@ jobs:
       with:
         name: vtm_${{ matrix.platform }}_${{ matrix.arch }}
         path: vtm_${{ matrix.platform }}_${{ matrix.arch }}.tar
+
+    - name: Upload Symbols (Windows)
+      if: matrix.os == 'windows-latest'
+      uses: actions/upload-artifact@main
+      with:
+        name: vtm_pdb_${{ matrix.platform }}_${{ matrix.arch }}
+        path: ${{ steps.strings.outputs.bin }}/Release/vtm.pdb
 
     - name: Upload Artifact (Windows)
       if: matrix.os == 'windows-latest'

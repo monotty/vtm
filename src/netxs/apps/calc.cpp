@@ -7,8 +7,8 @@ using namespace netxs;
 
 int main(int argc, char* argv[])
 {
-    auto defaults = 
-    #include "calc.xml"
+    auto defaults =
+    #include "../vtm.xml"
 
     os::dtvt::initialize();
     auto syslog = os::tty::logger();
@@ -54,7 +54,6 @@ int main(int argc, char* argv[])
     }
     auto params = getopt.rest();
 
-    os::dtvt::checkpoint();
     banner();
     if (errmsg.size())
     {
