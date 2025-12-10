@@ -60,13 +60,42 @@ namespace netxs::ui
 {
     namespace terminal
     {
+        namespace event_source
+        {
+            static constexpr auto _counter = __COUNTER__ + 1;
+            static constexpr auto keyboard  = 1 << (__COUNTER__ - _counter);
+            static constexpr auto mouse     = 1 << (__COUNTER__ - _counter);
+            static constexpr auto focus     = 1 << (__COUNTER__ - _counter);
+            static constexpr auto format    = 1 << (__COUNTER__ - _counter);
+            static constexpr auto clipboard = 1 << (__COUNTER__ - _counter);
+            static constexpr auto window    = 1 << (__COUNTER__ - _counter);
+            static constexpr auto system    = 1 << (__COUNTER__ - _counter);
+        }
         namespace events = netxs::events::userland::terminal;
+        static auto event_source_map = utf::unordered_map<text, si32>
+           {{ "keyboard"s,  event_source::keyboard  },
+            { "mouse"s,     event_source::mouse     },
+            { "focus"s,     event_source::focus     },
+            { "format"s,    event_source::format    },
+            { "clipboard"s, event_source::clipboard },
+            { "window"s,    event_source::window    },
+            { "system"s,    event_source::system    }};
     }
 
     struct term
         : public ui::form<term>
     {
         static constexpr auto classname = basename::terminal;
+        static constexpr auto event_source_name = std::to_array(
+        {
+            "keyboard",
+            "mouse",
+            "focus",
+            "format",
+            "clipboard",
+            "window",
+            "system",
+        });
 
         #define proc_list \
             X(KeyEvent             ) /* */ \
@@ -78,6 +107,7 @@ namespace netxs::ui
             X(ScrollViewportToEnd  ) /* */ \
             X(SendKey              ) /* */ \
             X(Print                ) /* */ \
+            X(PrintLn              ) /* */ \
             X(CopyViewport         ) /* */ \
             X(CopySelection        ) /* */ \
             X(PasteClipboard       ) /* */ \
@@ -92,7 +122,16 @@ namespace netxs::ui
             X(LineWrapMode         ) /* */ \
             X(LineAlignMode        ) /* */ \
             X(LogMode              ) /* */ \
+            X(AltbufMode           ) /* */ \
+            X(ForwardKeys          ) /* */ \
             X(ClearScrollback      ) /* */ \
+            X(ScrollbackSize       ) /* */ \
+            X(SetBackground        ) /* */ \
+            X(ResetAttributes      ) /* */ \
+            X(ScrollbackPadding    ) /* */ \
+            X(TabLength            ) /* */ \
+            X(RightToLeft          ) /* */ \
+            X(EventReporting       ) /* */ \
             X(Restart              ) /* */ \
             X(Quit                 ) /* */ \
 
@@ -233,6 +272,8 @@ namespace netxs::ui
 
             text send_input;
 
+            utf::unordered_map<text, ui32> color_names;
+
             static void recalc_buffer_metrics(si32& def_length, si32& def_growdt, si32& def_growmx)
             {
                 if (def_growdt == 0)
@@ -245,7 +286,7 @@ namespace netxs::ui
                     def_growmx = std::exchange(def_length, def_growdt);
                 }
             }
-            termconfig(xmls& config)
+            termconfig(settings& config)
             {
                 static auto atexit_options = utf::unordered_map<text, commands::atexit::codes>
                     {{ "auto",    commands::atexit::smart   },
@@ -259,53 +300,64 @@ namespace netxs::ui
                      { "invert",  commands::fx::invert  },
                      { "reverse", commands::fx::reverse }};
 
-                send_input =             config.take("/config/terminal/sendinput",                 text{});
-                def_mxline = std::max(1, config.take("/config/terminal/scrollback/maxline",        si32{ 65535 }));
-                def_length = std::max(1, config.take("/config/terminal/scrollback/size",           si32{ 40000 }));
-                def_growdt = std::max(0, config.take("/config/terminal/scrollback/growstep",       si32{ 0 }    ));
-                def_growmx = std::max(0, config.take("/config/terminal/scrollback/growlimit",      si32{ 0 }    ));
+                send_input =             config.settings::take("/config/terminal/sendinput",                 text{});
+                def_mxline = std::max(1, config.settings::take("/config/terminal/scrollback/maxline",        si32{ 65535 }));
+                def_length = std::max(1, config.settings::take("/config/terminal/scrollback/size",           si32{ 40000 }));
+                def_growdt = std::max(0, config.settings::take("/config/terminal/scrollback/growstep",       si32{ 0 }    ));
+                def_growmx = std::max(0, config.settings::take("/config/terminal/scrollback/growlimit",      si32{ 0 }    ));
                 recalc_buffer_metrics(def_length, def_growdt, def_growmx);
-                def_wrpmod =             config.take("/config/terminal/scrollback/wrap",            deco::defwrp == wrap::on) ? wrap::on : wrap::off;
-                resetonkey =             config.take("/config/terminal/scrollback/reset/onkey",     true);
-                resetonout =             config.take("/config/terminal/scrollback/reset/onoutput",  faux);
-                def_alt_on =             config.take("/config/terminal/scrollback/altscroll",       true);
-                def_lucent = std::max(0, config.take("/config/terminal/scrollback/oversize/opacity",si32{ 0xC0 } ));
-                def_margin = std::max(0, config.take("/config/terminal/scrollback/oversize",        si32{ 0 }    ));
-                def_tablen = std::max(1, config.take("/config/terminal/tablen",                     si32{ 8 }    ));
-                def_border = std::max(0, config.take("/config/terminal/border",                     si32{ 0 }    ));
-                def_selmod =             config.take("/config/terminal/selection/mode",             mime::textonly, xml::options::format);
-                def_selalt =             config.take("/config/terminal/selection/rect",             faux);
-                def_cur_on =             config.take("/config/cursor/show",                     true);
-                def_cursor =             config.take("/config/cursor/style",                    text_cursor::I_bar, xml::options::cursor);
-                def_curclr =             config.take("/config/cursor/color",                    cell{});
-                def_period =             config.take("/config/cursor/blink",                    span{ skin::globals().blink_period });
-                def_io_log =             config.take("/config/debug/logs",        faux);
+                def_wrpmod =             config.settings::take("/config/terminal/scrollback/wrap",            deco::defwrp == wrap::on) ? wrap::on : wrap::off;
+                resetonkey =             config.settings::take("/config/terminal/scrollback/reset/onkey",     true);
+                resetonout =             config.settings::take("/config/terminal/scrollback/reset/onoutput",  faux);
+                def_alt_on =             config.settings::take("/config/terminal/scrollback/altscroll",       true);
+                def_lucent = std::max(0, config.settings::take("/config/terminal/scrollback/oversize/opacity",si32{ 0xC0 } ));
+                def_margin = std::max(0, config.settings::take("/config/terminal/scrollback/oversize",        si32{ 0 }    ));
+                def_tablen = std::max(1, config.settings::take("/config/terminal/tablen",                     si32{ 8 }    ));
+                def_border = std::max(0, config.settings::take("/config/terminal/border",                     si32{ 0 }    ));
+                def_selmod =             config.settings::take("/config/terminal/selection/mode",             mime::textonly, xml::options::format);
+                def_selalt =             config.settings::take("/config/terminal/selection/rect",             faux);
+                def_cur_on =             config.settings::take("/config/cursor/show",                     true);
+                def_cursor =             config.settings::take("/config/cursor/style",                    text_cursor::I_bar, xml::options::cursor);
+                def_curclr =             config.settings::take("/config/cursor/color",                    cell{});
+                def_period =             config.settings::take("/config/cursor/blink",                    span{ skin::globals().blink_period });
+                def_io_log =             config.settings::take("/config/debug/logs",        faux);
                 allow_logs =             true; // Disallowed for dtty.
-                def_atexit =             config.take("/config/terminal/atexit",                     commands::atexit::smart, atexit_options);
-                def_fcolor =             config.take("/config/terminal/colors/default/fgc",         argb{ whitelt });
-                def_bcolor =             config.take("/config/terminal/colors/default/bgc",         argb{ blackdk });
-                def_filler =             config.take("/config/terminal/colors/bground",             argb{ argb::default_color });
+                def_atexit =             config.settings::take("/config/terminal/atexit",                     commands::atexit::smart, atexit_options);
+                def_fcolor =             config.settings::take("/config/terminal/colors/default/fgc",         argb{ whitelt });
+                def_bcolor =             config.settings::take("/config/terminal/colors/default/bgc",         argb{ blackdk });
+                def_filler =             config.settings::take("/config/terminal/colors/bground",             argb{ argb::default_color });
 
-                def_safe_c =             config.take("/config/terminal/colors/selection/protected", cell{}.bgc(bluelt)    .fgc(whitelt));
-                def_ansi_c =             config.take("/config/terminal/colors/selection/ansi",      cell{}.bgc(bluelt)    .fgc(whitelt));
-                def_rich_c =             config.take("/config/terminal/colors/selection/rich",      cell{}.bgc(bluelt)    .fgc(whitelt));
-                def_html_c =             config.take("/config/terminal/colors/selection/html",      cell{}.bgc(bluelt)    .fgc(whitelt));
-                def_text_c =             config.take("/config/terminal/colors/selection/text",      cell{}.bgc(bluelt)    .fgc(whitelt));
-                def_none_c =             config.take("/config/terminal/colors/selection/none",      cell{}.bgc(blacklt)   .fgc(whitedk));
-                def_find_c =             config.take("/config/terminal/colors/match",               cell{}.bgc(0xFF007F00).fgc(whitelt));
+                def_safe_c =             config.settings::take("/config/terminal/colors/selection/protected", cell{}.bgc(bluelt)    .fgc(whitelt));
+                def_ansi_c =             config.settings::take("/config/terminal/colors/selection/ansi",      cell{}.bgc(bluelt)    .fgc(whitelt));
+                def_rich_c =             config.settings::take("/config/terminal/colors/selection/rich",      cell{}.bgc(bluelt)    .fgc(whitelt));
+                def_html_c =             config.settings::take("/config/terminal/colors/selection/html",      cell{}.bgc(bluelt)    .fgc(whitelt));
+                def_text_c =             config.settings::take("/config/terminal/colors/selection/text",      cell{}.bgc(bluelt)    .fgc(whitelt));
+                def_none_c =             config.settings::take("/config/terminal/colors/selection/none",      cell{}.bgc(blacklt)   .fgc(whitedk));
+                def_find_c =             config.settings::take("/config/terminal/colors/match",               cell{}.bgc(0xFF007F00).fgc(whitelt));
 
-                def_safe_f =             config.take("/config/terminal/colors/selection/protected/fx", commands::fx::color,  fx_options);
-                def_ansi_f =             config.take("/config/terminal/colors/selection/ansi/fx",      commands::fx::xlight, fx_options);
-                def_rich_f =             config.take("/config/terminal/colors/selection/rich/fx",      commands::fx::xlight, fx_options);
-                def_html_f =             config.take("/config/terminal/colors/selection/html/fx",      commands::fx::xlight, fx_options);
-                def_text_f =             config.take("/config/terminal/colors/selection/text/fx",      commands::fx::color,  fx_options);
-                def_none_f =             config.take("/config/terminal/colors/selection/none/fx",      commands::fx::color,  fx_options);
-                def_find_f =             config.take("/config/terminal/colors/match/fx",               commands::fx::color,  fx_options);
+                def_safe_f =             config.settings::take("/config/terminal/colors/selection/protected/fx", commands::fx::color,  fx_options);
+                def_ansi_f =             config.settings::take("/config/terminal/colors/selection/ansi/fx",      commands::fx::xlight, fx_options);
+                def_rich_f =             config.settings::take("/config/terminal/colors/selection/rich/fx",      commands::fx::xlight, fx_options);
+                def_html_f =             config.settings::take("/config/terminal/colors/selection/html/fx",      commands::fx::xlight, fx_options);
+                def_text_f =             config.settings::take("/config/terminal/colors/selection/text/fx",      commands::fx::color,  fx_options);
+                def_none_f =             config.settings::take("/config/terminal/colors/selection/none/fx",      commands::fx::color,  fx_options);
+                def_find_f =             config.settings::take("/config/terminal/colors/match/fx",               commands::fx::color,  fx_options);
+
+                {
+                    auto color_names_context = config.settings::push_context("/config/terminal/colors/names");
+                    auto color_name_ptr_list = config.settings::take_ptr_list_for_name("name");
+                    for (auto& name_ptr : color_name_ptr_list)
+                    {
+                        auto name = utf::name2token(config.take_value(name_ptr));
+                        auto rgba = config.take_value_from(name_ptr, "rgb", argb{});
+                        color_names[name] = rgba.token;
+                    }
+                }
 
                 std::copy(std::begin(argb::vt256), std::end(argb::vt256), std::begin(def_colors));
                 for (auto i = 0; i < 16; i++)
                 {
-                    def_colors[i] = config.take("/config/terminal/colors/color" + std::to_string(i), def_colors[i]);
+                    def_colors[i] = config.settings::take("/config/terminal/colors/color" + std::to_string(i), def_colors[i]);
                 }
             }
         };
@@ -387,7 +439,7 @@ namespace netxs::ui
             using prot = input::mouse::prot;
 
             term& owner; // m_tracking: Terminal object reference.
-            twod  coord; // m_tracking: Last coord of mouse cursor.
+            fp2d  coord; // m_tracking: Last coord of mouse cursor.
             subs  token; // m_tracking: Subscription token.
             prot  encod; // m_tracking: Mouse encoding protocol.
             mode  state; // m_tracking: Mouse reporting mode.
@@ -397,7 +449,7 @@ namespace netxs::ui
                 : owner{ owner                   },
                   encod{ prot::x11               },
                   state{ mode::none              },
-                  smode{ owner.config.def_selmod }
+                  smode{ owner.defcfg.def_selmod }
             { }
 
             operator bool () { return state != mode::none; }
@@ -432,6 +484,15 @@ namespace netxs::ui
                 state = (mode)(state | m);
                 if (state && !token.size()) // Do not subscribe if it is already subscribed.
                 {
+                    owner.on(tier::mouserelease, input::key::MouseLeave, token, [&](hids& gear)
+                    {
+                        if (owner.selmod == mime::disabled)
+                        {
+                            coord = { fp32nan, fp32nan }; // Forward a mouse halt event.
+                            owner.ipccon.mouse(gear, true, coord, encod, state);
+                        }
+                    });
+                    owner.bell::dup_handler(tier::general, input::events::halt.id, token.back());
                     owner.LISTEN(tier::release, input::events::device::mouse::any, gear, token)
                     {
                         check_focus(gear);
@@ -443,10 +504,10 @@ namespace netxs::ui
                             }
                             else if (gear.m_sys.buttons) gear.capture(owner.id);
                             auto& console = *owner.target;
-                            auto c = twod{ gear.m_sys.coordxy };
+                            auto c = gear.m_sys.coordxy;
                             c.y -= console.get_basis();
                             auto moved = coord((state & mode::over) ? c
-                                                                    : std::clamp(c, dot_00, console.panel - dot_11));
+                                                                    : std::clamp(c, fp2d{ dot_00 }, fp2d{ console.panel - dot_11 }));
                             if (gear.m_sav.changed != gear.m_sys.changed)
                             {
                                 owner.ipccon.mouse(gear, moved, coord, encod, state);
@@ -463,6 +524,17 @@ namespace netxs::ui
                 state = (mode)(state & ~(m));
                 if (!state) token.clear();
                 owner.selection_selmod(smode);
+                auto gates = owner.base::riseup(tier::request, e2::form::state::keybd::enlist); // Take all foci.
+                for (auto gate_id : gates) // Reset double click state for all gears.
+                {
+                    if (auto gear_ptr = owner.base::getref<hids>(gate_id))
+                    {
+                        for (auto& [bttn_id, s] : gear_ptr->stamp) // Reset double click state. The issue is related to Far Manager, which changes the mouse tracking mode before releasing the button when double-clicking.
+                        {
+                            s.count = !!s.count; // Set to 1 if non zero.
+                        }
+                    }
+                }
             }
             void setmode(prot p) { encod = p; }
         };
@@ -560,7 +632,12 @@ namespace netxs::ui
                 {
                     case 0:
                     default:
-                        queue.add("\033[?1;2c");
+                        // 61: VT Level 1 conformance
+                        // 22: Color text
+                        // 28: Rectangular area operations
+                        // 52: Clipboard operations
+                        // 10060: VT2D
+                        queue.add("\x1b[?61;22;28;52;10060c");
                         break;
                 }
                 owner.answer(queue);
@@ -656,7 +733,7 @@ namespace netxs::ui
 
             void reset()
             {
-                std::copy(std::begin(owner.config.def_colors), std::end(owner.config.def_colors), std::begin(color));
+                std::copy(std::begin(owner.defcfg.def_colors), std::end(owner.defcfg.def_colors), std::begin(color));
             }
             auto to_byte(char c)
             {
@@ -700,6 +777,55 @@ namespace netxs::ui
                     else if (data.length() >= 18 && data[8] == '/' && data[13] == '/') // ; rgb:0000/0000/0000
                     {
                         return { type::rgbcolor, get_color(4) };
+                    }
+                }
+                else if (data.starts_with("0x")) // ; 0xbbggrr
+                {
+                    if (data.length() >= 8)
+                    {
+                        auto b1 = to_byte(data[2]);
+                        auto b2 = to_byte(data[3]);
+                        auto g1 = to_byte(data[4]);
+                        auto g2 = to_byte(data[5]);
+                        auto r1 = to_byte(data[6]);
+                        auto r2 = to_byte(data[7]);
+                        data.remove_prefix(8); // sizeof 0xbbggrr
+                        auto c = (b1 << 4 ) + (b2      )
+                               + (g1 << 12) + (g2 << 8 )
+                               + (r1 << 20) + (r2 << 16)
+                               + 0xFF000000;
+                        return { type::rgbcolor, c };
+                    }
+                }
+                else if (data.starts_with("#")) // ; #rrggbb
+                {
+                    if (data.length() >= 7)
+                    {
+                        auto r1 = to_byte(data[1]);
+                        auto r2 = to_byte(data[2]);
+                        auto g1 = to_byte(data[3]);
+                        auto g2 = to_byte(data[4]);
+                        auto b1 = to_byte(data[5]);
+                        auto b2 = to_byte(data[6]);
+                        data.remove_prefix(7); // sizeof #rrggbb
+                        auto c = (b1 << 4 ) + (b2      )
+                               + (g1 << 12) + (g2 << 8 )
+                               + (r1 << 20) + (r2 << 16)
+                               + 0xFF000000;
+                        return { type::rgbcolor, c };
+                    }
+                }
+                else // Lookup custom color names stored in settings.xml.
+                {
+                    auto shadow = data;
+                    auto color_name = utf::take_front<faux>(shadow, ";");
+                    utf::trim(color_name);
+                    auto name_str = utf::name2token(color_name);
+                    auto iter = owner.defcfg.color_names.find(name_str);
+                    if (iter != owner.defcfg.color_names.end())
+                    {
+                        data = shadow;
+                        return std::pair{ type::rgbcolor, iter->second };
                     }
                 }
                 return { type::invalid, 0 };
@@ -839,7 +965,7 @@ namespace netxs::ui
                 };
                 procs[ansi::osc_reset_crclr] = [&](view /*data*/)
                 {
-                    owner.caret.color(owner.config.def_curclr);
+                    owner.caret.color(owner.defcfg.def_curclr);
                 };
                 procs[ansi::osc_reset_fgclr] = [&](view /*data*/)
                 {
@@ -973,8 +1099,8 @@ namespace netxs::ui
 
                 // Do not use non-standard vt.
                 //vt.csier.table[csi_ccc][ccc_cup] = V{ p->cup0(q); }; // CCC_CUP
-                //vt.csier.table[csi_ccc][ccc_chx] = V{ p->chx0(q.subarg(0)); }; // CCC_СHX
-                //vt.csier.table[csi_ccc][ccc_chy] = V{ p->chy0(q.subarg(0)); }; // CCC_СHY
+                //vt.csier.table[csi_ccc][ccc_chx] = V{ p->chx0(q.subarg(0)); }; // CCC_CHX
+                //vt.csier.table[csi_ccc][ccc_chy] = V{ p->chy0(q.subarg(0)); }; // CCC_CHY
                 vt.csier.table[csi_ccc][ccc_sbs] = V{ p->owner.sbsize(q); }; // CCC_SBS: Set scrollback size.
                 vt.csier.table[csi_ccc][ccc_rst] = V{ p->owner.setdef();  }; // CCC_RST: Reset to defaults.
                 vt.csier.table[csi_ccc][ccc_sgr] = V{ p->owner.setsgr(q); }; // CCC_SGR: Set default SGR.
@@ -990,7 +1116,7 @@ namespace netxs::ui
                 vt.intro[ctrl::esc][esc_nel   ] = V{ p->cr(); p->dn(1); }; // ESC E  Move cursor down and CR. Same as CSI 1 E
                 vt.intro[ctrl::esc][esc_decdhl] = V{ p->dhl(q); };         // ESC # ...  ESC # 3, ESC # 4, ESC # 5, ESC # 6, ESC # 8
 
-                vt.intro[ctrl::esc][esc_apc   ] = V{ p->msg(esc_apc, q); }; // ESC _ ... ST  APC.
+                vt.intro[ctrl::esc][esc_apc   ] = V{ p->apc(q); };          // ESC _ ... ST  APC.
                 vt.intro[ctrl::esc][esc_dcs   ] = V{ p->msg(esc_dcs, q); }; // ESC P ... ST  DCS.
                 vt.intro[ctrl::esc][esc_sos   ] = V{ p->msg(esc_sos, q); }; // ESC X ... ST  SOS.
                 vt.intro[ctrl::esc][esc_pm    ] = V{ p->msg(esc_pm , q); }; // ESC ^ ... ST  PM.
@@ -1034,6 +1160,16 @@ namespace netxs::ui
                     if (!proc)
                     {
                         proc = [i](auto& q, auto& p){ p->not_implemented_CSI(i, q); };
+                    }
+                }
+                // Log all unimplemented SGR attributes.
+                auto& vt_csier_table_csi_sgr = vt.csier.table[csi_sgr];
+                for (auto i = 0; i < (si32)vt_csier_table_csi_sgr.size(); ++i)
+                {
+                    auto& proc = vt_csier_table_csi_sgr[i];
+                    if (!proc)
+                    {
+                        proc = [i](auto&, auto&){ log("%%SGR %val% attribute is not supported", prompt::term, i); };
                     }
                 }
                 auto& esc_lookup = vt.intro[ctrl::esc];
@@ -1257,7 +1393,7 @@ namespace netxs::ui
                     auto nothing = match.each([](auto& c){ return !c.isspc(); });
                     if (nothing) match = {};
                 }
-                ++alive;
+                alive = datetime::uniqueid();
             }
             // bufferbase: Ping selection state if is available.
             void selection_review()
@@ -1388,7 +1524,7 @@ namespace netxs::ui
                 auto changed = faux;
                 if (parser::style.wrp() != old_style.wrp())
                 {
-                    auto w = parser::style.wrp() == wrap::none ? (si32)owner.config.def_wrpmod
+                    auto w = parser::style.wrp() == wrap::none ? (si32)owner.defcfg.def_wrpmod
                                                                : (si32)parser::style.wrp();
                     owner.base::signal(tier::release, terminal::events::layout::wrapln, w);
                     changed = true;
@@ -1571,6 +1707,43 @@ namespace netxs::ui
                         break;
                 }
             }
+            void apc(qiew& q)
+            {
+                parser::flush();
+                auto script_body = qiew{};
+                auto head = q.begin();
+                auto tail = q.end();
+                while (head != tail)
+                {
+                    auto c = *head++;
+                    if (c == ansi::c0_bel)
+                    {
+                        script_body = qiew{ q.begin(), std::prev(head) };
+                        break;
+                    }
+                    else if (c == ansi::c0_esc && head != tail && *head == '\\')
+                    {
+                        script_body = qiew{ q.begin(), std::prev(head) };
+                        head++;
+                        break;
+                    }
+                }
+                q = { head, tail };
+                if (script_body.size() > ansi::apc_prefix_lua.size())
+                {
+                    auto payload_marker = text{ script_body.substr(0, ansi::apc_prefix_lua.size()) };
+                    if (utf::to_lower(payload_marker) == ansi::apc_prefix_lua)
+                    {
+                        script_body.remove_prefix(ansi::apc_prefix_lua.size());
+                        auto& luafx = owner.bell::indexer.luafx;
+                        luafx.run_script(owner, script_body);
+                    }
+                    else
+                    {
+                        log("%%Unsupported APC payload: %payload%. Please use the '%lua%' prefix for the payload.", prompt::term, ansi::hi(utf::debase437(script_body)), ansi::apc_prefix_lua);
+                    }
+                }
+            }
             void msg(si32 cmd, qiew& q)
             {
                 parser::flush();
@@ -1648,7 +1821,7 @@ namespace netxs::ui
                 else // Add additional default tabstops.
                 {
                     stops.reserve(new_size);
-                    auto step = owner.config.def_tablen;
+                    auto step = owner.defcfg.def_tablen;
                     auto next = last_stop / step * step;
                     auto add_count = new_size - step;
                     while (next < add_count)
@@ -1666,7 +1839,7 @@ namespace netxs::ui
             void stb()
             {
                 parser::flush();
-                if (coord.x <= 0 || coord.x > owner.config.def_mxline) return;
+                if (coord.x <= 0 || coord.x > owner.defcfg.def_mxline) return;
                 resize_tabstops(coord.x);
                 auto  coor = coord.x - 1;
                 auto  head = stops.begin();
@@ -1753,8 +1926,8 @@ namespace netxs::ui
                     }
                     else
                     {
-                        coord.x += notab ? owner.config.def_tablen
-                                         : owner.config.def_tablen - netxs::grid_mod(coord.x, owner.config.def_tablen);
+                        coord.x += notab ? owner.defcfg.def_tablen
+                                         : owner.defcfg.def_tablen - netxs::grid_mod(coord.x, owner.defcfg.def_tablen);
                     }
                 }
                 else
@@ -1766,8 +1939,8 @@ namespace netxs::ui
                     }
                     else
                     {
-                        coord.x -= notab ? owner.config.def_tablen
-                                         :(owner.config.def_tablen + coord.x - 1) % owner.config.def_tablen + 1;
+                        coord.x -= notab ? owner.defcfg.def_tablen
+                                         :(owner.defcfg.def_tablen + coord.x - 1) % owner.defcfg.def_tablen + 1;
                     }
                 }
             }
@@ -2173,12 +2346,12 @@ namespace netxs::ui
             {
                 switch (owner.ftrack ? mode : mime::disabled)
                 {
-                    case mime::ansitext: _shade(owner.config.def_ansi_f, owner.config.def_ansi_c, work); break;
-                    case mime::richtext: _shade(owner.config.def_rich_f, owner.config.def_rich_c, work); break;
-                    case mime::htmltext: _shade(owner.config.def_html_f, owner.config.def_html_c, work); break;
-                    case mime::textonly: _shade(owner.config.def_text_f, owner.config.def_text_c, work); break;
-                    case mime::safetext: _shade(owner.config.def_safe_f, owner.config.def_safe_c, work); break;
-                    default:             _shade(owner.config.def_none_f, owner.config.def_none_c, work); break;
+                    case mime::ansitext: _shade(owner.defcfg.def_ansi_f, owner.defcfg.def_ansi_c, work); break;
+                    case mime::richtext: _shade(owner.defcfg.def_rich_f, owner.defcfg.def_rich_c, work); break;
+                    case mime::htmltext: _shade(owner.defcfg.def_html_f, owner.defcfg.def_html_c, work); break;
+                    case mime::textonly: _shade(owner.defcfg.def_text_f, owner.defcfg.def_text_c, work); break;
+                    case mime::safetext: _shade(owner.defcfg.def_safe_f, owner.defcfg.def_safe_c, work); break;
+                    default:             _shade(owner.defcfg.def_none_f, owner.defcfg.def_none_c, work); break;
                 }
             }
             // bufferbase: Rasterize selection with grips.
@@ -2464,7 +2637,7 @@ namespace netxs::ui
             void el(si32 n) override
             {
                 bufferbase::flush();
-                _el(n, canvas, coord, panel, brush.nul());
+                _el(n, canvas, coord, panel, brush.spc());
             }
             // alt_screen: CSI n @  ICH. Insert n blanks after cursor. No wrap. Existing chars after cursor shifts to the right. Don't change cursor pos.
             void ins(si32 n) override
@@ -2472,13 +2645,13 @@ namespace netxs::ui
                 bufferbase::flush();
                 assert(coord.y < panel.y);
                 assert(coord.x >= 0);
-                canvas.insert(coord, n, brush.nul());
+                canvas.insert(coord, n, brush.spc());
             }
             // alt_screen: CSI n P  Delete (not Erase) letters under the cursor.
             void dch(si32 n) override
             {
                 bufferbase::flush();
-                canvas.cutoff(coord, n, brush.nul());
+                canvas.cutoff(coord, n, brush.spc());
             }
             // alt_screen: '\x7F'  Delete letter backward.
             void del(si32 n) override
@@ -2490,7 +2663,7 @@ namespace netxs::ui
                 {
                     wrapup();
                 }
-                canvas.backsp(coord, n, brush.nul());
+                canvas.backsp(coord, n, brush.spc());
                 if (coord.y < 0) coord = dot_00;
             }
             // alt_screen: Move cursor by n in line.
@@ -2647,7 +2820,7 @@ namespace netxs::ui
                          && match.length()
                          && owner.selmod == mime::textonly;
                 canvas.move(full.coor - dest.coor());
-                dest.plot(canvas, cell::shaders::fuse);
+                dest.plot(canvas, cell::shaders::flat);
                 if (auto area = canvas.area())
                 {
                     if (find)
@@ -2662,7 +2835,7 @@ namespace netxs::ui
                                 offset += match.length();
                             }
                         };
-                        _shade(owner.config.def_find_f, owner.config.def_find_c, work);
+                        _shade(owner.defcfg.def_find_f, owner.defcfg.def_find_c, work);
                     }
                     selection_render(dest);
                 }
@@ -3224,17 +3397,17 @@ namespace netxs::ui
 
             scroll_buf(term& boss)
                 : bufferbase{ boss },
-                       batch{ boss.config.def_length, boss.config.def_growdt, boss.config.def_growmx },
+                       batch{ boss.defcfg.def_length, boss.defcfg.def_growdt, boss.defcfg.def_growmx },
                        index{ 1    },
                        place{      },
-                       shore{ boss.config.def_margin }
+                       shore{ boss.defcfg.def_margin }
             {
-                parser::style.wrp(boss.config.def_wrpmod);
-                batch.invite(0, deco{}.wrp(boss.config.def_wrpmod == wrap::on), cell{}); // At least one line must exist.
+                parser::style.wrp(boss.defcfg.def_wrpmod);
+                batch.invite(0, deco{}.wrp(boss.defcfg.def_wrpmod == wrap::on), cell{}); // At least one line must exist.
                 batch.set_width(1);
                 index_rebuild();
 
-                auto c = cell{ '\0' }.fgc(boss.config.def_fcolor).bgc(boss.config.def_bcolor).link(boss.id);
+                auto c = cell{ '\0' }.fgc(boss.defcfg.def_fcolor).bgc(boss.defcfg.def_bcolor).link(boss.id);
                 boss.defclr = c;
                 parser::brush.reset(c);
             }
@@ -3392,7 +3565,7 @@ namespace netxs::ui
             // scroll_buf: Set left/right scrollback additional padding.
             void setpad(si32 new_value) override
             {
-                if (new_value < 0) new_value = owner.config.def_margin;
+                if (new_value < 0) new_value = owner.defcfg.def_margin;
                 shore = std::min(new_value, 255);
             }
             // scroll_buf: Get left/right scrollback additional padding.
@@ -3691,8 +3864,8 @@ namespace netxs::ui
                 // Preserve original content. The app that changed the margins is responsible for updating the content.
                 auto upnew = std::max(upmin, twod{ panel.x, sctop });
                 auto dnnew = std::max(dnmin, twod{ panel.x, scend });
-                upbox.crop(upnew);
-                dnbox.crop(dnnew);
+                upbox.crop(upnew, brush.dry());
+                dnbox.crop(dnnew, brush.dry());
 
                 index.resize(arena); // Use a fixed ring because new lines are added much more often than a futures feed.
                 auto away = batch.basis != batch.slide;
@@ -4391,7 +4564,7 @@ namespace netxs::ui
                 bufferbase::flush();
                 //todo revise - nul() or dry()
                 //auto blank = brush.dry();
-                auto blank = brush.nul();
+                auto blank = brush.spc();
                 if (auto ctx = get_context(coord))
                 {
                     auto  start = si32{};
@@ -4446,7 +4619,7 @@ namespace netxs::ui
             void ins(si32 n) override
             {
                 bufferbase::flush();
-                auto blank = brush.nul();
+                auto blank = brush.spc();
                 if (auto ctx = get_context(coord))
                 {
                     n = std::min(n, panel.x - coord.x);
@@ -4465,7 +4638,7 @@ namespace netxs::ui
             void dch(si32 n) override
             {
                 bufferbase::flush();
-                auto blank = brush.nul();
+                auto blank = brush.spc();
                 if (auto ctx = get_context(coord))
                 {
                     auto& curln = batch.current();
@@ -4596,7 +4769,7 @@ namespace netxs::ui
                 {
                     _fwd(-n);
                     auto& curln = batch.current();
-                    curln.splice<faux>(batch.caret, n, brush.nul());
+                    curln.splice<faux>(batch.caret, n, brush.spc());
                 }
             }
             // scroll_buf: Move cursor by n in line.
@@ -4637,8 +4810,8 @@ namespace netxs::ui
                 {
                     auto& line = *++iter;
                     //todo respect line alignment
-                    if (line.wrapped()) curln.splice(coor, line                   , cell::shaders::full);
-                    else                curln.splice(coor, line.substr(0, panel.x), cell::shaders::full);
+                    if (line.wrapped()) curln.splice(coor, line                   , cell::shaders::full, brush.spc());
+                    else                curln.splice(coor, line.substr(0, panel.x), cell::shaders::full, brush.spc());
                     coor += line.height(panel.x) * panel.x;
                 }
             }
@@ -4689,7 +4862,7 @@ namespace netxs::ui
                     coord.x     += count;
                     if (batch.caret <= panel.x || !curln.wrapped()) // case 0.
                     {
-                        curln.splice<Copy>(start, count, proto, fuse);
+                        curln.splice<Copy>(start, count, proto, fuse, brush.spc());
                         auto& mapln = index[coord.y];
                         assert(coord.x % panel.x == batch.caret % panel.x && mapln.index == curln.index);
                         if (coord.x > mapln.width)
@@ -4717,7 +4890,7 @@ namespace netxs::ui
                         auto curid = curln.index;
                         if (query > 0) // case 3 - complex: Cursor is outside the viewport.
                         {              // cursor overlaps some lines below and placed below the viewport.
-                            curln.resize(batch.caret);
+                            curln.resize(batch.caret, brush.spc());
                             batch.recalc(curln);
                             if (auto n = (si32)(batch.back().index - curid))
                             {
@@ -4765,7 +4938,7 @@ namespace netxs::ui
                             auto& mapln = index[coord.y];
                             if (curid == mapln.index) // case 1 - plain: cursor is inside the current paragraph.
                             {
-                                curln.resize(batch.caret);
+                                curln.resize(batch.caret, brush.spc());
                                 if (batch.caret - coord.x == mapln.start)
                                 {
                                     if (coord.x > mapln.width)
@@ -4791,8 +4964,8 @@ namespace netxs::ui
                                 auto  shadow = destln.wrapped() ? destln.substr(mapln.start + coord.x)
                                                                 : destln.substr(mapln.start + coord.x, std::min(panel.x, mapln.width) - coord.x);
 
-                                if constexpr (mixer) curln.resize(batch.caret +shadow.length());
-                                else                 curln.splice(batch.caret, shadow, cell::shaders::full);
+                                if constexpr (mixer) curln.resize(batch.caret +shadow.length(), brush.spc());
+                                else                 curln.splice(batch.caret, shadow, cell::shaders::full, brush.spc());
 
                                 batch.recalc(curln);
                                 auto w = curln.length();
@@ -4843,7 +5016,7 @@ namespace netxs::ui
                                 assert(test_futures());
                             } // case 2 done.
                         }
-                        batch.current().splice<Copy>(start, count, proto, fuse);
+                        batch.current().splice<Copy>(start, count, proto, fuse, brush.spc());
                     }
                     assert(coord.y >= 0 && coord.y < arena);
                     coord.y += y_top;
@@ -4898,7 +5071,7 @@ namespace netxs::ui
                     auto newlen = batch.caret + count;
                     if (newlen > curln.length())
                     {
-                        curln.crop(newlen);
+                        curln.crop(newlen, brush.spc());
                         auto& mapln = index[coord.y - y_top];
                         mapln.width = newlen % panel.x;
                         batch.recalc(curln);
@@ -4974,7 +5147,7 @@ namespace netxs::ui
                 batch.clear();
                 reset_scroll_region();
                 bufferbase::clear_all();
-                resize_history(owner.config.def_length, owner.config.def_growdt, owner.config.def_growmx);
+                resize_history(owner.defcfg.def_length, owner.defcfg.def_growdt, owner.defcfg.def_growmx);
             }
             // scroll_buf: Set scrollback limits.
             void resize_history(si32 new_size, si32 grow_by = 0, si32 grow_mx = 0)
@@ -5020,7 +5193,7 @@ namespace netxs::ui
                     auto height = curln.height(panel.x);
                     auto length = curln.length();
                     auto adjust = curln.style.jet();
-                    dest.output(curln, coor, cell::shaders::fuse);
+                    dest.output(curln, coor, cell::shaders::flat);
                     //dest.output_proxy(curln, coor, [&](auto const& coord, auto const& subblock, auto isr_to_l)
                     //{
                     //    dest.text(coord, subblock, isr_to_l, cell::shaders::fusefull);
@@ -5038,7 +5211,7 @@ namespace netxs::ui
                                 offset += match.length();
                             }
                         };
-                        _shade(owner.config.def_find_f, owner.config.def_find_c, work);
+                        _shade(owner.defcfg.def_find_f, owner.defcfg.def_find_c, work);
                     }
 
                     if (length > 0) // Highlight the lines that are not shown in full.
@@ -5092,8 +5265,8 @@ namespace netxs::ui
                     auto end_coor = twod{ 0, y_end + 1     } + destcoor;
                     upbox.move(top_coor);
                     dnbox.move(end_coor);
-                    dest.plot(upbox, cell::shaders::xlucent(owner.config.def_lucent));
-                    dest.plot(dnbox, cell::shaders::xlucent(owner.config.def_lucent));
+                    dest.plot(upbox, cell::shaders::xlucent(owner.defcfg.def_lucent));
+                    dest.plot(dnbox, cell::shaders::xlucent(owner.defcfg.def_lucent));
                     if (find)
                     {
                         auto draw = [&](auto const& block)
@@ -5114,7 +5287,7 @@ namespace netxs::ui
                                         offset += match.length();
                                     }
                                 };
-                                _shade(owner.config.def_find_f, owner.config.def_find_c, marker);
+                                _shade(owner.defcfg.def_find_f, owner.defcfg.def_find_c, marker);
                             }
                         };
                         draw(upbox);
@@ -5163,7 +5336,7 @@ namespace netxs::ui
                     auto& curln = batch[i];
                     if (fresh)
                     {
-                        curln.trimto(start);
+                        curln.trimto(start, brush.spc());
                     }
                     else
                     {
@@ -5173,12 +5346,12 @@ namespace netxs::ui
                             mapln.width = panel.x;
                             auto x = std::min(coor.x, panel.x); // Trim unwrapped lines by viewport.
                             curln.splice<true>(start + x, panel.x - x, blank);
-                            curln.trimto(start + panel.x);
+                            curln.trimto(start + panel.x, brush.spc());
                         }
                         else
                         {
                             mapln.width = coor.x;
-                            curln.trimto(start + coor.x);
+                            curln.trimto(start + coor.x, brush.spc());
                         }
                         assert(mapln.start == 0 || curln.wrapped());
                     }
@@ -5272,7 +5445,7 @@ namespace netxs::ui
                     auto endit = batch.end();
 
                     auto& newln = *curit;
-                    newln.splice(0, tmpln.substr(start), cell::shaders::full);
+                    newln.splice(0, tmpln.substr(start), cell::shaders::full, brush.spc());
                     batch.undock_base_back(tmpln);
                     batch.invite(newln);
 
@@ -5280,7 +5453,7 @@ namespace netxs::ui
                     {
                         auto& curln = *(curit - 1);
                         curln = std::move(tmpln);
-                        curln.trimto(start);
+                        curln.trimto(start, brush.spc());
                         batch.invite(curln);
                     }
 
@@ -6891,7 +7064,7 @@ namespace netxs::ui
         using vtty = os::vt::vtty;
 
         std::array<face, 5> pocket; // term: Buffers for DECCRA.
-        termconfig config; // term: Terminal settings.
+        termconfig defcfg; // term: Terminal settings.
         scroll_buf normal; // term: Normal    screen buffer.
         alt_screen altbuf; // term: Alternate screen buffer.
         buffer_ptr target; // term: Current   screen buffer pointer.
@@ -6925,11 +7098,12 @@ namespace netxs::ui
         para       imebox; // term: IME composition preview render.
         text       imetxt; // term: IME composition preview source.
         flow       imefmt; // term: IME composition preview layout.
-        eccc       appcfg; // term: Application startup config.
+        eccc       appcfg; // term: Application startup inits.
         os::fdrw   fdlink; // term: Optional DirectVT uplink.
         hook       onerun; // term: One-shot token for restart session.
         bool       rawkbd; // term: Exclusive keyboard access.
         bool       bottom_anchored; // term: Anchor scrollback content when resizing (default is anchor at bottom).
+        ui32       event_sources; // term: vt-input-mode event reporting bit-field.
         vtty       ipccon; // term: IPC connector. Should be destroyed first.
 
         // term: Place rectangle block to the scrollback buffer.
@@ -6994,8 +7168,12 @@ namespace netxs::ui
             {
                 area.coor = {};
                 fragment.area(area);
-                     if (target == &normal) write_block(normal, fragment, coor, src_area, cell::shaders::full);
-                else if (target == &altbuf) write_block(altbuf, fragment, coor, src_area, cell::shaders::full);
+                if (target == &normal) write_block(normal, fragment, coor, src_area, cell::shaders::full);
+                else
+                {
+                    auto& target_buffer = *(alt_screen*)target;
+                    write_block(target_buffer, fragment, coor, src_area, cell::shaders::full);
+                }
             }
             else
             {
@@ -7029,7 +7207,7 @@ namespace netxs::ui
                     auto path = text{ data.substr(delimpos) };
                     base::enqueue([&, path](auto& /*boss*/) mutable
                     {
-                        this->base::riseup(tier::preview, e2::form::prop::cwd, path); //todo VS2019 requires `this`
+                        base::riseup(tier::preview, e2::form::prop::cwd, path);
                     });
                 }
             }
@@ -7067,7 +7245,7 @@ namespace netxs::ui
             invert = faux;
             decckm = faux;
             bpmode = faux;
-            altscr = config.def_alt_on;
+            altscr = defcfg.def_alt_on;
             normal.brush.reset();
             ipccon.reset();
         }
@@ -7124,7 +7302,7 @@ namespace netxs::ui
                     mtrack.setmode(input::mouse::prot::sgr);
                     break;
                 case 1007: // Enable alternate scroll mode.
-                    altscr = config.def_alt_on;
+                    altscr = defcfg.def_alt_on;
                     break;
                 case 10060:// Enable mouse reporting outside the viewport (outside+negative coordinates).
                     mtrack.enable(input::mouse::mode::negative_args);
@@ -7182,7 +7360,7 @@ namespace netxs::ui
             altbuf.resize_viewport(target->panel);
             target = &altbuf;
         }
-        // term: Reset termnail parameters. (DECRST).
+        // term: Reset terminal parameters. (DECRST).
         void _decrst(si32 n)
         {
             switch (n)
@@ -7284,7 +7462,7 @@ namespace netxs::ui
                 case 4:     // Insert/Replace Mode (IRM) on.
                     insmod = true;
                     break;
-                case 20:    // LNM—Line Feed/New Line Mode on.
+                case 20:    // LNM-Line Feed/New Line Mode on.
                     target->set_autocr(true);
                     break;
                 default:
@@ -7299,7 +7477,7 @@ namespace netxs::ui
                 case 4:     // Insert/Replace Mode (IRM) off.
                     insmod = faux;
                     break;
-                case 20:    // LNM—Line Feed/New Line Mode off.
+                case 20:    // LNM-Line Feed/New Line Mode off.
                     target->set_autocr(faux);
                     break;
                 default:
@@ -7322,9 +7500,9 @@ namespace netxs::ui
         void sbsize(fifo& q)
         {
             target->flush();
-            auto ring_size = q.subarg(config.def_length);
-            auto grow_step = q.subarg(config.def_growdt);
-            auto grow_mxsz = q.subarg(config.def_growmx);
+            auto ring_size = q.subarg(defcfg.def_length);
+            auto grow_step = q.subarg(defcfg.def_growdt);
+            auto grow_mxsz = q.subarg(defcfg.def_growmx);
             normal.resize_history(ring_size, grow_step, grow_mxsz);
         }
         // term: Check and update scrollback buffer limits.
@@ -7370,7 +7548,7 @@ namespace netxs::ui
         void update(P proc)
         {
             auto lock = bell::sync();
-            if (config.resetonout) follow[axis::Y] = true;
+            if (defcfg.resetonout) follow[axis::Y] = true;
             if (follow[axis::Y])
             {
                 unsync |= proc();
@@ -7393,7 +7571,7 @@ namespace netxs::ui
         template<bool Forced = faux>
         auto ondata_direct(view data = {}, bufferbase* target_buffer = {})
         {
-            auto& console_ptr = target_buffer ? target_buffer : this->target;
+            auto& console_ptr = target_buffer ? target_buffer : target;
             if (data.size())
             {
                 if (io_log) log(prompt::cout, "\n\t", utf::replace_all(ansi::hi(utf::debase(data)), "\n", ansi::pushsgr().nil().add("\n\t").popsgr()));
@@ -7419,13 +7597,13 @@ namespace netxs::ui
         void setdef()
         {
             auto& console = *target;
-            defclr.txt('\0').fgc(config.def_fcolor).bgc(config.def_bcolor).link(base::id);
+            defclr.txt('\0').fgc(defcfg.def_fcolor).bgc(defcfg.def_bcolor).link(base::id);
             console.brush.reset(defclr);
             console.style.reset();
-            console.style.wrp(config.def_wrpmod);
-            console.setpad(config.def_margin);
-            selection_selmod(config.def_selmod);
-            caret.style(config.def_cursor);
+            console.style.wrp(defcfg.def_wrpmod);
+            console.setpad(defcfg.def_margin);
+            selection_selmod(defcfg.def_selmod);
+            caret.style(defcfg.def_cursor);
         }
         // term: Set terminal background.
         void setsgr(fifo& q)
@@ -7447,7 +7625,7 @@ namespace netxs::ui
                 q.settop(q.desub(param));
                 parser.table[ansi::csi_sgr].execute(q, ptr);
             }
-            else mark.brush = cell{ '\0' }.fgc(config.def_fcolor).bgc(config.def_bcolor);
+            else mark.brush = cell{ '\0' }.fgc(defcfg.def_fcolor).bgc(defcfg.def_bcolor);
             set_color(mark.brush);
         }
         // term: CCC_LSR: Enable line style reporting.
@@ -7562,7 +7740,7 @@ namespace netxs::ui
             auto data = get_clipboard_text(gear);
             if (data.size())
             {
-                pro::focus::set(this->This(), gear.id, solo::off);
+                pro::focus::set(This(), gear.id, solo::off);
                 _paste(data);
                 return true;
             }
@@ -7571,7 +7749,7 @@ namespace netxs::ui
         auto _copy(hids& gear, text const& data)
         {
             auto form = selmod == mime::disabled ? mime::textonly : selmod;
-            pro::focus::set(this->This(), gear.id, solo::off);
+            pro::focus::set(This(), gear.id, solo::off);
             gear.set_clipboard(target->panel, data, form);
         }
         auto copy(hids& gear)
@@ -7638,7 +7816,7 @@ namespace netxs::ui
             }
             if (utf8.size())
             {
-                pro::focus::set(this->This(), gear.id, solo::off);
+                pro::focus::set(This(), gear.id, solo::off);
                 follow[axis::X] = true;
                 if (bpmode)
                 {
@@ -7765,7 +7943,7 @@ namespace netxs::ui
             {
                 if (gear.captured()) // Forward mouse wheel events to all parents. Wheeling while button pressed.
                 {
-                    auto& offset = this->base::coor();
+                    auto& offset = base::coor();
                     if (auto parent_ptr = base::parent())
                     {
                         auto& parent = *parent_ptr;
@@ -7775,7 +7953,7 @@ namespace netxs::ui
                 else
                 {
                     if (gear.meta(hids::anyCtrl)) return; // Ctrl+Wheel is reserved for zooming.
-                    if (altscr && target == &altbuf)
+                    if (altscr && target != &normal)
                     {
                         if (gear.whlsi)
                         {
@@ -7895,7 +8073,7 @@ namespace netxs::ui
         }
         void set_log(bool state)
         {
-            if (config.allow_logs)
+            if (defcfg.allow_logs)
             {
                 io_log = state;
                 base::signal(tier::release, terminal::events::io_log, state);
@@ -7961,7 +8139,7 @@ namespace netxs::ui
                     auto byemsg = error().add("Press Esc to close or press Enter to restart the session.\r\n")
                                          .add("\n");
                     ondata(byemsg);
-                    this->LISTEN(tier::release, input::events::keybd::post, gear, onerun) //todo VS2019 requires `this`
+                    LISTEN(tier::release, input::events::keybd::post, gear, onerun)
                     {
                         if (gear.keystat)
                         {
@@ -7973,7 +8151,7 @@ namespace netxs::ui
                             }
                         }
                     };
-                    this->base::riseup(tier::release, e2::form::global::sysstart, 0);
+                    base::riseup(tier::release, e2::form::global::sysstart, 0);
                 };
                 auto renew = [&]
                 {
@@ -7983,7 +8161,7 @@ namespace netxs::ui
                 };
                      if (forced)                close();
                 else if (resume.exchange(faux)) renew();
-                else switch (config.def_atexit)
+                else switch (defcfg.def_atexit)
                 {
                     case commands::atexit::smart: code ? query()
                                                        : close(); break;
@@ -8000,7 +8178,7 @@ namespace netxs::ui
         {
             base::riseup(tier::release, e2::form::upon::started, This());
         }
-        void start(eccc cfg, os::fdrw fds = {})
+        void start_term(eccc cfg, os::fdrw fds = {})
         {
             appcfg = cfg;
             fdlink = fds;
@@ -8009,19 +8187,14 @@ namespace netxs::ui
                 base::enqueue([&, backup = This()](auto& /*boss*/) mutable // We can't request the title before conio.run(), so we queue the request.
                 {
                     auto& title = wtrack.get(ansi::osc_title);
-                    if (title.empty()) wtrack.set(ansi::osc_title); // Set default title if it is empty.
-                    if (config.send_input.size()) ipccon.write<faux>(config.send_input);
-                    // Sync external listeners with terminal current state.
-                    base::signal(tier::release, terminal::events::io_log,         io_log);
-                    base::signal(tier::release, terminal::events::selmod,         selmod);
-                    base::signal(tier::release, terminal::events::onesht,         onesht);
-                    base::signal(tier::release, terminal::events::selalt,         selalt);
-                    base::signal(tier::release, terminal::events::rawkbd,         rawkbd);
-                    base::signal(tier::release, terminal::events::colors::bg,     target->brush.bgc());
-                    base::signal(tier::release, terminal::events::colors::fg,     target->brush.fgc());
-                    base::signal(tier::release, terminal::events::layout::wrapln, (si32)target->style.wrp());
-                    base::signal(tier::release, terminal::events::layout::align,  (si32)target->style.jet());
-                    base::signal(tier::release, terminal::events::search::status, target->selection_button());
+                    if (title.empty())
+                    {
+                        wtrack.set(ansi::osc_title); // Set default title if it is empty.
+                    }
+                    if (defcfg.send_input.size())
+                    {
+                        ipccon.write<faux>(defcfg.send_input);
+                    }
                     backup.reset(); // Backup should dtored under the lock.
                 });
                 appcfg.win = target->panel;
@@ -8035,7 +8208,10 @@ namespace netxs::ui
         }
         void close(bool fast = true, bool notify = true)
         {
-            if (notify) this->base::signal(tier::request, e2::form::proceed::quit::one, fast);
+            if (notify)
+            {
+                base::signal(tier::request, e2::form::proceed::quit::one, fast);
+            }
             forced = fast;
             if (ipccon)
             {
@@ -8045,7 +8221,7 @@ namespace netxs::ui
                     {
                         ipccon.payoff(io_log); // Wait child process.
                         auto lock = bell::sync();
-                        this->base::riseup(tier::release, e2::form::proceed::quit::one, forced); //todo VS2019 requires `this`
+                        base::riseup(tier::release, e2::form::proceed::quit::one, forced);
                         backup.reset(); // Backup should dtored under the lock.
                     });
                 }
@@ -8056,7 +8232,7 @@ namespace netxs::ui
                 onerun.reset();
                 base::enqueue([&, backup = This()](auto& /*boss*/) mutable // The termlink trailer (calling ui::term::close()) should be joined before ui::term dtor.
                 {
-                    this->base::riseup(tier::release, e2::form::proceed::quit::one, forced); //todo VS2019 requires `this`
+                    base::riseup(tier::release, e2::form::proceed::quit::one, forced);
                     backup.reset(); // Backup should dtored under the lock.
                 });
             }
@@ -8073,12 +8249,15 @@ namespace netxs::ui
             if (auto width = cooked.length())
             {
                 auto& proto = cooked.pick();
-                auto& brush = target == &normal ? normal.parser::brush
-                                                : altbuf.parser::brush;
+                auto& brush = target->parser::brush;
                 cooked.each([&](cell& c){ c.meta(brush); });
                 //todo split by char height and do _data2d(...) for each
                 if (target == &normal) normal._data(width, proto, fx);
-                else                   altbuf._data(width, proto, fx);
+                else
+                {
+                    auto& target_buffer = *(alt_screen*)target;
+                    target_buffer._data(width, proto, fx);
+                }
             }
         }
         // term: Move composition cursor (imebox.caret) inside viewport with wordwrapping.
@@ -8103,13 +8282,13 @@ namespace netxs::ui
             imefmt.flow::compose<faux>(imebox, test);
             return composit_cursor;
         }
-        void key_event(hids& gear)
+        void key_event(hids& gear, bool forced_event = faux)
         {
-            if (gear.touched && !rawkbd) return;
+            if (!forced_event && gear.touched && !rawkbd) return;
             switch (gear.payload)
             {
                 case keybd::type::keypress:
-                    if (config.resetonkey && gear.doinput())
+                    if (defcfg.resetonkey && gear.doinput())
                     {
                         base::riseup(tier::release, e2::form::animate::reset, 0); // Reset scroll animation.
                         unsync = true;
@@ -8117,7 +8296,7 @@ namespace netxs::ui
                         follow[axis::Y] = true;
                     }
                     ipccon.keybd(gear, decckm, kbmode);
-                    if (!gear.touched || gear.keystat != input::key::released) gear.set_handled(faux);
+                    if (forced_event || !gear.touched || gear.keystat != input::key::released || rawkbd) gear.set_handled(faux);
                     break;
                 case keybd::type::imeinput:
                 case keybd::type::keypaste:
@@ -8172,12 +8351,12 @@ namespace netxs::ui
         }
 
     public:
-        term(xmls& xml_config)
-            : config{ xml_config },
+        term()
+            : defcfg{ bell::indexer.config },
               normal{ *this },
               altbuf{ *this },
               target{ &normal },
-               caret{ base::plugin<pro::caret>(config.def_cur_on, config.def_cursor, dot_00, config.def_period, config.def_curclr) },
+               caret{ base::plugin<pro::caret>(defcfg.def_cur_on, defcfg.def_cursor, dot_00, defcfg.def_period, defcfg.def_curclr) },
                timer{ base::plugin<pro::timer>() },
                robot{ base::plugin<pro::robot>() },
               mtrack{ *this },
@@ -8191,30 +8370,33 @@ namespace netxs::ui
               unsync{ faux },
               invert{ faux },
               styled{ faux },
-              io_log{ config.def_io_log },
-              selalt{ config.def_selalt },
+              io_log{ defcfg.def_io_log },
+              selalt{ defcfg.def_selalt },
               resume{ faux },
               forced{ faux },
-              selmod{ config.def_selmod },
+              selmod{ defcfg.def_selmod },
               onesht{ mime::disabled },
-              altscr{ config.def_alt_on },
+              altscr{ defcfg.def_alt_on },
               kbmode{ prot::vt },
               ime_on{ faux },
               rawkbd{ faux },
-              bottom_anchored{ true }
+              bottom_anchored{ true },
+              event_sources{}
         {
-            set_fg_color(config.def_fcolor);
-            set_bg_color(config.def_bcolor);
+            set_fg_color(defcfg.def_fcolor);
+            set_bg_color(defcfg.def_bcolor);
             selection_submit();
-            selection_selmod(config.def_selmod);
+            selection_selmod(defcfg.def_selmod);
 
             auto& mouse = base::plugin<pro::mouse>();
             mouse.draggable<hids::buttons::left>(selection_passed());
 
             base::plugin<pro::keybd>();
             auto& luafx = bell::indexer.luafx;
-            auto script_list = xml_config.list("/config/events/terminal/script");
-            auto bindings = input::bindings::load(xml_config, script_list);
+            auto& config = bell::indexer.config;
+            auto terminal_context = config.settings::push_context("/config/events/terminal/");
+            auto script_list = config.settings::take_ptr_list_for_name("script");
+            auto bindings = input::bindings::load(config, script_list);
             input::bindings::keybind(*this, bindings);
             base::add_methods(basename::terminal,
             {
@@ -8261,7 +8443,7 @@ namespace netxs::ui
                                                         }
                                                         else
                                                         {
-                                                            auto state = luafx.get_args_or(1, 0);
+                                                            auto state = luafx.get_args_or(1, si32{ 0 });
                                                             set_rawkbd(1 + (si32)!!state);
                                                             luafx.set_return();
                                                         }
@@ -8326,8 +8508,28 @@ namespace netxs::ui
                                                     {
                                                         luafx.run_with_gear([&](auto& gear)
                                                         {
-                                                            auto crop = luafx.get_args_or(1, ""s);
+                                                            auto args_count = luafx.args_count();
+                                                            auto crop = text{};
+                                                            for (auto i = 1; i <= args_count; i++)
+                                                            {
+                                                                crop += luafx.get_args_or(i, ""s);
+                                                            }
                                                             if (crop.size()) data_in(crop);
+                                                            gear.set_handled();
+                                                        });
+                                                    }},
+                { methods::PrintLn,                 [&]
+                                                    {
+                                                        luafx.run_with_gear([&](auto& gear)
+                                                        {
+                                                            auto args_count = luafx.args_count();
+                                                            auto crop = text{};
+                                                            for (auto i = 1; i <= args_count; i++)
+                                                            {
+                                                                crop += luafx.get_args_or(i, ""s);
+                                                            }
+                                                            crop += "\n\r";
+                                                            data_in(crop);
                                                             gear.set_handled();
                                                         });
                                                     }},
@@ -8382,7 +8584,7 @@ namespace netxs::ui
                                                         }
                                                         else
                                                         {
-                                                            auto state = luafx.get_args_or(1, 1);
+                                                            auto state = luafx.get_args_or(1, si32{ 1 });
                                                             set_selmod(state % mime::count);
                                                             luafx.set_return();
                                                         }
@@ -8457,7 +8659,7 @@ namespace netxs::ui
                                                         }
                                                         else
                                                         {
-                                                            auto state = luafx.get_args_or(1, 0);
+                                                            auto state = luafx.get_args_or(1, si32{ 0 });
                                                             base::riseup(tier::preview, terminal::events::toggle::cwdsync, state);
                                                             luafx.set_return();
                                                         }
@@ -8507,10 +8709,32 @@ namespace netxs::ui
                                                         }
                                                         else
                                                         {
-                                                            auto state = luafx.get_args_or(1, 0);
+                                                            auto state = luafx.get_args_or(1, si32{ 0 });
                                                             set_log(state);
                                                             luafx.set_return();
                                                         }
+                                                    }},
+                { methods::AltbufMode,              [&]
+                                                    {
+                                                        auto args_count = luafx.args_count();
+                                                        if (!args_count)
+                                                        {
+                                                            auto is_altbuf = target != &normal;
+                                                            luafx.set_return(is_altbuf);
+                                                        }
+                                                        else
+                                                        {
+                                                            auto state = luafx.get_args_or(1, faux);
+                                                            state ? _decset(1049) : _decrst(1049);
+                                                            luafx.set_return();
+                                                        }
+                                                    }},
+                { methods::ForwardKeys,             [&]
+                                                    {
+                                                        luafx.run_with_gear([&](auto& gear)
+                                                        {
+                                                            key_event(gear, true);
+                                                        });
                                                     }},
                 { methods::ClearScrollback,         [&]
                                                     {
@@ -8521,6 +8745,136 @@ namespace netxs::ui
                                                         }
                                                         clear_scrollback();
                                                         luafx.set_return();
+                                                    }},
+                { methods::ScrollbackSize,          [&]
+                                                    {
+                                                        luafx.run_with_gear_wo_return([&](auto& gear){ gear.set_handled(); });
+                                                        target->flush();
+                                                        auto args_count = luafx.args_count();
+                                                        if (!args_count)
+                                                        {
+                                                            luafx.set_return(defcfg.def_length, defcfg.def_growdt, defcfg.def_growmx);
+                                                        }
+                                                        else
+                                                        {
+                                                            auto ring_size = luafx.get_args_or(1, defcfg.def_length);
+                                                            auto grow_step = luafx.get_args_or(2, defcfg.def_growdt);
+                                                            auto grow_mxsz = luafx.get_args_or(3, defcfg.def_growmx);
+                                                            normal.resize_history(ring_size, grow_step, grow_mxsz);
+                                                            luafx.set_return();
+                                                        }
+                                                    }},
+                { methods::SetBackground,           [&]
+                                                    {
+                                                        target->flush();
+                                                        auto brush = target->brush;
+                                                        set_color(brush.txt('\0'));
+                                                        luafx.set_return();
+                                                    }},
+                { methods::ScrollbackPadding,       [&]
+                                                    {
+                                                        target->flush();
+                                                        auto args_count = luafx.args_count();
+                                                        if (!args_count)
+                                                        {
+                                                            luafx.set_return(target->getpad());
+                                                        }
+                                                        else
+                                                        {
+                                                            auto padding = luafx.get_args_or(1, 0);
+                                                            target->setpad(padding);
+                                                            luafx.set_return();
+                                                        }
+                                                    }},
+                { methods::TabLength,               [&]
+                                                    {
+                                                        target->flush();
+                                                        auto args_count = luafx.args_count();
+                                                        if (!args_count)
+                                                        {
+                                                            luafx.set_return(defcfg.def_tablen);
+                                                        }
+                                                        else
+                                                        {
+                                                            auto tablen = std::clamp(luafx.get_args_or(1, 8), 1, 256);
+                                                            defcfg.def_tablen = tablen;
+                                                            target->rtb();
+                                                            luafx.set_return();
+                                                        }
+                                                    }},
+                { methods::RightToLeft,             [&]
+                                                    {
+                                                        target->flush();
+                                                        auto args_count = luafx.args_count();
+                                                        if (!args_count)
+                                                        {
+                                                            luafx.set_return(!!target->brush.rtl());
+                                                        }
+                                                        else
+                                                        {
+                                                            auto rtl = luafx.get_args_or(1, 0);
+                                                            target->style.rtl(rtl ? rtol::rtl : rtol::ltr);
+                                                            target->brush.rtl(rtl);
+                                                            luafx.set_return();
+                                                        }
+                                                    }},
+                { methods::ResetAttributes,         [&]
+                                                    {
+                                                        target->flush();
+                                                        setdef();
+                                                        luafx.set_return();
+                                                    }},
+                { methods::EventReporting,          [&]
+                                                    {
+                                                        luafx.run_with_gear_wo_return([&](auto& gear){ gear.set_handled(); });
+                                                        auto args_count = luafx.args_count();
+                                                        if (!args_count)
+                                                        {
+                                                            auto src_list = txts{};
+                                                            auto i = 0;
+                                                            auto e = event_sources;
+                                                            while (e)
+                                                            {
+                                                                if (e & 1) src_list.push_back(event_source_name[i]);
+                                                                i++;
+                                                                e >>= 1;
+                                                            }
+                                                            luafx.set_return_array(src_list);
+                                                        }
+                                                        else
+                                                        {
+                                                            auto prev_event_sources = event_sources;
+                                                            for (auto i = 1; i <= args_count; i++)
+                                                            {
+                                                                auto src = luafx.get_args_or(i, ""s);
+                                                                if (src.empty())
+                                                                {
+                                                                    event_sources = {};
+                                                                }
+                                                                else
+                                                                {
+                                                                    auto iter = ui::terminal::event_source_map.find(src);
+                                                                    if (iter != ui::terminal::event_source_map.end())
+                                                                    {
+                                                                        event_sources |= iter->second;
+                                                                    }
+                                                                    else
+                                                                    {
+                                                                        log("%%Unknown event source: '%%'", prompt::term, src);
+                                                                    }
+                                                                }
+                                                            }
+                                                            auto mouse_tracking = event_sources & ui::terminal::event_source::mouse;
+                                                            if ((prev_event_sources & ui::terminal::event_source::mouse) != mouse_tracking)
+                                                            {
+                                                                base::enqueue([&, mouse_tracking](auto& /*boss*/) // Perform switching outside of Lua script context.
+                                                                {
+                                                                    mouse_tracking ? mtrack.enable(input::mouse::mode::vt_input_mode)
+                                                                                   : mtrack.disable(input::mouse::mode::vt_input_mode);
+                                                                });
+                                                            }
+                                                            luafx.set_return();
+                                                        }
                                                     }},
                 { methods::Restart,                 [&]
                                                     {
@@ -8556,7 +8910,7 @@ namespace netxs::ui
                      || adjust_pads)
                     {
                         auto new_area = rect{ scroll_coor, scroll_size };
-                        this->base::signal(tier::release, e2::area, new_area);
+                        base::signal(tier::release, e2::area, new_area);
                         base::region = new_area;
                     }
                     base::deface();
@@ -8600,7 +8954,7 @@ namespace netxs::ui
                 auto& console = *target;
                 if (status.update(console))
                 {
-                    this->base::riseup(tier::preview, e2::form::prop::ui::footer, status.data);
+                    base::riseup(tier::preview, e2::form::prop::ui::footer, status.data);
                 }
 
                 auto clip = parent_canvas.clip();
@@ -8608,7 +8962,7 @@ namespace netxs::ui
                 auto original_cursor = console.get_coord(origin); // base::coor() and origin are the same.
 
                 auto brush = defclr;
-                if (config.def_filler != argb::default_color) brush.bgc(config.def_filler); // Unsync with SGR default background.
+                if (defcfg.def_filler != argb::default_color) brush.bgc(defcfg.def_filler); // Unsync with SGR default background.
                 parent_canvas.fill(cell::shaders::fusefull(brush));
 
                 if (ime_on) // Draw IME composition overlay.
@@ -8679,8 +9033,8 @@ namespace netxs::ui
                 //    east.coor.x += oversz.r - pads + console.panel.x;
                 //    west = west.trim(clip);
                 //    east = east.trim(clip);
-                //    parent_canvas.fill(west, cell::shaders::xlucent(config.def_lucent));
-                //    parent_canvas.fill(east, cell::shaders::xlucent(config.def_lucent));
+                //    parent_canvas.fill(west, cell::shaders::xlucent(defcfg.def_lucent));
+                //    parent_canvas.fill(east, cell::shaders::xlucent(defcfg.def_lucent));
                 //}
 
                 // Debug: Shade active viewport.
@@ -8813,7 +9167,8 @@ namespace netxs::ui
                         gear.keybd::scevent = owner.indexer.get_kbchord_hint(k.scchord);
                         gear.keybd::chevent = owner.indexer.get_kbchord_hint(k.chchord);
                         k.syncto(gear);
-                        owner.base::riseup(tier::release, input::events::keybd::post, gear, true);
+                        //owner.base::riseup(tier::release, input::events::keybd::post, gear, true);
+                        pro::keybd::forward_release(owner, gear);
                     }
                 }
             };
@@ -9030,7 +9385,7 @@ namespace netxs::ui
             ipccon.output(data);
         }
         // dtvt: Attach a new process.
-        void start(text config, auto connect)
+        void start_dtvt(text config, auto connect_fx)
         {
             if (ipccon)
             {
@@ -9041,7 +9396,7 @@ namespace netxs::ui
             nodata = {};
             stream.syswinsz.freeze().thing.winsize = {};
             active.exchange(true);
-            auto receiver = [&](view utf8)
+            auto receiver_fx = [&](view utf8)
             {
                 if (active)
                 {
@@ -9049,19 +9404,27 @@ namespace netxs::ui
                     stream.request_jgc(*this);
                 }
             };
-            ipccon.runapp(config, base::size(), connect, receiver, [&]{ onexit(); });
+            auto shutdown_fx = [&]
+            {
+                onexit();
+            };
+            ipccon.run_dtvt_app(config, base::size(), connect_fx, receiver_fx, shutdown_fx);
+        }
+        // dtvt: Return true if application has never sent its canvas.
+        auto is_nodtvt()
+        {
+            auto lock = stream.bitmap_dtvt.freeze();
+            auto& canvas = lock.thing.image;
+            return !canvas.hash(); // Canvas never resized/received.
         }
         // dtvt: Close dtvt-object.
         void stop(bool fast, bool notify = true)
         {
-            if (notify) this->base::signal(tier::request, e2::form::proceed::quit::one, fast);
-            auto nodtvt = [&]
+            if (notify)
             {
-                auto lock = stream.bitmap_dtvt.freeze();
-                auto& canvas = lock.thing.image;
-                return !canvas.hash(); // Canvas never resized/received.
-            }();
-            if (nodtvt) // Terminate a non-dtvt-aware application that has never sent its canvas.
+                base::signal(tier::request, e2::form::proceed::quit::one, fast);
+            }
+            if (is_nodtvt()) // Terminate a non-dtvt-aware application that has never sent its canvas.
             {
                 ipccon.abort();
             }
@@ -9078,7 +9441,7 @@ namespace netxs::ui
             {
                 ipccon.payoff();
                 auto lock = bell::sync();
-                this->base::riseup(tier::release, e2::form::proceed::quit::one, true); // MSVC2019
+                base::riseup(tier::release, e2::form::proceed::quit::one, true);
                 backup.reset(); // Backup should dtored under the lock.
             });
         }
@@ -9154,7 +9517,7 @@ namespace netxs::ui
             bell::dup_handler(tier::general, input::events::halt.id);
             LISTEN(tier::release, input::events::focus::set::any, seed)
             {
-                auto deed = this->bell::protos();
+                auto deed = bell::protos();
                 auto state = deed == input::events::focus::set::on.id;
                 stream.sysfocus.send(*this, seed.gear_id, state, seed.focus_type, seed.treeid, seed.digest);
             };

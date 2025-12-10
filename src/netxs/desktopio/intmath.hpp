@@ -41,6 +41,9 @@
 #include <unordered_set>
 #include <utility> // std::cmp_equal
 #include <vector>
+#include <variant>
+#include <ranges>  // std::views::reverse
+#include <regex>
 
 #ifndef faux
     #define faux (false)
@@ -66,6 +69,7 @@ namespace netxs
     using many = std::vector<std::any>;
 
     constexpr size_t operator ""_sz (unsigned long long i) { return static_cast<size_t>(i); }
+    static constexpr auto pi = 3.14159265358979323846;
     static constexpr auto bytemin = std::numeric_limits<byte>::min();
     static constexpr auto bytemax = std::numeric_limits<byte>::max();
     static constexpr auto int8min = std::numeric_limits<int8>::min();
@@ -88,6 +92,8 @@ namespace netxs
     static constexpr auto fp64min = std::numeric_limits<fp64>::lowest();
     static constexpr auto fp32epsilon = std::numeric_limits<fp32>::min();
     static constexpr auto fp64epsilon = std::numeric_limits<fp64>::min();
+    static constexpr auto fp32nan = std::numeric_limits<fp32>::quiet_NaN();
+    static constexpr auto fp64nan = std::numeric_limits<fp64>::quiet_NaN();
     static constexpr auto debugmode
         #if defined(DEBUG)
         = true;
@@ -95,10 +101,10 @@ namespace netxs
         = faux;
         #endif
 
-    static auto _k0 = 0; // LCtrl+Wheel.
-    static auto _k1 = 0; // Alt+Wheel.
-    static auto _k2 = 0; // LCtrl+Alt+Wheel.
-    static auto _k3 = 0; // RCtrl+Wheel.
+    [[maybe_unused]] static auto _k0 = 0; // LCtrl+Wheel.
+    [[maybe_unused]] static auto _k1 = 0; // Alt+Wheel.
+    [[maybe_unused]] static auto _k2 = 0; // LCtrl+Alt+Wheel.
+    [[maybe_unused]] static auto _k3 = 0; // RCtrl+Wheel.
 
     struct noop
     {
@@ -166,7 +172,7 @@ namespace netxs
         return value.type() == typeid(T) ? std::any_cast<T>(value)
                                          : fallback;
     }
-    template<ui32 FieldMask>
+    template<ui64 FieldMask>
     static constexpr si32 field_offset()
     {
         auto mask = FieldMask;
@@ -204,34 +210,9 @@ namespace netxs
     template<class T, class = std::enable_if_t<std::is_arithmetic_v<T>>>
     constexpr auto swap_bytes(T i)
     {
-        T r;
-        auto src = (byte*)&i;
-        auto dst = (byte*)&r;
-        if constexpr (sizeof(T) == 2)
-        {
-            dst[0] = src[1];
-            dst[1] = src[0];
-        }
-        else if constexpr (sizeof(T) == 4)
-        {
-            dst[0] = src[3];
-            dst[1] = src[2];
-            dst[2] = src[1];
-            dst[3] = src[0];
-        }
-        else if constexpr (sizeof(T) == 8)
-        {
-            dst[0] = src[7];
-            dst[1] = src[6];
-            dst[2] = src[5];
-            dst[3] = src[4];
-            dst[4] = src[3];
-            dst[5] = src[2];
-            dst[6] = src[1];
-            dst[7] = src[0];
-        }
-        else assert(faux);
-        return r;
+        auto r = std::bit_cast<std::array<byte, sizeof(T)>>(i);
+        std::ranges::reverse(r);
+        return std::bit_cast<T>(r);
     }
     static constexpr auto endian_BE = std::endian::native == std::endian::big;
     static constexpr auto endian_LE = std::endian::native == std::endian::little;
@@ -306,6 +287,12 @@ namespace netxs
         { }
     };
 
+    // intmath: Converting from radians to degrees.
+    template<class T>
+    T rad2deg(T rad)
+    {
+        return rad * (180.0 / netxs::pi);
+    }
     // intmath: Summ and return TRUE in case of unsigned integer overflow and store result in accum.
     template<class T1, class T2>
     constexpr bool sum_overflow(T1& accum, T2 delta)
@@ -407,6 +394,11 @@ namespace netxs
         else return d == 0 ? 0
                            : ((n < 0) == (d < 0)) ? ((n + d / 2) / d)
                                                   : ((n - d / 2) / d);
+    }
+    template<class T1, class T2, class T3 = T2, class = std::enable_if_t<std::is_integral_v<T1> && std::is_integral_v<T2> && std::is_integral_v<T3>>>
+    constexpr T3 udivupper(T1 n, T2 d)
+    {
+        return 1 + (n - 1) / d;
     }
     template<class T1, class T2, class T3 = T2, class = std::enable_if_t<std::is_integral_v<T1> && std::is_integral_v<T2> && std::is_integral_v<T3>>>
     constexpr T3 divupper(T1 n, T2 d)
@@ -894,7 +886,7 @@ namespace netxs
         auto&  size() const { return _area.size;     }
         auto&  coor()       { return _area.coor;     }
         auto&  coor() const { return _area.coor;     }
-        auto& operator [] (auto p) { return*(begin() + p.x + p.y * _area.size.x); }
+        auto& operator [] (auto p) { return *(begin() + p.x + p.y * _area.size.x); }
         void size(auto new_size, auto... filler)
         {
             _area.size = new_size;
@@ -1273,7 +1265,7 @@ namespace netxs
         if (w <= r1) // All pixels on a line have the same average value.
         {
             auto s_end = s_ptr + s_hop;
-            auto d_end = d_ptr + d_hop;;
+            auto d_end = d_ptr + d_hop;
             while (true)
             {
                 auto accum = Accum_t{};

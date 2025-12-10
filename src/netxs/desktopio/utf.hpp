@@ -18,8 +18,9 @@ namespace netxs
     using txts = std::vector<text>;
     using namespace std::literals;
 
-    static constexpr auto whitespaces = " \n\r\t"sv;
+    static constexpr auto whitespaces = " \t\r\n\v\f"sv;
     static constexpr auto onlydigits  = "0123456789"sv;
+    static constexpr auto sharpdigit  = "0123456789#-"sv;
     static constexpr auto alphabetic  = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_"sv;
     static constexpr auto base64code  = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     static constexpr auto whitespace  = ' '; // '.';
@@ -87,6 +88,17 @@ namespace netxs::utf
     static constexpr auto vs14_code = utfx{ 0x0000'FE0D };
     static constexpr auto vs15_code = utfx{ 0x0000'FE0E };
     static constexpr auto vs16_code = utfx{ 0x0000'FE0F };
+
+    static constexpr auto fc_LRE_code = utfx{ 0x0000'202A }; // Format characters 202A..202E
+    static constexpr auto fc_RLE_code = utfx{ 0x0000'202B }; //
+    static constexpr auto fc_PDF_code = utfx{ 0x0000'202C }; //
+    static constexpr auto fc_LRO_code = utfx{ 0x0000'202D }; //
+    static constexpr auto fc_RLO_code = utfx{ 0x0000'202E }; //
+
+    static constexpr auto fc_LRI_code = utfx{ 0x0000'2066 }; // Format characters 2066..2069
+    static constexpr auto fc_RLI_code = utfx{ 0x0000'2067 }; //
+    static constexpr auto fc_FSI_code = utfx{ 0x0000'2068 }; //
+    static constexpr auto fc_PDI_code = utfx{ 0x0000'2069 }; //
 
     template<utfx code>
     static constexpr auto utf8bytes = code <= 0x007f ? std::array<char, 4>{ static_cast<char>(code) }
@@ -172,6 +184,148 @@ namespace netxs::utf
     }
     static constexpr auto mtx = std::to_array({ matrix::vs<00,00>, matrix::vs<11,11>, matrix::vs<21,00> });
 
+    bool non_control(utfx code)
+    {
+        auto is_not_control =
+        //nul                                       , //   0 0x0   NULL
+        //soh                                       , //   1 0x1   START OF HEADING
+        //stx                                       , //   2 0x2   START OF TEXT
+        //etx                                       , //   3 0x3   END OF TEXT
+        //eot                                       , //   4 0x4   END OF TRANSMISSION
+        //enq                                       , //   5 0x5   ENQUIRY
+        //ack                                       , //   6 0x6   ACKNOWLEDGE
+        //bel                                       , //   7 0x7   ALERT
+        //bs                                        , //   8 0x8   BACKSPACE
+        //tab                                       , //   9 0x9   CHARACTER TABULATION
+        //eol                                       , //  10 0xA   LINE FEED
+        //vt                                        , //  11 0xB   LINE TABULATION
+        //ff                                        , //  12 0xC   FORM FEED
+        //cr                                        , //  13 0xD   CARRIAGE RETURN
+        //so                                        , //  14 0xE   SHIFT OUT
+        //si                                        , //  15 0xF   SHIFT IN
+        //dle                                       , //  16 0x10  DATA LINK ESCAPE
+        //dc1                                       , //  17 0x11  DEVICE CONTROL ONE
+        //dc2                                       , //  18 0x12  DEVICE CONTROL TWO
+        //dc3                                       , //  19 0x13  DEVICE CONTROL THREE
+        //dc4                                       , //  20 0x14  DEVICE CONTROL FOUR
+        //nak                                       , //  21 0x15  NEGATIVE ACKNOWLEDGE
+        //syn                                       , //  22 0x16  SYNCHRONOUS IDLE
+        //etb                                       , //  23 0x17  END OF TRANSMISSION BLOCK
+        //can                                       , //  24 0x18  CANCEL
+        //em                                        , //  25 0x19  END OF MEDIUM
+        //sub                                       , //  26 0x1A  SUBSTITUTE
+        //esc                                       , //  27 0x1B  ESCAPE
+        //fs                                        , //  28 0x1C  INFORMATION SEPARATOR FOUR
+        //gs                                        , //  29 0x1D  INFORMATION SEPARATOR THREE
+        //rs                                        , //  30 0x1E  INFORMATION SEPARATOR TWO
+        //us                                        , //  31 0x1F  INFORMATION SEPARATOR ONE
+        (code > 0x1Fu && code < 0x7Fu)
+        //del                                       , //  32 0x7F  DELETE
+        //pad                                       , //  33 0x80  PADDING CHARACTER
+        //hop                                       , //  34 0x81  HIGH OCTET PRESET
+        //bph                                       , //  35 0x82  BREAK PERMITTED HERE
+        //nbh                                       , //  36 0x83  NO BREAK HERE
+        //ind                                       , //  37 0x84  INDEX
+        //nel                                       , //  38 0x85  NEXT LINE
+        //ssa                                       , //  39 0x86  START OF SELECTED AREA
+        //esa                                       , //  40 0x87  END OF SELECTED AREA
+        //hts                                       , //  41 0x88  CHARACTER TABULATION SET
+        //htj                                       , //  42 0x89  CHARACTER TABULATION WITH JUSTIFICATION
+        //vts                                       , //  43 0x8A  LINE TABULATION SET
+        //pld                                       , //  44 0x8B  PARTIAL LINE FORWARD
+        //plu                                       , //  45 0x8C  PARTIAL LINE BACKWARD
+        //ri                                        , //  46 0x8D  REVERSE LINE FEED
+        //ss2                                       , //  47 0x8E  SINGLE SHIFT TWO
+        //ss3                                       , //  48 0x8F  SINGLE SHIFT THREE
+        //dcs                                       , //  49 0x90  DEVICE CONTROL STRING
+        //pu1                                       , //  50 0x91  PRIVATE USE ONE
+        //pu2                                       , //  51 0x92  PRIVATE USE TWO
+        //sts                                       , //  52 0x93  SET TRANSMIT STATE
+        //cch                                       , //  53 0x94  CANCEL CHARACTER
+        //mw                                        , //  54 0x95  MESSAGE WAITING
+        //spa                                       , //  55 0x96  START OF GUARDED AREA
+        //epa                                       , //  56 0x97  END OF GUARDED AREA
+        //sos                                       , //  57 0x98  START OF STRING
+        //sgc                                       , //  58 0x99  SINGLE GRAPHIC CHARACTER INTRODUCER
+        //sci                                       , //  59 0x9A  SINGLE CHARACTER INTRODUCER
+        //csi                                       , //  60 0x9B  CONTROL SEQUENCE INTRODUCER
+        //st                                        , //  61 0x9C  STRING TERMINATOR
+        //osc                                       , //  62 0x9D  OPERATING SYSTEM COMMAND
+        //pm                                        , //  63 0x9E  PRIVACY MESSAGE
+        //apc                                       , //  64 0x9F  APPLICATION PROGRAM COMMAND
+        || (code > 0x9Fu
+        //paragraph_separator                       , //  65 0x2029 PARAGRAPH SEPARATOR
+        //non_control                               , //  66 -1    NON CONTROL
+        && code != 0xADu
+        //shy                                       , //  67 0xAD  SOFT HYPHEN
+        ////alm                                       , //  68 0x61C ARABIC LETTER MARK
+        && code != 0x180Eu
+        //mvs                                       , //  69 0x180E MONGOLIAN VOWEL SEPARATOR
+        ////lrm                                       , //  70 0x200E LEFT-TO-RIGHT MARK
+        ////rlm                                       , //  71 0x200F RIGHT-TO-LEFT MARK
+        && code < 0x2028u)
+        //line_separator                            , //  72 0x2028 LINE SEPARATOR
+        //lre                                       , //  73 0x202A LEFT-TO-RIGHT EMBEDDING
+        //rle                                       , //  74 0x202B RIGHT-TO-LEFT EMBEDDING
+        //pdf                                       , //  75 0x202C POP DIRECTIONAL FORMATTING
+        //lro                                       , //  76 0x202D LEFT-TO-RIGHT OVERRIDE
+        //rlo                                       , //  77 0x202E RIGHT-TO-LEFT OVERRIDE
+        || (code > 0x202Eu && code < 0x2060u)
+        //wj                                        , //  78 0x2060 WORD JOINER
+        //function_application                      , //  79 0x2061 FUNCTION APPLICATION
+        //invisible_times                           , //  80 0x2062 INVISIBLE TIMES
+        //invisible_separator                       , //  81 0x2063 INVISIBLE SEPARATOR
+        //invisible_plus                            , //  82 0x2064 INVISIBLE PLUS
+        //lri                                       , //  83 0x2066 LEFT-TO-RIGHT ISOLATE
+        //rli                                       , //  84 0x2067 RIGHT-TO-LEFT ISOLATE
+        //fsi                                       , //  85 0x2068 FIRST STRONG ISOLATE
+        //pdi                                       , //  86 0x2069 POP DIRECTIONAL ISOLATE
+        //inhibit_symmetric_swapping                , //  87 0x206A INHIBIT SYMMETRIC SWAPPING
+        //activate_symmetric_swapping               , //  88 0x206B ACTIVATE SYMMETRIC SWAPPING
+        //inhibit_arabic_form_shaping               , //  89 0x206C INHIBIT ARABIC FORM SHAPING
+        //activate_arabic_form_shaping              , //  90 0x206D ACTIVATE ARABIC FORM SHAPING
+        //national_digit_shapes                     , //  91 0x206E NATIONAL DIGIT SHAPES
+        //nominal_digit_shapes                      , //  92 0x206F NOMINAL DIGIT SHAPES
+        || (code > 0x206Fu && code != 0xFEFFu
+        //zwnbsp                                    , //  93 0xFEFF ZERO WIDTH NO-BREAK SPACE
+        && code < 0xFFF9u)
+        //interlinear_annotation_anchor             , //  94 0xFFF9 INTERLINEAR ANNOTATION ANCHOR
+        //interlinear_annotation_separator          , //  95 0xFFFA INTERLINEAR ANNOTATION SEPARATOR
+        //interlinear_annotation_terminator         , //  96 0xFFFB INTERLINEAR ANNOTATION TERMINATOR
+        || (code > 0xFFFBu && code < 0x13430u)
+        //egyptian_hieroglyph_vertical_joiner       , //  97 0x13430 EGYPTIAN HIEROGLYPH VERTICAL JOINER
+        //egyptian_hieroglyph_horizontal_joiner     , //  98 0x13431 EGYPTIAN HIEROGLYPH HORIZONTAL JOINER
+        //egyptian_hieroglyph_insert_at_top_start   , //  99 0x13432 EGYPTIAN HIEROGLYPH INSERT AT TOP START
+        //egyptian_hieroglyph_insert_at_bottom_start, // 100 0x13433 EGYPTIAN HIEROGLYPH INSERT AT BOTTOM START
+        //egyptian_hieroglyph_insert_at_top_end     , // 101 0x13434 EGYPTIAN HIEROGLYPH INSERT AT TOP END
+        //egyptian_hieroglyph_insert_at_bottom_end  , // 102 0x13435 EGYPTIAN HIEROGLYPH INSERT AT BOTTOM END
+        //egyptian_hieroglyph_overlay_middle        , // 103 0x13436 EGYPTIAN HIEROGLYPH OVERLAY MIDDLE
+        //egyptian_hieroglyph_begin_segment         , // 104 0x13437 EGYPTIAN HIEROGLYPH BEGIN SEGMENT
+        //egyptian_hieroglyph_end_segment           , // 105 0x13438 EGYPTIAN HIEROGLYPH END SEGMENT
+        //egyptian_hieroglyph_insert_at_middle      , // 106 0x13439 EGYPTIAN HIEROGLYPH INSERT AT MIDDLE
+        //egyptian_hieroglyph_insert_at_top         , // 107 0x1343A EGYPTIAN HIEROGLYPH INSERT AT TOP
+        //egyptian_hieroglyph_insert_at_bottom      , // 108 0x1343B EGYPTIAN HIEROGLYPH INSERT AT BOTTOM
+        //egyptian_hieroglyph_begin_enclosure       , // 109 0x1343C EGYPTIAN HIEROGLYPH BEGIN ENCLOSURE
+        //egyptian_hieroglyph_end_enclosure         , // 110 0x1343D EGYPTIAN HIEROGLYPH END ENCLOSURE
+        //egyptian_hieroglyph_begin_walled_enclosure, // 111 0x1343E EGYPTIAN HIEROGLYPH BEGIN WALLED ENCLOSURE
+        //egyptian_hieroglyph_end_walled_enclosure  , // 112 0x1343F EGYPTIAN HIEROGLYPH END WALLED ENCLOSURE
+        || (code > 0x1343Fu && code < 0x1BCA0u)
+        //shorthand_format_letter_overlap           , // 113 0x1BCA0 SHORTHAND FORMAT LETTER OVERLAP
+        //shorthand_format_continuing_overlap       , // 114 0x1BCA1 SHORTHAND FORMAT CONTINUING OVERLAP
+        //shorthand_format_down_step                , // 115 0x1BCA2 SHORTHAND FORMAT DOWN STEP
+        //shorthand_format_up_step                  , // 116 0x1BCA3 SHORTHAND FORMAT UP STEP
+        || (code > 0x1BCA3u && code < 0x1D173u)
+        //musical_symbol_begin_beam                 , // 117 0x1D173 MUSICAL SYMBOL BEGIN BEAM
+        //musical_symbol_end_beam                   , // 118 0x1D174 MUSICAL SYMBOL END BEAM
+        //musical_symbol_begin_tie                  , // 119 0x1D175 MUSICAL SYMBOL BEGIN TIE
+        //musical_symbol_end_tie                    , // 120 0x1D176 MUSICAL SYMBOL END TIE
+        //musical_symbol_begin_slur                 , // 121 0x1D177 MUSICAL SYMBOL BEGIN SLUR
+        //musical_symbol_end_slur                   , // 122 0x1D178 MUSICAL SYMBOL END SLUR
+        //musical_symbol_begin_phrase               , // 123 0x1D179 MUSICAL SYMBOL BEGIN PHRASE
+        //musical_symbol_end_phrase                 , // 124 0x1D17A MUSICAL SYMBOL END PHRASE
+        || code > 0x1D17Au;
+        return is_not_control;
+    }
     // utf: Grapheme cluster properties.
     struct prop : public unidata::unidata
     {
@@ -207,28 +361,44 @@ namespace netxs::utf
         { }
         constexpr prop& operator = (prop const&) = default;
 
+        // prop: Check if the next codepooint could be attached to the cluster. Return zero to continue attaching. Return non-zero if cluster is closed.
         auto combine(prop const& next)
         {
-            if (next.utf8len && unidata::allied(next))
+            if (next.cdpoint && next.utf8len) // The codepoint '\0' cannot be a cluster fragment.
             {
-                if (next.cdpoint >= matrix::min_vs_code && next.cdpoint <= matrix::max_vs_code) // Set matrix size.
+                if (unidata::allied(next))
                 {
-                    cmatrix = (si32)(next.cdpoint - matrix::vs_block);
+                    if (next.cdpoint >= matrix::min_vs_code && next.cdpoint <= matrix::max_vs_code) // Set matrix size.
+                    {
+                        cmatrix = (si32)(next.cdpoint - matrix::vs_block);
+                        // Drop the next.cdpoint by returning 0_sz.
+                        //todo no more codepoints should be added (matrix modifier has the gbreak::ext property).
+                    }
+                    else
+                    {
+                        if (next.ucwidth > unidata::ucwidth)
+                        {
+                            unidata::ucwidth = next.ucwidth;
+                            cmatrix = mtx[unidata::ucwidth];
+                        }
+                        utf8len += next.utf8len;
+                        cpcount += 1;
+                    }
                     return 0_sz;
                 }
-                else if (next.ucwidth > unidata::ucwidth)
+                else if (unidata::ucwidth == 0 && cdpoint && !next.is_cmd()) // Append any non-control code point if the current cluster has no width.
                 {
-                    unidata::ucwidth = next.ucwidth;
-                    cmatrix = mtx[unidata::ucwidth];
+                    if (next.ucwidth > unidata::ucwidth)
+                    {
+                        unidata::ucwidth = next.ucwidth;
+                        cmatrix = mtx[unidata::ucwidth];
+                    }
+                    utf8len += next.utf8len;
+                    cpcount += 1;
+                    return 0_sz;
                 }
-                utf8len += next.utf8len;
-                cpcount += 1;
-                return 0_sz;
             }
-            else
-            {
-                return utf8len;
-            }
+            return utf8len;
         }
     };
 
@@ -450,13 +620,27 @@ namespace netxs::utf
         { }
     };
 
+    // utf: Filter cluster's for non-control codepoints and place it to the block.
+    void filter_non_control(view cluster, text& block)
+    {
+        auto code_iter = utf::cpit{ cluster };
+        while (code_iter)
+        {
+            auto codepoint = code_iter.take();
+            if (utf::non_control(codepoint.cdpoint))
+            {
+                block += view{ code_iter.textptr, code_iter.utf8len };
+            }
+            code_iter.step();
+        }
+    }
     // utf: Return the first grapheme cluster and its Unicode attributes.
     template<bool AllowControls = faux>
     auto cluster(view utf8)
     {
         return frag::take_cluster<AllowControls>(utf8);
     }
-    // utf: Break the text into the grapheme clusters.
+    // utf: Break text into grapheme clusters filtered from codepoints.
     void decode_clusters(view utf8, auto yield)
     {
         if (auto code = cpit{ utf8 })
@@ -464,12 +648,8 @@ namespace netxs::utf
             auto next = code.take();
             do
             {
-                if (next.is_cmd())
+                if (!utf::non_control(next.cdpoint))
                 {
-                    auto head = code.textptr;
-                    //auto crop = frag{ view(head, next.utf8len), next };
-                    auto crop = view(head, next.utf8len);
-                    if (!yield(crop)) return;
                     code.step();
                     next = code.take();
                 }
@@ -482,9 +662,21 @@ namespace netxs::utf
                         code.step();
                         if (next.correct)
                         {
-                            if (!code || (next = code.take(), left.combine(next)))
+                            if (!code)
                             {
-                                //auto crop = frag{ view(head, left.utf8len), left };
+                                auto crop = view(head, left.utf8len);
+                                if (!yield(crop)) return;
+                                break;
+                            }
+                            next = code.take();
+                            if (!utf::non_control(next.cdpoint)) // Skip controls.
+                            {
+                                code.step();
+                                next = code.take();
+                                break;
+                            }
+                            if (left.combine(next))
+                            {
                                 auto crop = view(head, left.utf8len);
                                 if (!yield(crop)) return;
                                 break;
@@ -492,8 +684,6 @@ namespace netxs::utf
                         }
                         else
                         {
-                            //next.utf8len = left.utf8len;
-                            //auto crop = frag{ replacement, next };
                             auto crop = replacement;
                             if (!yield(crop)) return;
                             next = code.take();
@@ -675,6 +865,7 @@ namespace netxs::utf
         }
         return count;
     }
+    // utf: Decode clusters from utf8 and filter non-controls to the dest in reverse order (required for RTL rendering).
     void reverse_clusters(view utf8, auto& dest)
     {
         auto rest = (si32)utf8.size();
@@ -735,6 +926,13 @@ namespace netxs::utf
             view::remove_prefix(1);
             return c;
         }
+        // qiew: Pop back.
+        auto pop_back()
+        {
+            auto c = view::back();
+            view::remove_suffix(1);
+            return c;
+        }
         // qiew: Pop the front sequence of the same control points and return their count + 1.
         auto pop_all(ctrl cmd)
         {
@@ -782,14 +980,17 @@ namespace netxs::utf
         }
     };
 
-    template<class Key, class Val>
+    template<class Key = text, class Val = text>
     using unordered_map = std::unordered_map<Key, Val, qiew::hash, qiew::equal>;
-
 
     template<class A = si32, si32 Base = 10, class View, class = std::enable_if_t<std::is_base_of_v<view, View>>>
     std::optional<A> to_int(View& ascii)
     {
         auto num = A{};
+        if constexpr (Base == 16)
+        {
+            if (ascii.starts_with("0x") || ascii.starts_with("0X")) ascii.remove_prefix(2);
+        }
         auto top = ascii.data();
         auto end = top + ascii.length();
         if constexpr (std::is_floating_point_v<A>)
@@ -1084,12 +1285,20 @@ namespace netxs::utf
         }
         return length;
     }
+    // utf: Check if the first byte is utf-8.
+    bool firstbyte(char c)
+    {
+        return !(c & 0b1'0000000)
+             || (c & 0b111'00000) == 0b110'00000
+             || (c & 0b1111'0000) == 0b1110'0000
+             || (c & 0b11111'000) == 0b11110'000;
+    }
     // utf: Check utf-8 integrity (last codepoint) and cut off the invalid bytes at the end.
     void purify(view& utf8)
     {
         auto head = utf8.rend();
         auto tail = utf8.rbegin();
-        while (tail != head && (*tail & 0xc0) == 0x80) // Find first byte.
+        while (tail != head && (*tail & 0xc0) == 0x80) // Find the first byte.
         {
             ++tail;
         }
@@ -1102,7 +1311,7 @@ namespace netxs::utf
                 utf8 = utf8.substr(0, p);
             }
         }
-        else // Bad UTF-8 encoding
+        else // Bad UTF-8 encoding: The first byte is not found.
         {
             //Recycle all bad bytes (log?).
         }
@@ -1163,6 +1372,21 @@ namespace netxs::utf
             }
         }
         return from.substr(0, s_size);
+    }
+    void replace_all(view utf8, view what, view to, text& dest)
+    {
+        auto last = 0_sz;
+        if (!what.empty() && utf8.length() >= what.length())
+        {
+            auto spot = 0_sz;
+            while ((spot = utf8.find(what, last)) != text::npos)
+            {
+                dest += utf8.substr(last, spot - last);
+                dest += to;
+                last = spot + what.size();
+            }
+        }
+        dest += utf8.substr(last);
     }
     void replace_all(text& utf8, auto const& from, auto const& to)
     {
@@ -1277,6 +1501,21 @@ namespace netxs::utf
     {
         return std::bitset<L>(n).to_string();
     }
+    template<si32 Size>
+    auto to_oct(si32 n)
+    {
+        static_assert(Size > 0);
+        auto crop = text{};
+        auto i = Size;
+        n = std::abs(n);
+        crop.resize(Size);
+        while (i--)
+        {
+            crop[i] = netxs::onlydigits[n & 7];
+            n >>= 3;
+        }
+        return crop;
+    }
     template<bool UpperCase = faux>
     auto _to_hex(auto number, size_t width, auto push)
     {
@@ -1365,6 +1604,19 @@ namespace netxs::utf
             }
             return crop;
         }
+    }
+    auto split2(view utf8, char delimiter, auto proc)
+    {
+        auto cur = 0_sz;
+        auto pos = 0_sz;
+        while ((pos = utf8.find(delimiter, cur)) != text::npos)
+        {
+            auto frag = view{ utf8.data() + cur, pos - cur };
+            if (!proc(frag, faux)) return faux;
+            cur = pos + 1;
+        }
+        auto end = view{ utf8.data() + cur, utf8.size() - cur };
+        return proc(end, true);
     }
     template<bool SkipEmpty = faux, feed Direction = feed::fwd, class P, bool Plain = std::is_same_v<void, std::invoke_result_t<P, view>>>
     auto split(view utf8, char delimiter, P proc)
@@ -1709,8 +1961,17 @@ namespace netxs::utf
         debase437(utf8, buff);
         return buff;
     }
-    // utf: Find char position ignoring backslashed.
+    // utf: Find char position iterator.
     auto _find_char(auto head, auto tail, auto hittest)
+    {
+        while (head != tail && !hittest(head))
+        {
+            ++head;
+        }
+        return head;
+    }
+    // utf: Find char position iterator ignoring backslashed.
+    auto _find_char_except_escaped(auto head, auto tail, auto hittest)
     {
         while (head != tail)
         {
@@ -1719,30 +1980,71 @@ namespace netxs::utf
         }
         return head;
     }
-    // utf: Find char position ignoring backslashed.
+    // utf: Find char position iterator ignoring backslashed.
     template<class Iter>
     auto find_char(Iter head, Iter tail, view delims)
     {
-        return _find_char(head, tail, [&](auto iter){ return delims.find(*iter) != view::npos; });
+        return _find_char_except_escaped(head, tail, [&](auto iter){ return delims.find(*iter) != view::npos; });
     }
-    // utf: Find substring position ignoring backslashed.
+    // utf: Check if utf8 start with test string.
+    bool _starts_with(auto& iter, view utf8, view test)
+    {
+        auto found = utf8.starts_with(test);
+        if (found)
+        {
+            iter += test.size();
+        }
+        return found;
+    }
+    // utf: Check if utf8 starts with something using test proc (the test proc must do increment of iter if skips).
+    bool _starts_with(auto& iter, view utf8, auto test)
+    {
+        return test(iter, utf8);
+    }
+    // utf: Find char position iterator ignoring skips.
+    template<class ...Args>
+    auto find_char_except_skips(view utf8, char c, Args&&... skips)
+    {
+        auto head = utf8.begin();
+        auto tail = utf8.end();
+        auto found_iter = _find_char(head, tail, [&](auto& iter)
+        {
+            if (*iter == c)
+            {
+                auto substr = view{ iter, tail };
+                auto found = (utf::_starts_with(iter, substr, skips) || ...);
+                if (found)
+                {
+                    return iter == tail; // faux if not end
+                }
+                else
+                {
+                    return true;
+                }
+            }
+            return faux;
+        });
+        return found_iter;
+    }
+    // utf: Find substring position iterator ignoring backslashed.
     auto find_substring(view& utf8, auto... delims)
     {
         auto head = utf8.begin();
         auto tail = utf8.end();
-        return _find_char(head, tail, [&](auto iter){ return (view{ iter, tail }.starts_with(delims) || ...); });
+        return _find_char_except_escaped(head, tail, [&](auto iter){ return (view{ iter, tail }.starts_with(delims) || ...); });
     }
-    // utf: Find char position ignoring backslashed.
+    // utf: Find char position iterator ignoring backslashed.
     template<class Iter>
     auto find_char(Iter head, Iter tail, char delim)
     {
-        return _find_char(head, tail, [&](auto iter){ return *iter == delim; });
+        return _find_char_except_escaped(head, tail, [&](auto iter){ return *iter == delim; });
     }
     auto check_any(view shadow, view delims)
     {
         auto p = utf::find_char(shadow.begin(), shadow.end(), delims);
         return p != shadow.end();
     }
+    // utf: Trim the utf8 front if not pred.
     template<class P>
     void trim_front_if(view& utf8, P pred)
     {
@@ -1756,6 +2058,7 @@ namespace netxs::utf
         }
         utf8.remove_prefix(std::distance(utf8.begin(), head));
     }
+    // utf: Trim the utf8 back if not pred.
     template<class P>
     void trim_back_if(view& utf8, P pred)
     {
@@ -1769,13 +2072,8 @@ namespace netxs::utf
         }
         utf8.remove_suffix(std::distance(utf8.rbegin(), head));
     }
-    auto trim_front(view& utf8, view delims)
-    {
-        auto temp = utf8;
-        trim_front_if(utf8, [&](char c){ return delims.find(c) == text::npos; });
-        return temp.substr(0, temp.size() - utf8.size());
-    }
-    auto trim_front(view& utf8, char c = ' ')
+    // utf: Trim the utf8 front.
+    void trim_front(view& utf8, char c = ' ')
     {
         auto head = utf8.begin();
         auto tail = utf8.end();
@@ -1785,32 +2083,98 @@ namespace netxs::utf
         }
         utf8.remove_prefix(std::distance(utf8.begin(), head));
     }
-    auto trim_front(view&& utf8, char c = ' ')
+    // utf: Trim the utf8 back.
+    void trim_back(view& utf8, char c = ' ')
+    {
+        auto head = utf8.rbegin();
+        auto tail = utf8.rend();
+        while (head != tail && *head == c)
+        {
+            ++head;
+        }
+        utf8.remove_suffix(std::distance(utf8.rbegin(), head));
+    }
+    // utf: Trim the utf8 front.
+    void trim_front(view& utf8, view delims)
+    {
+        utf::trim_front_if(utf8, [&](char c){ return delims.find(c) == text::npos; });
+    }
+    // utf: Trim the utf8 back.
+    void trim_back(view& utf8, view delims)
+    {
+        utf::trim_back_if(utf8, [&](char c){ return delims.find(c) == text::npos; });
+    }
+    // utf: Trim the utf8 while any of delims front and return trims.
+    auto pop_front_chars(view& utf8, view while_any_of)
+    {
+        auto temp = utf8;
+        utf::trim_front(utf8, while_any_of);
+        return temp.substr(0, temp.size() - utf8.size());
+    }
+    // utf: Trim the utf8 front until any of delims is found.
+    template<bool Lazy = true>
+    void pop_front_until(view& utf8, auto until_any_of)
+    {
+        auto head = utf8.begin();
+        auto tail = utf8.end();
+        auto stop = utf::find_char(head, tail, until_any_of);
+        auto prefix_len = stop - head;
+        utf8.remove_prefix(prefix_len);
+    }
+    // utf: Trim the utf8 back while any of delims and return trims.
+    auto pop_back_chars(view& utf8, view while_any_of)
+    {
+        auto temp = utf8;
+        utf::trim_back(utf8, while_any_of);
+        return temp.substr(utf8.size());
+    }
+
+    // utf: Return front-trimmed copy of utf8.
+    auto get_trimmed_front(view utf8, char c = ' ')
     {
         utf::trim_front(utf8, c);
         return utf8;
     }
-    auto trim_back(view& utf8, view delims)
+    // utf: Return back-trimmed copy of utf8.
+    auto get_trimmed_back(view utf8, char c = ' ')
     {
-        auto temp = utf8;
-        trim_back_if(utf8, [&](char c){ return delims.find(c) == text::npos; });
-        return temp.substr(utf8.size(), temp.size() - utf8.size());
-    }
-    auto trim(view utf8, char space = ' ')
-    {
-        while (!utf8.empty() && utf8.front() == space) utf8.remove_prefix(1);
-        while (!utf8.empty() && utf8. back() == space) utf8.remove_suffix(1);
+        utf::trim_back(utf8, c);
         return utf8;
     }
-    auto trim_all(view& utf8, view delims)
+    // utf: Trim utf8.
+    void trim(view& utf8, char c = ' ')
     {
-        trim_front(utf8, delims);
-        trim_back (utf8, delims);
+        if (!utf8.empty())
+        {
+            utf::trim_front(utf8, c);
+            if (!utf8.empty())
+            {
+                utf::trim_back(utf8, c);
+            }
+        }
     }
-    auto trim(view utf8, view delims)
+    // utf: Trim utf8.
+    void trim(view& utf8, view delims)
     {
-        trim_front(utf8, delims);
-        trim_back (utf8, delims);
+        if (!utf8.empty())
+        {
+            utf::trim_front(utf8, delims);
+            if (!utf8.empty())
+            {
+                utf::trim_back(utf8, delims);
+            }
+        }
+    }
+    // utf: Return trimmed copy of utf8.
+    auto get_trimmed(view utf8, char c = ' ')
+    {
+        utf::trim(utf8, c);
+        return utf8;
+    }
+    // utf: Return trimmed copy of utf8.
+    auto get_trimmed(view utf8, view delims)
+    {
+        utf::trim(utf8, delims);
         return utf8;
     }
     void _escape(qiew line, auto& iter, auto... x)
@@ -1924,13 +2288,25 @@ namespace netxs::utf
         *iter++ = quote;
         dest.resize(iter - dest.begin());
     }
-    template<bool Lazy = true>
-    auto take_front(view& utf8, view delims)
+    auto dequote(view utf8)
     {
-        auto head = utf8.begin();
-        auto tail = utf8.end();
-        auto stop = find_char(head, tail, delims);
-        if (stop == tail)
+        if (utf8.size() > 1)
+        {
+            auto c = utf8.front();
+            if ((c == '\'' || c == '\"') && c == utf8.back())
+            {
+                utf8 = utf8.substr(1, utf8.size() - 2);
+                return unescape(utf8);
+            }
+        }
+        return text{ utf8 };
+    }
+    // utf: Trim utf8 up to and including stopstr, and return the trims.
+    template<bool Lazy = true>
+    auto take_front_including(view& utf8, view stopstr)
+    {
+        auto iter = utf::find_substring(utf8, stopstr);
+        if (iter == utf8.end())
         {
             if constexpr (Lazy)
             {
@@ -1944,9 +2320,46 @@ namespace netxs::utf
                 return crop;
             }
         }
-        auto str = qiew{ head, stop };
+        auto str = qiew{ utf8.begin(), iter + stopstr.size() };
         utf8.remove_prefix(str.size());
         return str;
+    }
+    // utf: Trim utf8 up to and including stopstr, and return the trims.
+    template<bool Lazy = true>
+    auto split_back(qiew utf8, char delim)
+    {
+        auto pos = utf8.rfind(delim, utf8.size());
+        if (pos != text::npos)
+        {
+            return std::pair{ utf8.substr(0, pos), utf8.substr(pos + sizeof(delim)) };
+        }
+        else
+        {
+            return std::pair{ qiew{}, utf8 };
+        }
+    }
+    // utf: Trim utf8 until any of delims is found, and return trims.
+    template<bool Lazy = true>
+    auto take_front(view& utf8, view delims)
+    {
+        auto temp = qiew{ utf8 };
+        utf::pop_front_until(utf8, delims);
+        if (utf8.empty()) // If not found.
+        {
+            if constexpr (Lazy)
+            {
+                return qiew{};
+            }
+            else
+            {
+                return temp;
+            }
+        }
+        else
+        {
+            auto crop = temp.substr(0, temp.size() - utf8.size());
+            return crop;
+        }
     }
     template<bool Lazy = true, class ...ViewList>
     auto take_front(view& utf8, std::tuple<ViewList...> const& delims)
@@ -2016,10 +2429,22 @@ namespace netxs::utf
     {
         return take_front<faux>(utf8, delims);
     }
+    auto remove_quotes(view utf8)
+    {
+        if (utf8.size() > 2)
+        {
+            auto c = utf8.front();
+            if ((c == '\'' || c == '\"') && c == utf8.back())
+            {
+                utf8 = utf8.substr(1, utf8.size() - 2);
+            }
+        }
+        return utf8;
+    }
     // utf: Split text line into quoted tokens.
     auto tokenize(view utf8, auto&& args)
     {
-        utf8 = utf::trim(utf8);
+        utf::trim(utf8, ' ');
         while (utf8.size())
         {
             auto c = utf8.front();
@@ -2029,13 +2454,21 @@ namespace netxs::utf
         }
         return args;
     }
+    // utf: Remove utf8 tail until any of delims (including delim).
     auto eat_tail(view& utf8, view delims)
     {
         auto head = utf8.begin();
         auto tail = utf8.end();
-        auto stop = find_char(head, tail, delims);
+        auto stop = utf::find_char(head, tail, delims);
         if (stop == tail) utf8 = view{};
         else              utf8.remove_prefix(std::distance(head, stop));
+    }
+    // utf: Remove utf8 tail including delim.
+    auto eat_tail(view& utf8, char delim)
+    {
+        auto stop = utf8.rfind(delim);
+        if (stop == text::npos) utf8 = {};
+        else                    utf8 = utf8.substr(0, stop);
     }
     template<class View>
     auto pop_front(View&& line, auto size)
@@ -2086,6 +2519,19 @@ namespace netxs::utf
     {
         return to_upper(utf8);
     }
+    auto name2token(view utf8)
+    {
+        auto name_token = text{};
+        name_token.reserve(utf8.size());
+        for (auto c : utf8)
+        {
+            if (c != ' ' && c != '-')
+            {
+                name_token += utf::to_lower(c);
+            }
+        }
+        return name_token;
+    }
     template<class W, class P>
     void for_each(text& utf8, W const& what, P proc)
     {
@@ -2114,9 +2560,39 @@ namespace netxs::utf
         }
         return qiew{ utf8.substr(0, crop) };
     }
-    auto& operator << (std::ostream& s, time const& o)
+    template<class Period>
+    constexpr auto&& _suffix()
     {
-        auto [hours, mins, secs, milli, micro] = datetime::breakdown(o);
+             if constexpr (std::is_same_v<Period, std::atto>                   ) return "as";
+        else if constexpr (std::is_same_v<Period, std::femto>                  ) return "fs";
+        else if constexpr (std::is_same_v<Period, std::pico>                   ) return "ps";
+        else if constexpr (std::is_same_v<Period, std::nano>                   ) return "ns";
+        else if constexpr (std::is_same_v<Period, std::micro>                  ) return "us";
+        else if constexpr (std::is_same_v<Period, std::milli>                  ) return "ms";
+        else if constexpr (std::is_same_v<Period, std::centi>                  ) return "cs";
+        else if constexpr (std::is_same_v<Period, std::deci>                   ) return "ds";
+        else if constexpr (std::is_same_v<Period, std::deca>                   ) return "das";
+        else if constexpr (std::is_same_v<Period, std::hecto>                  ) return "hs";
+        else if constexpr (std::is_same_v<Period, std::kilo>                   ) return "ks";
+        else if constexpr (std::is_same_v<Period, std::mega>                   ) return "Ms";
+        else if constexpr (std::is_same_v<Period, std::giga>                   ) return "Gs";
+        else if constexpr (std::is_same_v<Period, std::tera>                   ) return "Ts";
+        else if constexpr (std::is_same_v<Period, std::peta>                   ) return "Ps";
+        else if constexpr (std::is_same_v<Period, std::exa>                    ) return "Es";
+        else if constexpr (std::is_same_v<Period, std::chrono::seconds::period>) return "s";
+        else if constexpr (std::is_same_v<Period, std::chrono::minutes::period>) return "m";
+        else if constexpr (std::is_same_v<Period, std::chrono::hours::period>  ) return "h";
+        else if constexpr (std::is_same_v<Period, std::ratio<86400>>           ) return "d";
+        else return "";
+    }
+    template<class Rep, class Period>
+    auto& operator << (std::ostream& s, std::chrono::duration<Rep, Period> d)
+    {
+        return s << d.count() << _suffix<Period>();
+    }
+    auto& operator << (std::ostream& s, time t)
+    {
+        auto [hours, mins, secs, milli, micro] = datetime::breakdown(t);
         return s << utf::adjust(std::to_string(hours), 2, '0', true) << ':'
                  << utf::adjust(std::to_string(mins ), 2, '0', true) << ':'
                  << utf::adjust(std::to_string(secs ), 2, '0', true) << '.'

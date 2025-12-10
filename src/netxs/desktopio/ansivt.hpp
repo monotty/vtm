@@ -11,10 +11,10 @@ namespace netxs::ansi
 
     static const auto esc_csi     = '['; // ESC [ ...
     static const auto esc_ocs     = ']'; // ESC ] ...
-    static const auto esc_dcs     = 'P'; // ESC P ... BELL/ST
-    static const auto esc_sos     = 'X'; // ESC X ... BELL/ST
-    static const auto esc_pm      = '^'; // ESC ^ ... BELL/ST
-    static const auto esc_apc     = '_'; // ESC _ ... BELL/ST
+    static const auto esc_dcs     = 'P'; // ESC P ... BEL/ST
+    static const auto esc_sos     = 'X'; // ESC X ... BEL/ST
+    static const auto esc_pm      = '^'; // ESC ^ ... BEL/ST
+    static const auto esc_apc     = '_'; // ESC _ ... BEL/ST
     static const auto esc_g0set   = '('; // ESC ( c
     static const auto esc_g1set   = ')'; // ESC ) c
     static const auto esc_g2set   = '*'; // ESC * c
@@ -160,7 +160,8 @@ namespace netxs::ansi
     static const auto sgr_rst       = 0;
     static const auto sgr_sav       = 10;
     static const auto sgr_bold      = 1;
-    static const auto sgr_faint     = 22;
+    static const auto sgr_nonbold   = 22;
+    static const auto sgr_faint     = 2;
     static const auto sgr_italic    = 3;
     static const auto sgr_nonitalic = 23;
     static const auto sgr_und       = 4;
@@ -171,6 +172,8 @@ namespace netxs::ansi
     static const auto sgr_no_blink  = 25;
     static const auto sgr_inv       = 7;
     static const auto sgr_noinv     = 27;
+    static const auto sgr_hidden    = 8;
+    static const auto sgr_nonhidden = 28;
     static const auto sgr_strike    = 9;
     static const auto sgr_nostrike  = 29;
     static const auto sgr_overln    = 53;
@@ -257,6 +260,15 @@ namespace netxs::ansi
     static const auto paste_begin = "\033[200~"sv; // Bracketed paste begin.
     static const auto paste_end   = "\033[201~"sv; // Bracketed paste end.
 
+    static constexpr auto apc_prefix_lua           = "lua:"sv;
+    static constexpr auto apc_prefix_mouse         = "event=mouse;"sv;
+    static constexpr auto apc_prefix_mouse_id      = "id="sv;      // ui32
+    static constexpr auto apc_prefix_mouse_kbmods  = "kbmods="sv;  // ui32
+    static constexpr auto apc_prefix_mouse_coor    = "coor="sv;    // fp32,fp32
+    static constexpr auto apc_prefix_mouse_buttons = "buttons="sv; // ui32
+    static constexpr auto apc_prefix_mouse_iscroll = "iscroll="sv; // si32,si32
+    static constexpr auto apc_prefix_mouse_fscroll = "fscroll="sv; // fp32,fp32
+
     template<class Base>
     class basevt
     {
@@ -311,7 +323,7 @@ namespace netxs::ansi
                 {
                     auto str = std::to_string(data);
                     auto shadow = qiew{ str };
-                    utf::trim_back(shadow, "0");
+                    utf::trim_back(shadow, '0');
                     block += shadow;
                 }
             }
@@ -358,10 +370,14 @@ namespace netxs::ansi
         }
 
         auto& bld(bool b)    { return add(b ? "\033[1m" : "\033[22m"         ); } // basevt: SGR 𝗕𝗼𝗹𝗱 attribute.
-        auto& und(si32 n)    { return n==unln::none   ? add("\033[24m")
-                                    : n==unln::line   ? add("\033[4m")
-                                    : n==unln::biline ? add("\033[21m")
-                                                      : add("\033[4:", n, "m"); } // basevt: SGR 𝗨𝗻𝗱𝗲𝗿𝗹𝗶𝗻𝗲 attribute.
+        auto& und(si32 n)    { return n == unln::none   ? add("\033[24m")
+                                    : n == unln::line   ? add("\033[4m")
+                                    : n == unln::biline ? add("\033[21m")
+                                                        : add("\033[4:", n, "m"); } // basevt: SGR 𝗨𝗻𝗱𝗲𝗿𝗹𝗶𝗻𝗲 attribute.
+        auto& dim(si32 n) // basevt: SGR Shadow attribute. 0 - 255: 3x3 cube shadow.
+        {
+            return add("\033[2:", std::clamp(n, 0, 255), "m");
+        }
         auto& unc(argb c) // basevt: SGR 58/59 Underline color. RGB: red, green, blue.
         {
             return c.token == 0 ? add("\033[59m")
@@ -372,6 +388,7 @@ namespace netxs::ansi
             c &= 0xFF;
             return c ? unc(argb{ argb::vt256[c] }) : add("\033[59m");
         }
+        auto& hid(bool b)    { return add(b ? "\033[8m" : "\033[28m"         ); } // basevt: SGR Hidden attribute.
         auto& blk(bool b)    { return add(b ? "\033[5m" : "\033[25m"         ); } // basevt: SGR Blink attribute.
         auto& inv(bool b)    { return add(b ? "\033[7m" : "\033[27m"         ); } // basevt: SGR 𝗡𝗲𝗴𝗮𝘁𝗶𝘃𝗲 attribute.
         auto& itc(bool b)    { return add(b ? "\033[3m" : "\033[23m"         ); } // basevt: SGR 𝑰𝒕𝒂𝒍𝒊𝒄 attribute.
@@ -456,7 +473,7 @@ namespace netxs::ansi
         template<class ...Args>
         auto& err(Args&&... data) { return pushsgr().fgc(redlt).add(std::forward<Args>(data)...).popsgr(); } // basevt: Add error message.
         // basevt: Ansify/textify content of specified region.
-        template<bool UseSGR = true, bool Initial = true, bool Finalize = true>
+        template<bool UseSGR = true, bool Initial = true, bool Finalize = true, bool Select_11_only = true>
         auto& s11n(core const& canvas, rect region, cell& state)
         {
             auto allfx = [&](cell const& c)
@@ -466,7 +483,14 @@ namespace netxs::ansi
                 c.scan_attr<svga::vtrgb, UseSGR>(state, block);
                 if (w == 0 || h == 0 || y != 1 || x != 1 || utf8.empty() || (byte)utf8.front() < 32) // 2D fragment is either non-standard or empty or C0.
                 {
-                    add(" "sv);
+                    if constexpr (Select_11_only)
+                    {
+                        if (y > 1 || x > 2) add(' ');
+                    }
+                    else
+                    {
+                        add(' ');
+                    }
                 }
                 else
                 {
@@ -489,17 +513,17 @@ namespace netxs::ansi
             }
             return block;
         }
-        template<bool UseSGR = true, bool Initial = true, bool Finalize = true>
+        template<bool UseSGR = true, bool Initial = true, bool Finalize = true, bool Select_11_only = true>
         auto& s11n(core const& canvas, rect region) // basevt: Ansify/textify content of specified region.
         {
             auto state = cell{};
-            return s11n<UseSGR, Initial, Finalize>(canvas, region, state);
+            return s11n<UseSGR, Initial, Finalize, Select_11_only>(canvas, region, state);
         }
-        template<bool UseSGR = true, bool Initial = true, bool Finalize = true>
+        template<bool UseSGR = true, bool Initial = true, bool Finalize = true, bool Select_11_only = true>
         auto& s11n(core const& canvas, cell& state) // basevt: Ansify/textify all content.
         {
             auto region = rect{ -dot_mx / 2, dot_mx };
-            return s11n<UseSGR, Initial, Finalize>(canvas, region, state);
+            return s11n<UseSGR, Initial, Finalize, Select_11_only>(canvas, region, state);
         }
     };
 
@@ -526,6 +550,7 @@ namespace netxs::ansi
             return add(other);
         }
 
+        auto& clear() { text::clear(); return *this; }
         auto& shellmouse(bool b) // escx: Mouse shell integration on/off.
         {
             return add(b ? "\033[?1000;1006h"
@@ -533,8 +558,8 @@ namespace netxs::ansi
         }
         auto& vmouse(bool b) // escx: Focus and Mouse position reporting/tracking.
         {
-            return add(b ? "\033[?1002;1003;1004;1006;10060h"
-                         : "\033[?1002;1003;1004;1006;10060l");
+            return add(b ? "\033[?1002;1003;1004;1006;10060h\033_vtm.terminal.EventReporting('mouse')\033\\"
+                         : "\033[?1002;1003;1004;1006;10060l\033_vtm.terminal.EventReporting('')\033\\");
         }
         auto& setutf(bool b)        { return add(b ? "\033%G"      : "\033%@"        ); } // escx: Select UTF-8 character set (true) or default (faux). Not supported by Apple Terminal on macOS.
         auto& altbuf(bool b)        { return add(b ? "\033[?1049h" : "\033[?1049l"   ); } // escx: Alternative buffer.
@@ -604,8 +629,47 @@ namespace netxs::ansi
             return *this;
         }
         template<class T>
-        auto& mouse_sgr(T const& gear, twod coor) // escx: Mouse tracking report (SGR).
+        auto& mouse_vtm(T const& gear, fp2d coor) // escx: Mouse tracking report (vt-input-mode).
         {
+            //  ESC _ event=mouse ; id=0 ; kbmods=<KeyMods> ; coor=<X>,<Y> ; buttons=<ButtonState> ; iscroll=<DeltaX>,<DeltaY> ; fscroll=<DeltaX>,<DeltaY> ST
+            //todo make it fp2d
+            auto x = ui32{};
+            auto y = ui32{};
+            if (gear.mouse_disabled)
+            {
+                ::memcpy(&x, &fp32nan, sizeof(x));
+                ::memcpy(&y, &fp32nan, sizeof(y));
+            }
+            else
+            {
+                ::memcpy(&x, &coor.x, sizeof(x));
+                ::memcpy(&y, &coor.y, sizeof(y));
+            }
+            auto iv = gear.m_sys.wheelsi;
+            auto ih = 0;
+            auto fh = ui32{};
+            auto fv = ui32{};
+            ::memcpy(&fv, &gear.m_sys.wheelfp, sizeof(fv));
+            if (gear.m_sys.hzwheel)
+            {
+                std::swap(ih, iv);
+                std::swap(fh, fv);
+            }
+            add("\033_event=mouse;id=", gear.id, ";kbmods=", gear.m_sys.ctlstat, ";coor=");
+            utf::_to_hex(x, 4 * 2, [&](char c){ add(c); });
+            add(",");
+            utf::_to_hex(y, 4 * 2, [&](char c){ add(c); });
+            add(";buttons=", gear.m_sys.buttons, ";iscroll=", ih, ",", iv, ";fscroll=");
+            utf::_to_hex(fh, 4 * 2, [&](char c){ add(c); });
+            add(",");
+            utf::_to_hex(fv, 4 * 2, [&](char c){ add(c); });
+            add("\033\\");
+            return *this;
+        }
+        template<class T>
+        auto& mouse_sgr(T const& gear, fp2d coor) // escx: Mouse tracking report (SGR).
+        {
+            if (std::isnan(coor.x)) return *this;
             using hids = T;
             static constexpr auto left     = si32{ 0  };
             static constexpr auto mddl     = si32{ 1  };
@@ -673,13 +737,14 @@ namespace netxs::ansi
             auto count = std::max(1, std::abs(gear.m_sys.wheelsi));
             while (count--)
             {
-                add("\033[<", ctrl, ';', coor.x, ';', coor.y, pressed ? 'M' : 'm');
+                add("\033[<", ctrl, ';', (si32)coor.x, ';', (si32)coor.y, pressed ? 'M' : 'm');
             }
             return *this;
         }
         template<class T>
-        auto& mouse_x11(T const& gear, twod coor, bool utf8) // escx: Mouse tracking report (X11).
+        auto& mouse_x11(T const& gear, fp2d coor, bool utf8) // escx: Mouse tracking report (X11).
         {
+            if (std::isnan(coor.x)) return *this;
             using hids = T;
             static constexpr auto left     = si32{ 0  };
             static constexpr auto mddl     = si32{ 1  };
@@ -731,15 +796,15 @@ namespace netxs::ansi
                 if (utf8)
                 {
                     add("\033[M");
-                    utf::to_utf_from_code(std::clamp(ctrl,   0, si16max - 32) + 32, *this);
-                    utf::to_utf_from_code(std::clamp(coor.x, 1, si16max - 32) + 32, *this);
-                    utf::to_utf_from_code(std::clamp(coor.y, 1, si16max - 32) + 32, *this);
+                    utf::to_utf_from_code(std::clamp(ctrl,         0, si16max - 32) + 32, *this);
+                    utf::to_utf_from_code(std::clamp((si32)coor.x, 1, si16max - 32) + 32, *this);
+                    utf::to_utf_from_code(std::clamp((si32)coor.y, 1, si16max - 32) + 32, *this);
                 }
                 else
                 {
-                    add("\033[M", (char)(std::clamp(ctrl,   0, 127-32) + 32),
-                                  (char)(std::clamp(coor.x, 1, 127-32) + 32),
-                                  (char)(std::clamp(coor.y, 1, 127-32) + 32));
+                    add("\033[M", (char)(std::clamp(ctrl,         0, 127-32) + 32),
+                                  (char)(std::clamp((si32)coor.x, 1, 127-32) + 32),
+                                  (char)(std::clamp((si32)coor.y, 1, 127-32) + 32));
                 }
             }
             return *this;
@@ -789,7 +854,7 @@ namespace netxs::ansi
         auto& link(si32 i)       { return add("\033[31:", i  , csi_ccc); } // escx: Set object id link.
         auto& styled(si32 b)     { return add("\033[32:", b  , csi_ccc); } // escx: Enable line style reporting (0/1).
         auto& style(si32 i)      { return add("\033[33:", i  , csi_ccc); } // escx: Line style response (deco::format: alignment, wrapping, RTL, etc).
-        auto& cursor0(si32 i)    { return add("\033[34:", i  , csi_ccc); } // escx: Set cursor  0: None, 1: Underline, 2: Block, 3: I-bar. cell::px stores cursor fg/bg if cursor is set.
+        auto& cursor0(si32 i)    { return add("\033[34:", i  , csi_ccc); } // escx: Set cursor  0: None, 1: Underline, 2: Block, 3: I-bar.
         //auto& hplink0(si32 i)    { return add("\033[35:", i  , csi_ccc); } // escx: Set hyperlink cell.
         //auto& bitmap0(si32 i)    { return add("\033[36:", i  , csi_ccc); } // escx: Set bitmap inside the cell.
         //auto& fusion0(si32 i)    { return add("\033[37:", i  , csi_ccc); } // escx: Object outline boundary.
@@ -823,12 +888,30 @@ namespace netxs::ansi
             }
             return *this;
         }
+        auto& numerate_lines(argb liter_fg)
+        {
+            auto count = 1;
+            auto width = 0_sz;
+            auto total = std::count(text::begin(), text::end(), '\n') + 1;
+            while (total)
+            {
+                total /= 10;
+                width++;
+            }
+            auto numerate = [&]
+            {
+                return escx{}.pushsgr().fgc(liter_fg).add(utf::adjust(std::to_string(count++), width, ' ', true), ": ").popsgr();
+            };
+            *this = numerate().add(*this);
+            utf::for_each(*this, "\n", [&]{ return "\n" + numerate(); });
+            return *this;
+        }
     };
 
-    template<bool UseSGR = true, bool Initial = true, bool Finalize = true>
+    template<bool UseSGR = true, bool Initial = true, bool Finalize = true, bool Select_11_only = true>
     auto s11n(core const& canvas, rect region) // ansi: Ansify/textify content of specified region.
     {
-        return escx{}.s11n<UseSGR, Initial, Finalize>(canvas, region);
+        return escx{}.s11n<UseSGR, Initial, Finalize, Select_11_only>(canvas, region);
     }
     template<class ...Args>
     auto clipbuf(Args&&... data) { return escx{}.clipbuf(std::forward<Args>(data)...); } // ansi: Set clipboard.
@@ -856,7 +939,9 @@ namespace netxs::ansi
     auto del()                 { return escx{}.del( );        } // ansi: Delete cell backwards ('\x7F').
     auto bld(bool b = true)    { return escx{}.bld(b);        } // ansi: SGR 𝗕𝗼𝗹𝗱 attribute.
     auto und(si32 n = 1   )    { return escx{}.und(n);        } // ansi: SGR 𝗨𝗻𝗱𝗲𝗿𝗹𝗶𝗻𝗲 attribute. 0: none, 1: line, 2: biline, 3: wavy, 4: dotted, 5: dashed, 6 - 7: unknown.
+    auto dim(si32 n)           { return escx{}.dim(n);        } // ansi: SGR Shadow attribute. 0 - 255: 3x3 cube shadow.
     auto unc(argb c)           { return escx{}.unc(c);        } // ansi: SGR SGR 58/59 Underline color. RGB: red, green, blue.
+    auto hid(bool b = true)    { return escx{}.hid(b);        } // ansi: SGR Hidden attribute.
     auto blk(bool b = true)    { return escx{}.blk(b);        } // ansi: SGR Blink attribute.
     auto inv(bool b = true)    { return escx{}.inv(b);        } // ansi: SGR 𝗡𝗲𝗴𝗮𝘁𝗶𝘃𝗲 attribute.
     auto itc(bool b = true)    { return escx{}.itc(b);        } // ansi: SGR 𝑰𝒕𝒂𝒍𝒊𝒄 attribute.
@@ -919,8 +1004,8 @@ namespace netxs::ansi
     auto cursor0(si32 i)       { return escx{}.cursor0(i);    } // ansi: Set cursor inside the cell.
     auto ref(si32 i)           { return escx{}.ref(i);        } // ansi: Create the reference to the existing paragraph. Create new id if it is not existing.
     auto idx(si32 i)           { return escx{}.idx(i);        } // ansi: Split the text run and associate the fragment with an id.
-                                                                       //       All following text is under the IDX until the next command is issued.
-                                                                       //       Redefine if the id already exists.
+                                                                //       All following text is under the IDX until the next command is issued.
+                                                                //       Redefine if the id already exists.
     // ansi: Curses commands.
     // The order is important (see the richtext::flow::exec constexpr).
     //todo tie with richtext::flow::exec
@@ -1290,12 +1375,15 @@ namespace netxs::ansi
                     sgr[sgr_rst      ] = V{ p->brush.nil( );    };
                     sgr[sgr_fg       ] = V{ p->brush.rfg( );    };
                     sgr[sgr_bg       ] = V{ p->brush.rbg( );    };
+                    sgr[sgr_faint    ] = V{ p->brush.dim(q.subarg(-1)); };
                     sgr[sgr_bold     ] = V{ p->brush.bld(true); };
-                    sgr[sgr_faint    ] = V{ p->brush.bld(faux); };
+                    sgr[sgr_nonbold  ] = V{ p->brush.bld(faux); };
                     sgr[sgr_italic   ] = V{ p->brush.itc(true); };
                     sgr[sgr_nonitalic] = V{ p->brush.itc(faux); };
                     sgr[sgr_inv      ] = V{ p->brush.inv(true); };
                     sgr[sgr_noinv    ] = V{ p->brush.inv(faux); };
+                    sgr[sgr_hidden   ] = V{ p->brush.hid(true); };
+                    sgr[sgr_nonhidden] = V{ p->brush.hid(faux); };
                     sgr[sgr_und      ] = V{ p->brush.und(q.subarg(unln::line)); };
                     sgr[sgr_doubleund] = V{ p->brush.und(unln::biline        ); };
                     sgr[sgr_nound    ] = V{ p->brush.und(unln::none          ); };
@@ -1405,10 +1493,12 @@ namespace netxs::ansi
         // vt_parser: Static UTF-8/ANSI parser.
         void parse(view utf8, T*& client)
         {
+            auto decsg = client->decsg;
             auto s = [&](auto const& traits, qiew utf8)
             {
                 client->defer = faux;
                 intro.execute(traits.control, utf8, client); // Make one iteration using firstcmd and return.
+                decsg = client->decsg; // Sync DECSG mode if buffer/client changed. //todo Should we make it shared among buffers?
                 return utf8;
             };
             auto y = [&](auto const& cluster)
@@ -1421,7 +1511,7 @@ namespace netxs::ansi
                 client->ascii(plain);
                 client->defer = true;
             };
-            utf::decode(s, y, a, utf8, client->decsg);
+            utf::decode(s, y, a, utf8, decsg);
             client->flush();
         }
         // vt_parser: Static UTF-8/ANSI parser proc.
@@ -1801,27 +1891,33 @@ namespace netxs::ansi
                 proto_cells.push_back(brush);
                 //debug += (debug.size() ? "_"s : ""s) + text(utf8);
             }
-            else
+            else // Invisible controls: non-controls.
             {
-                auto& marker = get_ansi_marker();
-                if (auto set_prop = marker.setter[attr.control])
-                {
-                    if (proto_cells.size())
-                    {
-                        set_prop(proto_cells.back());
-                    }
-                    else
-                    {
-                        auto empty = brush;
-                        empty.txt(whitespace).wdt(v);
-                        set_prop(empty);
-                        proto_cells.push_back(empty);
-                    }
-                }
-                else
+                // Test :
+                //      echo -e '\U2069+123'; echo -e '+\U2068+123'; echo -e '\e[42m+123\U2068\e[m'; echo -e '123\U202C++';
+
+                //todo implement LRE RLE etc. Now all Cf's are stored within clusters.
+                //auto& marker = get_ansi_marker();
+                //if (auto set_prop = marker.setter[attr.control])
+                //{
+                //    if (proto_cells.size())
+                //    {
+                //        set_prop(proto_cells.back());
+                //    }
+                //    else
+                //    {
+                //        auto empty = brush;
+                //        empty.txt(whitespace).wdt(v);
+                //        set_prop(empty);
+                //        proto_cells.push_back(empty);
+                //        ++proto_count; // Account zero width cells.
+                //    }
+                //}
+                //else
                 {
                     brush.txt(utf8, v);
                     proto_cells.push_back(brush);
+                    ++proto_count; // Account zero width cells.
                 }
                 //auto i = utf::to_hex((size_t)attr.control, 5, true);
                 //debug += (debug.size() ? "_<fn:"s : "<fn:"s) + i + ">"s;

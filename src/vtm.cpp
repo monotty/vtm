@@ -64,7 +64,7 @@ int main(int argc, char* argv[])
         {
             rungui = true;
         }
-        else if (getopt.match("-r", "--", "--run", /*UD*/"--runapp"))
+        else if (getopt.match("-r", "--", "--run"))
         {
             whoami = type::runapp;
             params = getopt.rest();
@@ -81,7 +81,7 @@ int main(int argc, char* argv[])
         {
             whoami = type::logmon;
         }
-        else if (getopt.match("-p", "--pin", /*UD*/"--pipe"))
+        else if (getopt.match("-p", "--pin"))
         {
             vtpipe = getopt.next();
             if (vtpipe.empty())
@@ -125,6 +125,17 @@ int main(int argc, char* argv[])
                 break;
             }
         }
+        #if defined(__linux__) && !defined(__ANDROID__)
+        else if (getopt.match("-a", "--mouse"))
+        {
+            auto enabled = xml::take_or(getopt.next(), true);
+            os::dtvt::initialize();
+            netxs::logger::wipe();
+            auto syslog = os::tty::logger();
+            auto ok = lixx::set_mouse_access(enabled);
+            return ok;
+        }
+        #endif
         else if (getopt.match("-?", "-h", "--help"))
         {
             os::dtvt::initialize();
@@ -133,18 +144,22 @@ int main(int argc, char* argv[])
             log("\nText-based Desktop Environment " + text{ app::shared::version } +
                 "\n(virtual terminal multiplexer)"
                 "\n"
-                "\n  Syntax:"
+                "\n  Command-line options syntax:"
                 "\n"
                 "\n    vtm [ -c <file> ][ -q ][ -p <id> ][ -s | -d | -m ][ -x <cmds> ]"
                 "\n    vtm [ -c <file> ][ -q ][ -t | -g ][ -r [ <type> ]][ <args...> ]"
                 "\n    vtm [ -c <file> ]  -l"
+                #if defined(__linux__) && !defined(__ANDROID__)
+                "\n    vtm -i | -u | -a [mode] | -v | -?"
+                #else
                 "\n    vtm -i | -u | -v | -?"
+                #endif
                 "\n"
                 "\n    <script relay via piped redirection> | vtm [ -p <id> ]"
                 "\n"
                 "\n  Options:"
                 "\n"
-                "\n    By default, vtm runs Desktop Client and Desktop Server."
+                "\n    Without options, vtm runs Desktop Server and Desktop Client."
                 "\n"
                 "\n    -h, -?, --help       Print command-line options."
                 "\n    -v, --version        Print version."
@@ -158,6 +173,10 @@ int main(int argc, char* argv[])
                 "\n    -u, --uninstall      Perform system-wide deinstallation."
                 #if defined(WIN32)
                 "\n    -0, --session0       Use Session 0 to run Desktop Server in background."
+                #endif
+                #if defined(__linux__) && !defined(__ANDROID__)
+                "\n    -a, --mouse [mode]   Set/reset persistent access to mouse devices for all users."
+                "\n                         Run 'sudo vtm --mouse 0' to reset access."
                 #endif
                 "\n    -q, --quiet          Disable logging."
                 "\n    -x, --script <cmds>  Specifies script commands."
@@ -213,9 +232,8 @@ int main(int argc, char* argv[])
         }
     }
 
-    rungui = rungui && (whoami == type::runapp
-                     || whoami == type::client);
-    os::dtvt::initialize(rungui);
+    auto interactive = whoami == type::runapp || whoami == type::client;
+    os::dtvt::initialize(rungui, true, interactive);
 
     if (os::dtvt::vtmode & ui::console::redirio && (whoami == type::runapp || whoami == type::client))
     {
@@ -224,7 +242,7 @@ int main(int argc, char* argv[])
     auto denied = faux;
     auto syslog = os::tty::logger();
     auto userid = os::env::user();
-    auto prefix = vtpipe.length() ? vtpipe : utf::concat(os::path::ipc_prefix, os::process::elevated ? "!-" : "-", userid.second);;
+    auto prefix = vtpipe.length() ? vtpipe : utf::concat(os::path::ipc_prefix, os::process::elevated ? "!-" : "-", userid.second);
     auto prefix_log = prefix + os::path::log_suffix;
     auto failed = [&](auto cause)
     {
@@ -246,7 +264,9 @@ int main(int argc, char* argv[])
     }
     else if (whoami == type::config)
     {
-        log(prompt::resultant_settings, "\n", app::shared::load::settings(cliopt, true));
+        auto config = xml::settings{};
+        app::shared::load::settings(config, cliopt, true);
+        log(prompt::resultant_settings, "\n", config);
     }
     else if (whoami == type::logmon)
     {
@@ -330,7 +350,8 @@ int main(int argc, char* argv[])
     }
     else if (whoami == type::runapp)
     {
-        auto config = app::shared::load::settings(cliopt);
+        auto& indexer = ui::tui_domain();
+        app::shared::load::settings(indexer.config, cliopt);
         auto shadow = params;
         auto apname = view{};
         auto aptype = text{};
@@ -365,11 +386,12 @@ int main(int argc, char* argv[])
         log("%appname% %version%", apname, app::shared::version);
         auto coor = params.find(' ') + 1; // npos+1=0
         params = params.substr(coor ? coor : params.size());
-        app::shared::start(params, aptype, config);
+        app::shared::start(params, aptype);
     }
     else
     {
-        auto config = app::shared::load::settings(cliopt);
+        auto config = xml::settings{};
+        app::shared::load::settings(config, cliopt);
         auto client = os::ipc::socket::open<os::role::client, faux>(prefix, denied);
         auto signal = ptr::shared<os::fire>(os::process::started(prefix)); // Signaling that the server is ready for incoming connections.
 
@@ -378,7 +400,7 @@ int main(int argc, char* argv[])
         else if (whoami == type::client && !client)
         {
             log("%%New desktop session for [%userid%]", prompt::main, userid.first);
-            auto [success, successor] = os::process::fork(system, prefix, config.utf8());
+            auto [success, successor] = os::process::fork(system, prefix, config.settings::utf8());
             if (successor)
             {
                 whoami = type::server;
@@ -400,10 +422,10 @@ int main(int argc, char* argv[])
                 auto env = os::env::add();
                 auto cwd = os::env::cwd();
                 auto cmd = script;
-                auto cfg = config.utf8();
                 auto win = os::dtvt::gridsz;
                 auto gui = app::shared::get_gui_config(config);
-                userinit.send(client, userid.first, os::dtvt::vtmode, env, cwd, cmd, cfg, win);
+                userinit.send(client, userid.first, os::dtvt::vtmode, env, cwd, cmd, win);
+                ui::tui_domain().config.swap(config);
                 app::shared::splice(client, gui);
                 return 0;
             }
@@ -412,7 +434,7 @@ int main(int argc, char* argv[])
 
         if (whoami == type::daemon)
         {
-            auto [success, successor] = os::process::fork(system, prefix, config.utf8(), script);
+            auto [success, successor] = os::process::fork(system, prefix, config.settings::utf8(), script);
             if (successor)
             {
                 whoami = type::server;
@@ -446,11 +468,12 @@ int main(int argc, char* argv[])
         signal.reset();
 
         namespace e2 = ui::e2;
-        auto config_lock = ui::tui_domain().unique_lock(); // Sync multithreaded access to config.
-        auto desktop = app::vtm::hall::ctor(server, config);
+        auto& indexer = ui::tui_domain();
+        indexer.config.swap(config);
+        auto lock = indexer.unique_lock();
+        auto desktop = app::vtm::hall::ctor(server);
         desktop->autorun();
-        auto settings = config.utf8();
-        config_lock.unlock();
+        lock.unlock();
 
         log("%%Session started"
             "\n      user: %userid%"
@@ -508,18 +531,15 @@ int main(int argc, char* argv[])
         {
             if (user->auth(userid.second))
             {
-                desktop->run([&, user, settings](auto session_id)
+                desktop->run([&, user](auto session_id)
                 {
                     auto userinit = directvt::binary::init{};
                     if (auto packet = userinit.recv(user))
                     {
                         auto id = utf::concat(*user);
                         if constexpr (debugmode) log("%%Client connected %id%", prompt::user, id);
-                        auto usrcfg = eccc{ .env = packet.env, .cwd = packet.cwd, .cmd = packet.cmd, .win = packet.win };
-                        auto config = xmls{ settings };
-                        config.fuse(packet.cfg);
                         os::ipc::users++;
-                        desktop->invite(user, packet.user, packet.mode, usrcfg, config, session_id);
+                        desktop->invite(user, packet.user, packet.mode, packet, session_id);
                         os::ipc::users--;
                         if constexpr (debugmode) log("%%Client disconnected %id%", prompt::user, id);
                     }

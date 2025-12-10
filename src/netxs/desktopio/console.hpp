@@ -144,7 +144,7 @@ namespace netxs::ui
             {
                 auto cmd = eccc{ .cmd = lock.thing.utf8 };
                 notify(e2::command::run, cmd);
-                auto msg = utf::concat(prompt::repl, ansi::clr(yellowlt, utf::trim(cmd.cmd, "\r\n")));
+                auto msg = utf::concat(prompt::repl, ansi::clr(yellowlt, utf::get_trimmed(cmd.cmd, "\r\n")));
                 s11n::logs.send(canal, ui32{}, datetime::now(), msg);
             }
             void handle(s11n::xs::syswinsz    lock)
@@ -404,25 +404,25 @@ namespace netxs::ui
             svga vtmode; // conf: .
             si32 clip_prtscrn_mime; // conf: Print-screen copy encoding format.
 
-            void read(xmls& config)
+            void read(settings& config)
             {
-                clip_preview_clrs = config.take("/config/clipboard/preview/color"  , cell{}.bgc(bluedk).fgc(whitelt));
-                clip_preview_time = config.take("/config/clipboard/preview/timeout", span{ 3s });
-                clip_preview_alfa = config.take("/config/clipboard/preview/alpha"  , byte{ 0xFF });
-                clip_preview_glow = config.take("/config/clipboard/preview/shadow" , 3);
-                clip_preview_show = config.take("/config/clipboard/preview/enabled", true);
-                clip_preview_size = config.take("/config/clipboard/preview/size"   , twod{ 80,25 });
-                clip_prtscrn_mime = config.take("/config/clipboard/format"         , mime::htmltext, xml::options::format);
-                dblclick_timeout  = config.take("/config/timings/dblclick"         , span{ 500ms });
-                tooltip_colors    = config.take("/config/tooltips/color"           , cell{}.bgc(0xFFffffff).fgc(0xFF000000));
-                tooltip_timeout   = config.take("/config/tooltips/timeout"         , span{ 2000ms });
-                tooltip_enabled   = config.take("/config/tooltips/enabled"         , true);
-                debug_overlay     = config.take("/config/debug/overlay"            , faux);
-                show_regions      = config.take("/config/debug/regions"            , faux);
+                clip_preview_clrs = config.settings::take("/config/clipboard/preview/color"  , cell{}.bgc(bluedk).fgc(whitelt));
+                clip_preview_time = config.settings::take("/config/clipboard/preview/timeout", span{ 3s });
+                clip_preview_alfa = config.settings::take("/config/clipboard/preview/alpha"  , byte{ 0xFF });
+                clip_preview_glow = config.settings::take("/config/clipboard/preview/shadow" , 3);
+                clip_preview_show = config.settings::take("/config/clipboard/preview/enabled", true);
+                clip_preview_size = config.settings::take("/config/clipboard/preview/size"   , twod{ 80,25 });
+                clip_prtscrn_mime = config.settings::take("/config/clipboard/format"         , mime::htmltext, xml::options::format);
+                dblclick_timeout  = config.settings::take("/config/timings/dblclick"         , span{ 500ms });
+                tooltip_colors    = config.settings::take("/config/tooltips/color"           , cell{}.bgc(0xFFffffff).fgc(0xFF000000));
+                tooltip_timeout   = config.settings::take("/config/tooltips/timeout"         , span{ 2000ms });
+                tooltip_enabled   = config.settings::take("/config/tooltips/enabled"         , true);
+                debug_overlay     = config.settings::take("/config/debug/overlay"            , faux);
+                show_regions      = config.settings::take("/config/debug/regions"            , faux);
                 clip_preview_glow = std::clamp(clip_preview_glow, 0, 5);
             }
 
-            props_t(pipe& /*canal*/, view userid, si32 mode, bool isvtm, si32 session_id, xmls& config)
+            props_t(pipe& /*canal*/, view userid, si32 mode, bool isvtm, si32 session_id, settings& config)
             {
                 read(config);
                 legacy_mode = mode;
@@ -431,8 +431,8 @@ namespace netxs::ui
                     this->session_id  = session_id;
                     os_user_id        = utf::concat("[", userid, ":", session_id, "]");
                     title             = os_user_id;
-                    background_color  = config.take("/config/desktop/background/color", cell{}.fgc(whitedk).bgc(0xFF000000));
-                    auto utf8_tile    = config.take("/config/desktop/background/tile", ""s);
+                    background_color  = config.settings::take("/config/desktop/background/color", cell{}.fgc(whitedk).bgc(0xFF000000));
+                    auto utf8_tile    = config.settings::take("/config/desktop/background/tile", ""s);
                     if (utf8_tile.size())
                     {
                         auto block = page{ utf8_tile };
@@ -475,6 +475,7 @@ namespace netxs::ui
         bool       yield; // gate: Indicator that the current frame has been successfully sent.
         bool       fullscreen; // gate: .
         face       canvas; // gate: .
+        std::map<si32, ui::page> gate_overlays; // gate: User defined overlays (for Lua scripting output).
         std::unordered_map<id_t, netxs::sptr<hids>> gears; // gate: .
         pro::debug& debug;
         input::multihome_t& multihome;
@@ -500,10 +501,26 @@ namespace netxs::ui
                 auto& luafx = bell::indexer.luafx;
                 gear.base::add_methods(basename::gear,
                 {
+                    { "GetCoord",       [&]
+                                        {
+                                            luafx.set_return(gear.coord.x, gear.coord.y);
+                                        }},
                     { "IsKeyRepeated",  [&]
                                         {
                                             auto repeated = gear.keystat == input::key::repeated;
                                             luafx.set_return(repeated);
+                                        }},
+                    { "Interrupt",      [&]
+                                        {
+                                            gear.keystat = input::key::interrupted;
+                                            gear.set_handled();
+                                            gear.indexer.expire();
+                                            luafx.set_return();
+                                        }},
+                    { "Bypass",         [&]
+                                        {
+                                            gear.touched = {};
+                                            luafx.set_return(true);
                                         }},
                     { "SetHandled",     [&]
                                         {
@@ -520,16 +537,32 @@ namespace netxs::ui
                                             }
                                             luafx.set_return();
                                         }},
+                    { "Focus",          [&]
+                                        {
+                                            auto is_focused = faux;
+                                            if (auto object_ptr = luafx.get_args_or(1, sptr{}))
+                                            {
+                                                is_focused = pro::focus::is_focused(object_ptr, gear.id);
+                                                if (!is_focused)
+                                                {
+                                                    if constexpr (debugmode) log("Set focus to the object:", object_ptr->id);
+                                                    pro::focus::set(object_ptr, gear.id, solo::on, true);
+                                                }
+                                            }
+                                            else log("%%No object found to focus on", prompt::hids);
+                                            luafx.set_return(is_focused);
+                                        }},
                 });
-                gear.base::father = This();            // Gear has a fixed parent.
-                gear.base::update_scripting_context(); //
+                gear.base::father = This(); // Gear has a fixed parent.
             }
             auto& [ext_gear_id, gear_ptr] = *gear_it;
             auto& gear = *gear_ptr;
             gear.set_multihome();
             gear.hids::take(device);
-            //todo should we set default gear here?
-            base::strike();
+            if (props.legacy_mode & ui::console::mouse)
+            {
+                base::deface(); // Unconditional viewport update to redraw mouse cursor.
+            }
         }
         void fire(hint event_id)
         {
@@ -538,7 +571,7 @@ namespace netxs::ui
                 if (ext_gear_id)
                 {
                     auto& gear = *gear_ptr;
-                    if (gear.m_sys.timecod != time{}) // Don't send mouse events if the mouse has not been used yet.
+                    if (gear.m_sys.timecod != time{} || gear.mouse_disabled) // Don't send mouse events if the mouse has not been used yet or disabled.
                     {
                         gear.fire_fast();
                         gear.fire(event_id);
@@ -567,7 +600,7 @@ namespace netxs::ui
             static const auto busy = cell{}.bgc(reddk).fgc(0xFFffffff);
             auto brush = gear.m_sys.buttons ? cell{ busy }.txt(64 + (char)gear.m_sys.buttons/*A-Z...*/)
                                             : idle;
-            auto area = rect{ gear.owner.coor() + gear.coord, dot_11 };
+            auto area = rect{ gear.coord + gear.owner.coor(), dot_11 };
             parent_canvas.fill(area, cell::shaders::fuse(brush));
         }
         void draw_mouse_pointer(face& parent_canvas)
@@ -575,8 +608,10 @@ namespace netxs::ui
             for (auto& [ext_gear_id, gear_ptr] : gears)
             {
                 auto& gear = *gear_ptr;
-                if (gear.mouse_disabled) continue;
-                fill_pointer(gear, parent_canvas);
+                if (!gear.mouse_disabled && !std::isnan(gear.coord.x))
+                {
+                    fill_pointer(gear, parent_canvas);
+                }
             }
         }
         void draw_clipboard_preview(time const& stamp)
@@ -587,7 +622,7 @@ namespace netxs::ui
                 gear.board::shown = !gear.mouse_disabled &&
                                     (props.clip_preview_time == span::zero() ||
                                      props.clip_preview_time > stamp - gear.delta.stamp());
-                if (gear.board::shown)
+                if (gear.board::shown && !std::isnan(gear.coord.x))
                 {
                     auto coor = twod{ gear.coord } + dot_21 * 2;
                     auto full = gear.board::image.full();
@@ -606,15 +641,20 @@ namespace netxs::ui
             {
                 auto& gear = *gear_ptr;
                 if (gear.mouse_disabled) continue;
-                if (auto tooltip_page_sptr = gear.tooltip.get_render())
+                auto [tooltip_page_sptr, tooltip_offset] = gear.tooltip.get_render_sptr_and_offset(props.tooltip_colors);
+                if (tooltip_page_sptr && !std::isnan(gear.coord.x))
                 {
                     auto& tooltip_page = *tooltip_page_sptr;
-                    auto full_area = full;
-                    full_area.coor = std::max(dot_00, twod{ gear.coord } - twod{ 4, tooltip_page.size() + 1 });
-                    full_area.size.x = dot_mx.x; // Prevent line wrapping.
-                    canvas.full(full_area);
+                    auto fs_area = full;
+                    auto page_area = full;
+                    page_area.coor = tooltip_offset + twod{ gear.coord };
+                    page_area.size = tooltip_page.limits();
+                    fs_area.size = std::max(dot_00, fs_area.size - page_area.size);
+                    page_area.coor = fs_area.clamp(page_area.coor);
+                    page_area.size.x = dot_mx.x; // Prevent line wrapping.
+                    canvas.full(page_area);
                     canvas.cup(dot_00);
-                    canvas.output(tooltip_page, cell::shaders::color(props.tooltip_colors));
+                    canvas.output(tooltip_page, cell::shaders::fuse);
                 }
             }
             canvas.area(area);
@@ -627,9 +667,10 @@ namespace netxs::ui
             {
                 auto& gear = *gear_ptr;
                 if (gear.mouse_disabled) continue;
-                if (auto v = gear.tooltip.get())
+                if (auto v = gear.tooltip.get_fresh_qiew())
                 {
-                    list.thing.push(ext_gear_id, v.value());
+                    auto tooltip_qiew = v.value();
+                    list.thing.push(ext_gear_id, tooltip_qiew, props.tooltip_colors.fgc(), props.tooltip_colors.bgc());
                 }
             }
             list.thing.sendby<true>(canal);
@@ -664,6 +705,13 @@ namespace netxs::ui
                         //todo cache background
                         canvas.tile(props.background_image, cell::shaders::fuse);
                     }
+                    auto overlay_iter = gate_overlays.begin();
+                    while (overlay_iter != gate_overlays.end() && overlay_iter->first < 0) // Draw background (index < 0) overlays.
+                    {
+                        canvas.cup(dot_00);
+                        canvas.output(overlay_iter->second, cell::shaders::fuse);
+                        overlay_iter++;
+                    }
                     if (base::subset.size())
                     {
                         base::subset.back()->render(canvas);
@@ -681,10 +729,6 @@ namespace netxs::ui
                     {
                         debug.output(canvas);
                     }
-                    if (props.legacy_mode & ui::console::mouse) // Render our mouse pointer.
-                    {
-                        draw_mouse_pointer(canvas);
-                    }
                     if (props.show_regions)
                     {
                         canvas.each([](cell& c)
@@ -696,6 +740,16 @@ namespace netxs::ui
                             c.bgc(bgc);
                         });
                     }
+                    while (overlay_iter != gate_overlays.end()) // Draw foreground (index < 0) overlays.
+                    {
+                        canvas.cup(dot_00);
+                        canvas.output(overlay_iter->second, cell::shaders::fuse);
+                        overlay_iter++;
+                    }
+                }
+                if (props.legacy_mode & ui::console::mouse) // Render our mouse pointer.
+                {
+                    draw_mouse_pointer(canvas);
                 }
             }
             else
@@ -733,20 +787,32 @@ namespace netxs::ui
             fire(input::key::MouseMove);
         }
         // gate: Rx loop.
-        void launch()
+        void launch(auto& lock)
         {
             auto root_ptr = This();
             base::signal(tier::anycast, e2::form::upon::started, root_ptr); // Make all stuff ready to receive input.
+            base::signal(tier::release, e2::form::upon::started, root_ptr); // Notify that the gate is running.
             directvt::binary::stream::reading_loop(canal, [&](view data){ conio.s11n::sync(data); });
             conio.s11n::stop(); // Wake up waiting dtvt objects, if any.
             if constexpr (debugmode) log(prompt::gate, "DirectVT session closed");
-            base::signal(tier::release, e2::form::upon::stopped, true);
+            lock.lock();
+                if (gears.size())
+                if (auto& gear_ptr = gears.begin()->second) // Select any gear in order to set multihome state.
+                {
+                    gear_ptr->set_multihome();
+                }
+                base::signal(tier::release, e2::form::upon::stopped, root_ptr); // Notify that the gate is closed.
+                base::signal(tier::anycast, e2::form::proceed::quit::one, true);
+                disconnect();
+                paint.stop();
+                bell::sensors.clear();
+            lock.unlock();
         }
 
         //todo revise
-        gate(xipc uplink, si32 vtmode, xmls& config, view userid = {}, si32 session_id = 0, bool isvtm = faux)
+        gate(xipc uplink, si32 vtmode, view userid = {}, si32 session_id = 0, bool isvtm = faux)
             : canal{ *uplink },
-              props{ canal, userid, vtmode, isvtm, session_id, config },
+              props{ canal, userid, vtmode, isvtm, session_id, bell::indexer.config },
               paint{ canal, props.vtmode },
               conio{ canal, *this  },
               alive{ true },
@@ -759,11 +825,48 @@ namespace netxs::ui
             base::plugin<pro::focus>();
             base::plugin<pro::keybd>();
             auto& luafx = bell::indexer.luafx;
-            auto script_list = config.list("/config/events/gate/script");
+            auto& config = bell::indexer.config;
+            auto gate_context = config.settings::push_context("/config/events/gate/");
+            auto script_list = config.settings::take_ptr_list_for_name("script");
             auto bindings = input::bindings::load(config, script_list);
             input::bindings::keybind(*this, bindings);
             base::add_methods(basename::gate,
             {
+                { "GetViewport",            [&]
+                                            {
+                                                auto viewport = base::signal(tier::request, e2::form::prop::viewport);
+                                                luafx.set_return(viewport);
+                                            }},
+                { "Deface",                 [&]
+                                            {
+                                                base::deface();
+                                                luafx.set_return();
+                                            }},
+                { "SetOverlay",             [&]
+                                            {
+                                                auto overlay_index = luafx.get_args_or(1, 0);
+                                                auto overlay_thing = luafx.get_args_or(2, ""s);
+                                                auto iter = gate_overlays.find(overlay_index);
+                                                if (overlay_thing.empty()) // Drop overlay.
+                                                {
+                                                    if (iter != gate_overlays.end())
+                                                    {
+                                                        gate_overlays.erase(iter);
+                                                    }
+                                                }
+                                                else // Set overlay.
+                                                {
+                                                    if (iter == gate_overlays.end())
+                                                    {
+                                                        gate_overlays[overlay_index] = overlay_thing;
+                                                    }
+                                                    else
+                                                    {
+                                                        iter->second = overlay_thing;
+                                                    }
+                                                }
+                                                luafx.set_return();
+                                            }},
                 { "Disconnect",             [&]
                                             {
                                                 auto& gear = luafx.get_gear();
@@ -870,7 +973,7 @@ namespace netxs::ui
             canvas.face::area(base::area());
             LISTEN(tier::release, e2::form::proceed::multihome, world_ptr)
             {
-                multihome = { world_ptr, world_ptr->base::father };
+                multihome = input::multihome_t{ .world_wptr = world_ptr, .parent_wptr = world_ptr->base::father, .holder = world_ptr->base::holder };
             };
             LISTEN(tier::release, e2::command::printscreen, gear)
             {
@@ -983,18 +1086,11 @@ namespace netxs::ui
             LISTEN(tier::preview, e2::form::proceed::create, dest_region)
             {
                 dest_region.coor += base::coor();
-                this->base::riseup(tier::release, e2::form::proceed::create, dest_region);
+                base::riseup(tier::release, e2::form::proceed::create, dest_region);
             };
             LISTEN(tier::release, e2::conio::pointer, pointer)
             {
                 props.legacy_mode |= pointer ? ui::console::mouse : 0;
-            };
-            LISTEN(tier::release, e2::form::upon::stopped, fast) // Reading loop ends.
-            {
-                this->base::signal(tier::anycast, e2::form::proceed::quit::one, fast);
-                disconnect();
-                paint.stop();
-                bell::sensors.clear();
             };
             LISTEN(tier::preview, e2::conio::quit, deal) // Disconnect.
             {
@@ -1006,13 +1102,12 @@ namespace netxs::ui
             };
             LISTEN(tier::anycast, e2::form::upon::started, root_ptr)
             {
-                base::update_scripting_context(); // Gate has no parents.
                 if (props.debug_overlay) debug.start();
-                this->base::signal(tier::release, e2::form::prop::name, props.title);
+                base::signal(tier::release, e2::form::prop::name, props.title);
                 //todo revise
                 if (props.title.length())
                 {
-                    this->base::riseup(tier::preview, e2::form::prop::ui::header, props.title);
+                    base::riseup(tier::preview, e2::form::prop::ui::header, props.title);
                 }
             };
             LISTEN(tier::request, e2::form::prop::ui::footer, f)
@@ -1151,7 +1246,10 @@ namespace netxs::ui
                 });
                 LISTEN(tier::release, e2::config::fps, fps)
                 {
-                    if (fps > 0) this->base::signal(tier::general, e2::config::fps, fps);
+                    if (fps > 0)
+                    {
+                        base::signal(tier::general, e2::config::fps, fps);
+                    }
                 };
                 LISTEN(tier::preview, e2::form::prop::cwd, path)
                 {

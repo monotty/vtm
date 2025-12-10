@@ -108,54 +108,58 @@ namespace netxs::app::tile
                 auto coor = twod{ new_area.size.x + 2/*resize grip width*/, 0 };
                 client->base::moveto(coor);
             };
-            boss.LISTEN(tier::release, tile::events::enlist, object, memo)
+            boss.LISTEN(tier::release, tile::events::enlist, data_src_sptr, memo)
             {
-                auto label = [](auto data_src_sptr, auto header)
-                {
-                    auto active_color = skin::color(tone::active);
-                    auto focused_color = skin::color(tone::focused);
-                    auto cF = focused_color;
-                    auto cE = active_color;
-                    return ui::item::ctor(header.empty() ? "- no title -" : header)
-                        ->setpad({ 1, 1 })
-                        ->active(cE)
-                        ->shader(cF, e2::form::state::focus::count, data_src_sptr)
-                        ->shader(cell::shaders::xlight, e2::form::state::hover)
-                        ->invoke([&](auto& boss)
+                auto active_color = skin::color(tone::active);
+                auto focused_color = skin::color(tone::focused);
+                auto cF = focused_color;
+                auto cE = active_color;
+                auto current_title = data_src_sptr->base::signal(tier::request, e2::form::prop::ui::header);
+                static auto label_format = [](view utf8){ return utf8.empty() ? "- no title -"sv : utf8; };
+                client->attach(ui::item::ctor(label_format(current_title)))
+                    ->setpad({ 1, 1 })
+                    ->active(cE)
+                    ->shader(cF, e2::form::state::focus::count, data_src_sptr)
+                    ->shader(cell::shaders::xlight, e2::form::state::hover)
+                    ->invoke([&](auto& boss)
+                    {
+                        auto& data_shadow = boss.base::field(ptr::shadow(data_src_sptr));
+                        boss.depend(data_src_sptr);
+                        data_src_sptr->LISTEN(tier::release, e2::form::prop::ui::header, new_title, boss.sensors)
                         {
-                            auto& data_shadow = boss.base::field(ptr::shadow(data_src_sptr));
-                            boss.LISTEN(tier::release, e2::form::upon::vtree::attached, parent)
+                            boss.set(label_format(new_title));
+                            client->resize();
+                        };
+                        boss.LISTEN(tier::release, e2::form::upon::vtree::attached, parent)
+                        {
+                            parent->resize();
+                        };
+                        boss.LISTEN(tier::release, e2::form::upon::vtree::detached, parent)
+                        {
+                            parent->resize(); // Rebuild list.
+                        };
+                        data_src_sptr->LISTEN(tier::release, tile::events::delist, f, boss.sensors)
+                        {
+                            boss.base::detach(); // Destroy itself.
+                        };
+                        boss.on(tier::mouserelease, input::key::MouseAny, [&](hids& gear)
+                        {
+                            if ((gear.cause & 0x00FF) && !gear.dragged) // Button events only.
+                            if (auto data_ptr = data_shadow.lock())
                             {
-                                parent->resize();
-                            };
-                            boss.LISTEN(tier::release, e2::form::upon::vtree::detached, parent)
-                            {
-                                parent->resize(); // Rebuild list.
-                            };
-                            data_src_sptr->LISTEN(tier::release, tile::events::delist, f, boss.sensors)
-                            {
-                                boss.base::detach(); // Destroy itself.
-                            };
-                            boss.on(tier::mouserelease, input::key::MouseAny, [&](hids& gear)
-                            {
-                                if ((gear.cause & 0x00FF) && !gear.dragged) // Button events only.
-                                if (auto data_ptr = data_shadow.lock())
-                                {
-                                    auto& data_src = *data_ptr;
-                                    gear.forward(tier::mouserelease, data_src);
-                                    gear.dismiss();
-                                }
-                            });
-                            boss.LISTEN(tier::release, e2::form::state::mouse, hovered)
-                            {
-                                if (auto data_ptr = data_shadow.lock())
-                                {
-                                    data_ptr->base::signal(tier::release, e2::form::state::highlight, hovered);
-                                }
-                            };
+                                auto& data_src = *data_ptr;
+                                gear.forward(tier::mouserelease, data_src);
+                                gear.dismiss();
+                            }
                         });
-                };
-                client->attach_element(e2::form::prop::ui::header, object, label);
+                        boss.LISTEN(tier::release, e2::form::state::mouse, hovered)
+                        {
+                            if (auto data_ptr = data_shadow.lock())
+                            {
+                                data_ptr->base::signal(tier::release, e2::form::state::highlight, hovered);
+                            }
+                        };
+                    });
             };
             boss.LISTEN(tier::release, e2::render::any, parent_canvas, memo)
             {
@@ -190,7 +194,7 @@ namespace netxs::app::tile
         auto app_window = [](auto& what)
         {
             return ui::fork::ctor(axis::Y)
-                    ->template plugin<pro::title>(what.applet->base::property("window.header"), what.applet->base::property("window.footer"), true, faux, true)
+                    ->template plugin<pro::title>(what.applet->base::property("applet.header"), what.applet->base::property("applet.footer"), true, faux, true)
                     ->template plugin<pro::light>() //todo gcc requires template keyword
                     ->template plugin<pro::focus>()
                     ->limits({ 10, -1 }, { -1, -1 })
@@ -213,8 +217,8 @@ namespace netxs::app::tile
 
                                 // Take current title.
                                 auto what = vtm::events::handoff.param();
-                                auto& header = applet.base::property("window.header");
-                                if (header.empty()) header = applet.base::property("window.menuid");
+                                auto& header = applet.base::property("applet.header");
+                                if (header.empty()) header = applet.base::property("applet.menuid");
 
                                 // Get creator.
                                 auto world_ptr = boss.base::signal(tier::general, e2::config::creator);
@@ -223,7 +227,7 @@ namespace netxs::app::tile
                                 // Take coor.
                                 gear.coord -= applet.base::coor(); // Rebase mouse coor.
                                 gear.click -= applet.base::coor(); // Rebase mouse click.
-                                auto& applet_area = applet.base::template property<rect>("window.area");
+                                auto& applet_area = applet.base::template property<rect>("applet.area");
                                 if (!applet_area) applet_area.size = applet.base::size();
                                 auto coor = dot_00;
                                 applet.base::global(coor);
@@ -266,7 +270,7 @@ namespace netxs::app::tile
                         };
                     })
                     ->branch(slot::_1, ui::postfx<cell::shaders::contrast>::ctor()
-                        ->upload(what.applet->base::property("window.header"))
+                        ->upload(what.applet->base::property("applet.header"))
                         ->shader(cell::shaders::text(cell{ whitespace }))
                         ->invoke([&](auto& boss)
                         {
@@ -287,7 +291,7 @@ namespace netxs::app::tile
         auto build_node = [](auto tag, auto slot1, auto slot2, auto grip_width, auto grip_bindings_ptr)
         {
             auto highlight_color = skin::color(tone::winfocus);
-            auto c3 = highlight_color.bga(0x40);
+            auto c3 = highlight_color;
 
             auto node = tag == 'h' ? ui::fork::ctor(axis::X, grip_width == -1 ? 2 : grip_width, slot1, slot2)
                                    : ui::fork::ctor(axis::Y, grip_width == -1 ? 1 : grip_width, slot1, slot2);
@@ -331,12 +335,12 @@ namespace netxs::app::tile
                 auto grip = node->attach(slot::_I, ui::mock::ctor()
                     ->isroot(true)
                     ->active()
-                    ->plugin<pro::mouse>()
-                    ->plugin<pro::mover>()
-                    ->plugin<pro::focus>(pro::focus::mode::focusable)
-                    ->plugin<pro::keybd>()
+                    ->template plugin<pro::mouse>()
+                    ->template plugin<pro::mover>()
+                    ->template plugin<pro::focus>(pro::focus::mode::focusable)
+                    ->template plugin<pro::keybd>()
                     ->shader(c3, e2::form::state::focus::count)
-                    ->plugin<pro::shade<cell::shaders::xlight>>()
+                    ->template plugin<pro::shade<cell::shaders::xlight>>()
                     ->invoke([&](auto& boss)
                     {
                         boss.on(tier::mouserelease, input::key::RightClick, [&](hids& gear)
@@ -385,6 +389,7 @@ namespace netxs::app::tile
         auto empty_slot = []
         {
             auto window_clr = skin::color(tone::window_clr);
+            window_clr.bga(0x60);
             auto highlight_color = skin::color(tone::winfocus);
             auto danger_color    = skin::color(tone::danger);
             auto c3 = highlight_color.bga(0x40);
@@ -745,7 +750,7 @@ namespace netxs::app::tile
             {
                 // add split
                 utf8.remove_prefix(1);
-                utf::trim_front(utf8, " ");
+                utf::trim_front(utf8, ' ');
                 auto s1 = si32{ 1 };
                 auto s2 = si32{ 1 };
                 auto w  = si32{-1 };
@@ -757,14 +762,14 @@ namespace netxs::app::tile
                     if (auto r = utf::to_int(utf8)) // Right side ratio
                     {
                         s2 = std::abs(r.value());
-                        utf::trim_front(utf8, " ");
+                        utf::trim_front(utf8, ' ');
                         if (!utf8.empty() && utf8.front() == ':') // Grip width.
                         {
                             utf8.remove_prefix(1);
                             if (auto g = utf::to_int(utf8))
                             {
                                 w = std::abs(g.value());
-                                utf::trim_front(utf8, " ");
+                                utf::trim_front(utf8, ' ');
                             }
                         }
                     }
@@ -780,7 +785,7 @@ namespace netxs::app::tile
             }
             else  // Add application.
             {
-                utf::trim_front(utf8, " ");
+                utf::trim_front(utf8, ' ');
                 auto menuid = utf::take_front(utf8, " ,)").str();
                 if (menuid.empty()) return slot_ptr;
 
@@ -865,7 +870,7 @@ namespace netxs::app::tile
                 }
             }
         };
-        auto build_inst = [](eccc appcfg, xmls& config) -> sptr
+        auto build_inst = [](eccc appcfg, settings& config) -> sptr
         {
             // tile (ui::fork, f, k)
             //  │ │
@@ -892,7 +897,6 @@ namespace netxs::app::tile
             //            └─ maximized node_veer...
 
             auto param = view{ appcfg.cmd };
-            auto window_clr = skin::color(tone::window_clr);
             //auto highlight_color = skin::color(tone::highlight);
             //auto danger_color    = skin::color(tone::danger);
             //auto warning_color   = skin::color(tone::warning);
@@ -904,10 +908,25 @@ namespace netxs::app::tile
                 ->plugin<items>()
                 ->plugin<pro::focus>()
                 ->plugin<pro::keybd>();
+            auto& window_clr = object->base::field(skin::color(tone::window_clr));
+            auto& is_focused = object->base::field(faux);
+            object ->invoke([&](auto& boss)
+            {
+                boss.LISTEN(tier::release, e2::form::state::focus::count, count)
+                {
+                    if (std::exchange(is_focused, !!count) != is_focused)
+                    {
+                        boss.base::deface(); // Trigger to update pro::cache.
+                        window_clr = is_focused ? skin::color(tone::winfocus)
+                                                : skin::color(tone::window_clr);
+                    }
+                };
+            });
             using namespace app::shared;
-            auto script_list = config.list("/config/events/tile/grip/script");
+            auto tile_context = config.settings::push_context("/config/events/tile/grip/");
+            auto script_list = config.settings::take_ptr_list_for_name("script");
             auto grip_bindings_ptr = ptr::shared(input::bindings::load(config, script_list));
-            config.cd("/config/tile", "/config/defapp");
+            tile_context = config.settings::push_context("/config/tile/");
             auto [menu_block, cover, menu_data] = menu::load(config);
             object->attach(slot::_1, menu_block)
                 ->invoke([](auto& boss)
@@ -917,16 +936,15 @@ namespace netxs::app::tile
                         boss.base::riseup(tier::release, e2::form::proceed::quit::one, fast);
                     };
                 });
-            menu_data->active(window_clr)
-                     //->plugin<pro::track>()
-                     ->plugin<pro::acryl>();
+            menu_data->active()
+                ->shader(window_clr)
+                ->plugin<pro::acryl>();
             auto menu_id = menu_block->id;
             cover->invoke([&](auto& boss)
             {
                 auto bar = cell{ "▀"sv }.link(menu_id);
                 boss.LISTEN(tier::release, e2::render::any, parent_canvas, -, (bar))
                 {
-                    auto window_clr = skin::color(tone::window_clr);
                     auto fgc = window_clr.bgc();
                     parent_canvas.fill([&](cell& c){ c.fgc(fgc).txt(bar).link(bar); });
                 };
@@ -1008,7 +1026,8 @@ namespace netxs::app::tile
                         boss.base::riseup(tier::release, e2::form::proceed::quit::one, true);
                     };
                     auto& luafx = boss.bell::indexer.luafx;
-                    auto script_list = config.list("/config/events/tile/script");
+                    tile_context = config.settings::push_context("/config/events/tile/");
+                    auto script_list = config.settings::take_ptr_list_for_name("script");
                     auto bindings = input::bindings::load(config, script_list);
                     input::bindings::keybind(boss, bindings);
                     boss.base::add_methods(basename::tile,

@@ -10,7 +10,7 @@ namespace netxs::events
     text script_ref::to_string(context_t& context)
     {
         auto crop = text{};
-        for (auto ptr : context)
+        for (auto ptr : context | std::views::reverse)
         {
             crop += utf::bytes2shades(view{ (char*)&ptr, sizeof(void*) });
             crop += '-';
@@ -128,10 +128,30 @@ namespace netxs::events
     si32 luna::vtmlua_vtm_subindex(lua_State* lua)
     {
         // Stack:
-        //      1. object_ptr.
+        //      1. lua's object_ptr.
         //      2. fx name.
         ::lua_pushcclosure(lua, luna::vtmlua_call_method, 2);
         return 1;
+    }
+    si32 luna::vtmlua_cfg_subindex(lua_State* lua)
+    {
+        // Stack:
+        //      1. ptr to settings&.
+        //      2. settings path.
+        auto v = text{};
+        if (auto config_ptr = (settings*)::lua_touserdata(lua, 1))
+        {
+            auto len = size_t{};
+            auto ptr = ::lua_tolstring(lua, 2, &len);
+            auto frompath = qiew{ ptr, len };
+            if (auto item_ptr = config_ptr->find_context_ptr(frompath))
+            {
+                v = config_ptr->take_value(item_ptr);
+                ::lua_pushlstring(lua, v.data(), v.size());
+                return 1;
+            }
+        }
+        return 0;
     }
     si32 luna::vtmlua_run_with_indexer(lua_State* lua, auto proc)
     {
@@ -164,11 +184,6 @@ namespace netxs::events
         else if constexpr (std::is_same_v<T, argb>)                  luna::vtmlua_push_value(lua, v.token);
         else if constexpr (std::is_same_v<T, time>)                  luna::vtmlua_push_value(lua, v.time_since_epoch().count());
         else if constexpr (std::is_same_v<T, span>)                  luna::vtmlua_push_value(lua, v.count());
-        else if constexpr (std::is_convertible_v<T, sptr<ui::base>>) ::lua_pushlightuserdata(lua, (void*)v.get());
-        else if constexpr (!std::is_same_v<T, noop>)                 ::lua_pushlightuserdata(lua, (void*)&v);
-        else if constexpr (is_string_v)                              ::lua_pushlstring(lua, v.data(), v.size());
-        else if constexpr (is_cstring_v)                             ::lua_pushstring(lua, v);
-        else if constexpr (std::is_pointer_v<T>)                     ::lua_pushlightuserdata(lua, (void*)v);
         else if constexpr (std::is_same_v<T, twod> || std::is_same_v<T, fp2d>)
         {
             luna::vtmlua_push_value(lua, v.x);
@@ -189,6 +204,11 @@ namespace netxs::events
             luna::vtmlua_push_value(lua, v.size);
             args_count = 4;
         }
+        else if constexpr (std::is_convertible_v<T, sptr<ui::base>>) ::lua_pushlightuserdata(lua, (void*)v.get());
+        else if constexpr (std::is_same_v<T, noop>)                  ::lua_pushnil(lua); // ::lua_pushlightuserdata(lua, (void*)&v);
+        else if constexpr (is_string_v)                              ::lua_pushlstring(lua, v.data(), v.size());
+        else if constexpr (is_cstring_v)                             ::lua_pushstring(lua, v);
+        else if constexpr (std::is_pointer_v<T>)                     ::lua_pushlightuserdata(lua, (void*)v);
         else
         {
             args_count = 0;
@@ -199,9 +219,9 @@ namespace netxs::events
     {
         return luna::vtmlua_run_with_indexer(lua, [&](auth& indexer)
         {
-            auto& param = indexer.script_param;
-            if (param.has_value())
+            if (indexer.script_param.size() && indexer.script_param.back().has_value())
             {
+                auto& param = indexer.script_param.back();
                      if (param.type() == typeid(std::reference_wrapper<time>)) return luna::vtmlua_push_value(lua, std::any_cast<std::reference_wrapper<time>>(param).get());
                 else if (param.type() == typeid(std::reference_wrapper<bool>)) return luna::vtmlua_push_value(lua, std::any_cast<std::reference_wrapper<bool>>(param).get());
                 else if (param.type() == typeid(std::reference_wrapper<text>)) return luna::vtmlua_push_value(lua, std::any_cast<std::reference_wrapper<text>>(param).get());
@@ -233,10 +253,17 @@ namespace netxs::events
         return luna::vtmlua_run_with_indexer(lua, [&](auth& indexer)
         {
             auto object_name = luna::vtmlua_torawstring(lua, 2);
-            auto& source_ctx = indexer.context_ref.get();
-            if (auto target_ptr = indexer.get_target(source_ctx, object_name))
+            auto& source_ctx = indexer.context_refs.back().get();
+            if (object_name == "config")
             {
-                //if constexpr (debugmode) log("       selected: ", netxs::events::script_ref::to_string(target_ptr->scripting_context));
+                //log("object_name=", object_name);
+                ::lua_pushlightuserdata(lua, &indexer.config); // Push address of the config instance.
+                ::luaL_setmetatable(lua, "cfg_submetaindex"); // Set the cfg_submetaindex for table at -1.
+                return 1;
+            }
+            else if (auto target_ptr = indexer.get_target(source_ctx, object_name))
+            {
+                //if constexpr (debugmode) log("       selected: ", netxs::events::script_ref::to_string(target_ptr->get_scripting_context()));
                 ::lua_pushlightuserdata(lua, target_ptr); // Push object ptr.
                 ::luaL_setmetatable(lua, "vtm_submetaindex"); // Set the vtm_submetaindex for table at -1.
                 //todo keep target_ptr locked until we are inside the lua
@@ -255,13 +282,24 @@ namespace netxs::events
         ::lua_settop(lua, 0);
         (push_value(args), ...);
     }
+    void luna::set_return_array(txts const& str_list)
+    {
+        ::lua_settop(lua, 0);
+        ::lua_createtable(lua, 0, 0);
+        auto i = 0;
+        for (auto& s : str_list)
+        {
+            ::lua_pushlstring(lua, s.data(), s.size());
+            ::lua_rawseti(lua, -2, ++i);
+        }
+    }
     si32 luna::args_count()
     {
         return ::lua_gettop(lua);
     }
     void luna::read_args(si32 index, auto add_item)
     {
-        if (lua_istable(lua, index))
+        if (::lua_type(lua, index) == LUA_TTABLE)
         {
             ::lua_pushnil(lua); // Push prev key.
             while (::lua_next(lua, index)) // Table is in the stack at index. { "<item " + text{ table } + " />" }
@@ -270,7 +308,7 @@ namespace netxs::events
                 if (!key.empty()) // Allow stringable keys only.
                 {
                     auto val = luna::vtmlua_torawstring(lua, -1);
-                    if (val.empty() && lua_istable(lua, -1)) // Extract item list.
+                    if (val.empty() && ::lua_type(lua, -1) == LUA_TTABLE) // Extract item list.
                     {
                         ::lua_pushnil(lua); // Push prev key.
                         while (::lua_next(lua, -2)) // Table is in the stack at index -2. { "<key="key2=val2"/>" }
@@ -305,13 +343,17 @@ namespace netxs::events
         static constexpr auto is_cstring_v = requires{ static_cast<const char*>(fallback); };
 
         auto type = ::lua_type(lua, idx);
-        if (type != LUA_TNIL)
+        if (type == LUA_TNONE)
+        {
+            return fallback;
+        }
+        else if (type != LUA_TNIL)
         {
                  if constexpr (std::is_same_v<std::decay_t<T>, bool>) return (T)::lua_toboolean(lua, idx);
             else if constexpr (is_string_v || is_cstring_v)           return luna::vtmlua_torawstring(lua, idx);
-            else if constexpr (std::is_integral_v<T>)                 return (T)::lua_tointeger(lua, idx);
+            else if constexpr (std::is_integral_v<T>)                 return (T)::lua_tonumber(lua, idx);
             else if constexpr (std::is_floating_point_v<T>)           return (T)::lua_tonumber(lua, idx);
-            else if constexpr (std::is_same_v<std::decay_t<T>, twod>) return twod{ ::lua_tointeger(lua, idx), ::lua_tointeger(lua, idx + 1) };
+            else if constexpr (std::is_same_v<std::decay_t<T>, twod>) return twod{ ::lua_tonumber(lua, idx), ::lua_tonumber(lua, idx + 1) };
             else if constexpr (std::is_same_v<std::decay_t<T>, sptr<ui::base>>)
             {
                 if (auto ptr = (ui::base*)::lua_touserdata(lua, idx)) // Get ui::base*.
@@ -357,34 +399,48 @@ namespace netxs::events
         //if constexpr (std::is_same_v<T, noop>) log("%%script:\n%pads%%script%", prompt::lua, prompt::pads, ansi::hi(script_body));
         //else                                   log("%%script:\n%pads%%script%\n  with arg: %%", prompt::lua, prompt::pads, ansi::hi(script_body), param);
 
-        indexer.context_ref = context;
-        indexer.script_param = std::ref((T&)param);
+        indexer.context_refs.push_back(context);
+        indexer.script_param.push_back(std::ref((T&)param));
 
-        ::lua_settop(lua, 0);
-        auto error = ::luaL_loadbuffer(lua, script_body.data(), script_body.size(), "script body")
-                  || ::lua_pcall(lua, 0, 0, 0);
-        indexer.script_param.reset();
+        auto error = faux;
+        if (push_function_id(script_body))
+        {
+            if (::lua_rawget(lua, -2) == LUA_TFUNCTION) // It is precompiled.
+            {
+                //if constexpr (debugmode) log("It is precompiled");
+                error = ::lua_pcall(lua, 0, 0, 0);
+            }
+            else // It is not precompiled.
+            {
+                //if constexpr (debugmode) log("It is not precompiled");
+                error = ::luaL_loadbuffer(lua, script_body.data(), script_body.size(), "script body")
+                     || ::lua_pcall(lua, 0, 0, 0);
+            }
+        }
+
+        indexer.context_refs.pop_back();
+        indexer.script_param.pop_back();
         auto result = text{};
         if (error)
         {
             result = ::lua_tostring(lua, -1);
-            log("%%%msg%", prompt::lua, ansi::err(result));
-            ::lua_pop(lua, 1);  // Pop error message from stack.
+            log("%%script compilation failed:\n%body%\n%msg%\n", prompt::lua, ansi::hi(ansi::add(script_body).numerate_lines(blacklt)), ansi::err(result));
+            //::lua_pop(lua, 1);  // Pop error message from stack.
         }
         else if (::lua_gettop(lua))
         {
             result = luna::vtmlua_torawstring(lua, -1);
-            ::lua_settop(lua, 0);
         }
+        ::lua_settop(lua, 0);
         return result;
     }
-    text luna::run_script(ui::base& boss, view script_body)
+    text luna::run_script(ui::base& boss, view script_body, auto&& param)
     {
-        return run(boss.scripting_context, script_body);
+        return run(boss.get_scripting_context(), script_body, param);
     }
     void luna::run_ext_script(ui::base& boss, auto& script)
     {
-        auto shadow = utf::trim(script.cmd, " \r\n\t\f");
+        auto shadow = utf::get_trimmed(script.cmd, " \r\n\t\f");
         if (shadow.size() > 2)
         if (auto c = shadow.front(); (c == '"' || c == '\'') && shadow.back() == c)
         {
@@ -402,12 +458,117 @@ namespace netxs::events
         log(ansi::clr(yellowlt, shadow), "\n", prompt::lua, result);
         script.cmd = utf::concat(shadow, "\n", prompt::lua, result);
     }
+    // Return the length of the stack top table.
+    si32 luna::get_table_size()
+    {
+        auto count = 0;
+        ::lua_pushnil(lua); // Push nil to start the iteration.
+        while (::lua_next(lua, -2) != 0)
+        {
+            count++; // Key is at -2, value at -1.
+            ::lua_pop(lua, 1); // Pop the value, leaving the key for the next iteration.
+        }
+        return count;
+    }
+    bool luna::push_function_id(view script_body)
+    {
+        ::lua_settop(lua, 0);
+        // Get a table of precompiled functions from the registry.
+        ::lua_pushstring(lua, "precompiled"); // Push internal registry key 'precompiled'.
+        if (::lua_gettable(lua, LUA_REGISTRYINDEX) == LUA_TTABLE) // Retrieve address of 'precompiled' and push it to the stack at -1.
+        {
+            auto script_id = script_body.data();
+            auto memory_id = reinterpret_cast<char const*>(&script_id);
+            auto lua_fx_id = view{ memory_id, sizeof(script_id) };
+            //if constexpr (debugmode) log("Function id='%%'", utf::debase437(lua_fx_id));
+            ::lua_pushlstring(lua, lua_fx_id.data(), lua_fx_id.size());
+            return true;
+        }
+        else
+        {
+            log("%%The table of precompiled functions is missing", prompt::lua);
+            ::lua_settop(lua, 0);
+            return faux;
+        }
+    }
+    void luna::precompile_function(sptr<std::pair<ui64, text>>& script_body_ptr)
+    {
+        if (script_body_ptr)
+        {
+            auto& [ref_count, script_body] = *script_body_ptr;
+            if (script_body.size())
+            {
+                if (push_function_id(script_body))
+                {
+                    ::lua_pushvalue(lua, -1); // Duplicate lua_fx_id string.
+                    if (::lua_rawget(lua, -3) == LUA_TFUNCTION) // It is already precompiled.
+                    {
+                        //if constexpr (debugmode) log("The script is already precompiled");
+                        ++ref_count;
+                    }
+                    else // It is not precompiled yet.
+                    {
+                        ::lua_pop(lua, 1);  // Pop nil after the ::lua_rawget() call.
+                        auto error = ::luaL_loadbuffer(lua, script_body.data(), script_body.size(), "script");
+                        if (error)
+                        {
+                            auto result = ::lua_tostring(lua, -1);
+                            log("%%script precompilation failed:\n%body%\n%msg%\n", prompt::lua, ansi::hi(ansi::add(script_body).numerate_lines(blacklt)), ansi::err(result));
+                            ::lua_pop(lua, 1);  // Pop error message from stack.
+                        }
+                        else
+                        {
+                            //if constexpr (debugmode) log("Script precompilation is done");
+                            ::lua_rawset(lua, -3);
+                            //if constexpr (debugmode) log("Add: Precompiled function counter: %%", get_table_size());
+                            ++ref_count;
+                        }
+                    }
+                    ::lua_settop(lua, 0);
+                }
+            }
+        }
+    }
+    void luna::remove_function(sptr<std::pair<ui64, text>>& script_body_ptr)
+    {
+        if (script_body_ptr)
+        {
+            auto& [ref_count, script_body] = *script_body_ptr;
+            if (ref_count && --ref_count == 0)
+            {
+                if (push_function_id(script_body))
+                {
+                    ::lua_pushnil(lua);
+                    ::lua_rawset(lua, -3); // Remove rec from the table (because of nil) and pop key and val from stack.
+                    //if constexpr (debugmode) log("Drop: Precompiled function counter: %%", get_table_size());
+                    ::lua_settop(lua, 0);
+                }
+            }
+        }
+    }
 
     luna::luna(auth& indexer)
         : indexer{ indexer },
           lua{ ::luaL_newstate() }
     {
-        ::luaL_openlibs(lua);
+        auto allowed_libs = std::to_array<luaL_Reg>(
+        {
+            { LUA_GNAME      , ::luaopen_base      },
+            { LUA_COLIBNAME  , ::luaopen_coroutine },
+            { LUA_TABLIBNAME , ::luaopen_table     },
+            { LUA_STRLIBNAME , ::luaopen_string    },
+            { LUA_MATHLIBNAME, ::luaopen_math      },
+            { LUA_UTF8LIBNAME, ::luaopen_utf8      },
+            //{ LUA_LOADLIBNAME, ::luaopen_package   },
+            //{ LUA_IOLIBNAME,   ::luaopen_io        },
+            //{ LUA_OSLIBNAME,   ::luaopen_os        },
+            //{ LUA_DBLIBNAME,   ::luaopen_debug     },
+        });
+        for (auto& lib : allowed_libs)
+        {
+            ::luaL_requiref(lua, lib.name, lib.func, 1);
+            ::lua_pop(lua, 1); // Remove lib from stack.
+        }
 
         // Set 'log' function.
         ::lua_pushcclosure(lua, luna::vtmlua_log, 0);
@@ -418,6 +579,11 @@ namespace netxs::events
         ::lua_pushlightuserdata(lua, &indexer); // Push the 'indexer' address as a record value.
         ::lua_settable(lua, LUA_REGISTRYINDEX); // Set internal registry['indexer'] = &indexer.
 
+        // Set 'precompiled' internal object.
+        ::lua_pushstring(lua, "precompiled"); // Push internal registry key 'precompiled' name.
+        ::lua_createtable(lua, 0, 100); // 100 is a hint for the number of non-sequential (associative array-like) elements the table will have.
+        ::lua_settable(lua, LUA_REGISTRYINDEX); // Set internal registry['precompiled'] = <precompiled function table>.
+
         // Define 'vtm' redirecting metatable.
         static auto vtm_metaindex = std::to_array<luaL_Reg>({{ "__index",    luna::vtmlua_vtm_index },
                                                              { "__tostring", luna::vtmlua_object2string },
@@ -425,7 +591,7 @@ namespace netxs::events
                                                              { nullptr, nullptr }});
         ::luaL_newmetatable(lua, "vtm_metaindex"); // Create a new metatable in registry and push it to the stack.
         ::luaL_setfuncs(lua, vtm_metaindex.data(), 0); // Assign metamethods for the table which at the top of the stack.
-            ::lua_newtable(lua); // Create and push new "vtm.*" global table.
+            ::lua_createtable(lua, 0, 0); // Create and push new "vtm.*" global table.
             ::luaL_setmetatable(lua, "vtm_metaindex"); // Set the metatable for table at -1.
             ::lua_setglobal(lua, basename::vtm.data()); // Set global var "vtm". Pop "vtm".
 
@@ -434,15 +600,33 @@ namespace netxs::events
                                                                 { nullptr, nullptr }});
         ::luaL_newmetatable(lua, "vtm_submetaindex"); // Create a new metatable in registry and push it to the stack.
         ::luaL_setfuncs(lua, vtm_submetaindex.data(), 0); // Assign metamethods for the table which at the top of the stack.
+
+        // Define sub-vtm.config.* redirecting metatable.
+        static auto cfg_submetaindex = std::to_array<luaL_Reg>({{ "__index", luna::vtmlua_cfg_subindex },
+                                                                { nullptr, nullptr }});
+        ::luaL_newmetatable(lua, "cfg_submetaindex"); // Create a new metatable in registry and push it to the stack.
+        ::luaL_setfuncs(lua, cfg_submetaindex.data(), 0); // Assign metamethods for the table which at the top of the stack.
     }
     luna::~luna()
     {
         if (lua) ::lua_close(lua);
     }
 
+    script_ref::script_ref(auth& indexer, std::reference_wrapper<ui::base> boss_ref, sptr<std::pair<ui64, text>> script_body_ptr)
+        : indexer{ indexer },
+          boss_ref{ boss_ref },
+          script_body_ptr{ script_body_ptr }
+    {
+        indexer.luafx.precompile_function(script_body_ptr);
+    }
+    script_ref::~script_ref()
+    {
+        indexer.luafx.remove_function(script_body_ptr);
+    }
+
     auth::auth(bool use_timer)
         : next_id{ 0 },
-          context_ref{ context },
+          context_refs{ context },
           luafx{ *this },
           quartz{ *this },
           e2_timer_tick_id{ ui::e2::timer::tick.id },
@@ -502,28 +686,28 @@ namespace netxs::events
                 while (head != tail)
                 {
                     auto& boss = head->get();
-                    auto& target_ctx = boss.scripting_context;
+                    auto& target_ctx = boss.get_scripting_context();
                     //if constexpr (debugmode) log(" target context: ", netxs::events::script_ref::to_string(target_ctx));
                     if (target_ctx.empty() // The object is outside the DOM.
-                        || source_ctx.back() == target_ctx.back()) // Target is the source itself.
+                     || source_ctx.front() == target_ctx.front()) // Target is the source itself.
                     {
                         target_ptr = &boss;
                         iter2 = head;
                         break;
                     }
-                    auto dst_head = target_ctx.begin();
-                    auto dst_tail = target_ctx.end();
-                    auto src_head = source_ctx.begin();
-                    auto src_tail = source_ctx.end();
+                    auto dst_head = target_ctx.rbegin();
+                    auto dst_tail = target_ctx.rend();
+                    auto src_head = source_ctx.rbegin();
+                    auto src_tail = source_ctx.rend();
                     auto source_ctx_begin = src_head;
+                    //todo don't use context - just iterate over parents
                     while (src_head != src_tail && dst_head != dst_tail && *src_head == *dst_head)
                     {
                         ++src_head;
                         ++dst_head;
                     }
                     auto m = (si32)(src_head - source_ctx_begin);
-                    if (m > closeness
-                        || (m == closeness && target_ctx.size() < target_size))
+                    if (m > closeness || (m == closeness && target_ctx.size() < target_size))
                     {
                         closeness = m;
                         target_size = target_ctx.size();
@@ -1354,7 +1538,11 @@ namespace netxs::ui
                 head_size = new_size;
                 foot_size = new_size;
                 if (head_live) recalc(head_page, head_size);
-                if (foot_live) recalc(foot_page, foot_size);
+                if (foot_live)
+                {
+                    recalc(foot_page, foot_size);
+                    if (foot_text.empty()) foot_size.y = 0;
+                }
             }
             void header(view newtext)
             {
@@ -1568,6 +1756,71 @@ namespace netxs::ui
             }
         };
 
+        // pro: Keyboard events.
+        class keybd
+            : public skill
+        {
+            using skill::boss,
+                  skill::memo;
+
+            std::unordered_map<id_t, time> last_key; // keybd: .
+            si64 instance_id; // keybd: .
+
+        public:
+            static void forward_release(base& boss, hids& gear)
+            {
+                auto parent_ptr = boss.base::This();
+                while ((!gear.handled || gear.keystat == input::key::released) && parent_ptr) // Always pass released key events. Stop on gear.timecod > last_key[gear.id] in pro::keybd (gear.handled).
+                {
+                    parent_ptr->base::signal(tier::release, input::events::keybd::post, gear);
+                    parent_ptr = parent_ptr->base::parent();
+                }
+            }
+
+            keybd(base&&) = delete;
+            keybd(base& boss)
+                : skill{ boss },
+                  instance_id{ datetime::uniqueid() }
+            {
+                boss.LISTEN(tier::general, input::events::die, gear, memo)
+                {
+                    last_key.erase(gear.id);
+                };
+                boss.LISTEN(tier::release, input::events::keybd::any, gear, memo)
+                {
+                    gear.shared_event = gear.touched && gear.touched != instance_id;
+                    auto& timecod = last_key[gear.id];
+                    if (gear.timecod > timecod)
+                    {
+                        timecod = gear.timecod;
+                        if (gear.payload == input::keybd::type::keypress && gear.keystat != input::key::interrupted)
+                        {
+                            if (!gear.handled) input::bindings::dispatch(boss, instance_id, gear, tier::keybdrelease, boss.indexer.anykey_event);
+                            if (!gear.handled) input::bindings::dispatch(boss, instance_id, gear, tier::keybdrelease, gear.vkevent);
+                            if (!gear.handled) input::bindings::dispatch(boss, instance_id, gear, tier::keybdrelease, gear.chevent);
+                            if (!gear.handled) input::bindings::dispatch(boss, instance_id, gear, tier::keybdrelease, gear.scevent);
+                        }
+                    }
+                    else
+                    {
+                        gear.set_handled(faux); // faux: Set handled for keybd only.
+                        gear.keystat = input::key::interrupted; // Forward gear.keystat == input::key::released only once.
+                    }
+                };
+                boss.LISTEN(tier::preview, input::events::keybd::any, gear, memo)
+                {
+                    gear.shared_event = gear.touched && gear.touched != instance_id;
+                    if (gear.payload == input::keybd::type::keypress)
+                    {
+                        if (!gear.touched && !gear.handled) input::bindings::dispatch(boss, instance_id, gear, tier::keybdpreview, gear.vkevent);
+                        if (!gear.touched && !gear.handled) input::bindings::dispatch(boss, instance_id, gear, tier::keybdpreview, gear.chevent);
+                        if (!gear.touched && !gear.handled) input::bindings::dispatch(boss, instance_id, gear, tier::keybdpreview, gear.scevent);
+                        if (!gear.touched && !gear.handled) input::bindings::dispatch(boss, instance_id, gear, tier::keybdpreview, boss.indexer.anykey_event);
+                    }
+                };
+            }
+        };
+
         // pro: Text input focus tree.
         class focus
             : public skill
@@ -1626,12 +1879,23 @@ namespace netxs::ui
                 template<class P>
                 auto foreach(P proc)
                 {
+                    static constexpr auto Plain = std::is_same_v<void, std::invoke_result_t<decltype(proc), base&, si32&>>;
                     auto head = next.begin();
                     while (head != next.end())
                     {
-                        if (auto nexthop = head->next_wptr.lock(); nexthop && (proc(nexthop, head->status), nexthop))
+                        if (auto nexthop_ptr = head->next_wptr.lock())
                         {
+                            auto& nexthop = *nexthop_ptr;
+                            auto& status = head->status;
                             head++;
+                            if constexpr (Plain)
+                            {
+                                proc(nexthop, status);
+                            }
+                            else
+                            {
+                                if (!proc(nexthop, status)) break;
+                            }
                         }
                         else
                         {
@@ -1646,11 +1910,12 @@ namespace netxs::ui
                   skill::memo;
 
             //todo kb navigation type: transit, cyclic, plain, disabled, closed
-            umap gears; // focus: Registered gears.
+            umap gears;     // focus: Registered gears.
             si32 node_type; // focus: .
-            si32 count{}; // focus: The number of active gears.
-            si64 treeid = datetime::uniqueid(); // focus: .
-            ui64 digest = ui64{}; // focus: .
+            si32 count;     // focus: The number of active gears.
+            si64 treeid;    // focus: .
+            ui64 digest;    // focus: .
+            si32 weight;    // focus: Focusable object weight.
 
             auto add_chain(id_t gear_id, chain_t new_chain = { .active = state::dead })
             {
@@ -1689,7 +1954,7 @@ namespace netxs::ui
                 }
                 return iter->second;
             }
-            bool notify_focus_state(si32 active, chain_t& chain, id_t gear_id)
+            bool notify_focus_state(si32 active, chain_t& chain, id_t gear_id, bool is_leaf = faux)
             {
                 auto changed = (chain.active == state::live) != (active == state::live);
                 chain.active = active;
@@ -1699,13 +1964,22 @@ namespace netxs::ui
                     {
                         count++;
                         boss.base::signal(tier::release, e2::form::state::focus::on, gear_id);
+                        boss.base::signal(tier::release, e2::form::state::focus::count, count);
+                        if (is_leaf && weight) // Notify to scroll to focused item.
+                        {
+                            auto info = rack{ .window = boss.area() };
+                            auto offset = dot_00;
+                            boss.base::global(offset);
+                            info.window.coor = -(offset + boss.base::intpad.corner());
+                            boss.base::riseup(tier::preview, e2::form::upon::scroll::to_box, info);
+                        }
                     }
                     else
                     {
                         count--;
                         boss.base::signal(tier::release, e2::form::state::focus::off, gear_id);
+                        boss.base::signal(tier::release, e2::form::state::focus::count, count);
                     }
-                    boss.base::signal(tier::release, e2::form::state::focus::count, count);
                     //if constexpr (debugmode) log("Focus %set% <object:%id%>", active == state::live ? "set" : "off", boss.id);
                 }
                 return changed;
@@ -1819,11 +2093,95 @@ namespace netxs::ui
                 auto result = iter != gears.end() && iter->second.active == state::live;
                 return result;
             }
+            void for_first_focused_leaf(input::hids& gear, auto&& proc)
+            {
+                auto iter = gears.find(gear.id);
+                if (iter != gears.end())
+                {
+                    auto& chain = iter->second;
+                    if (chain.active == state::live)
+                    {
+                        auto is_leaf = true;
+                        chain.foreach([&](auto& nexthop, auto& status)
+                        {
+                            if (status == state::live)
+                            {
+                                is_leaf = faux;
+                                auto& nexthop_focus = nexthop.base::template plugin<pro::focus>(); //todo Apple clang requires template
+                                nexthop_focus.for_first_focused_leaf(gear, proc);
+                                return faux;
+                            }
+                            else return true;
+                        });
+                        if (is_leaf)
+                        {
+                            proc(boss);
+                        }
+                    }
+                }
+            }
+            auto get_weight()
+            {
+                return weight;
+            }
+            auto get_type()
+            {
+                return node_type;
+            }
+            void focus_next(input::hids& gear, si32 n, si32 min_w, si32 max_w = si32max)
+            {
+                if (!n) return;
+                auto set_focus = [&](auto get_next)
+                {
+                    auto last_found_ptr = sptr{};
+                    auto next_ptr = get_next(boss);
+                    auto count = std::abs(n);
+                    while (next_ptr)
+                    {
+                        if (next_ptr->base::template has_plugin<pro::focus>())
+                        {
+                            auto& focus = next_ptr->base::template plugin<pro::focus>();
+                            if (focus.get_type() == mode::focused)
+                            {
+                                auto w = focus.get_weight();
+                                if (w >= min_w)
+                                {
+                                    if (w > max_w)
+                                    {
+                                        break;
+                                    }
+                                    else if (--count == 0)
+                                    {
+                                        pro::focus::set(next_ptr, gear.id, solo::on);
+                                        break;
+                                    }
+                                    last_found_ptr = next_ptr;
+                                }
+                            }
+                        }
+                        next_ptr = get_next(*next_ptr);
+                    }
+                    if (last_found_ptr)
+                    {
+                        pro::focus::set(last_found_ptr, gear.id, solo::on);
+                    }
+                };
+                n > 0 ? set_focus([](auto& item){ return item.base::get_next(); })
+                      : set_focus([](auto& item){ return item.base::get_prev(); });
+            }
+            void set_mode(si32 focus_mode)
+            {
+                node_type = focus_mode;
+            }
 
             focus(base&&) = delete;
-            focus(base& boss, si32 focus_mode = mode::hub, bool set_default_focus = true)
-                : skill{ boss },
-                  node_type{ focus_mode }
+            focus(base& boss, si32 focus_mode = mode::hub, bool set_default_focus = true, bool focus_on_click = true, si32 weight = 0)
+                :   skill{ boss                 },
+                node_type{ focus_mode           },
+                    count{ 0                    },
+                   treeid{ datetime::uniqueid() },
+                   digest{ 0                    },
+                   weight{ weight               }
             {
                 if (set_default_focus && (node_type == mode::focused || node_type == mode::active || node_type == mode::relay)) // Pave default focus path at startup.
                 {
@@ -1836,7 +2194,7 @@ namespace netxs::ui
                     };
                 }
                 //todo unify. pro::focus: Set unique focus on left click. Set group focus on Ctrl+LeftClick.
-                boss.on(tier::mouserelease, input::key::LeftClick, memo, [&](hids& gear)
+                if (focus_on_click) boss.on(tier::mouserelease, input::key::LeftClick, memo, [&](hids& gear)
                 {
                     if (!gear) return;
                     if (gear.meta(hids::anyCtrl))
@@ -1866,27 +2224,38 @@ namespace netxs::ui
                 {
                     auto sent = faux;
                     auto& chain = get_chain(gear.id);
-                    auto handled = gear.handled;
-                    auto new_handled = handled;
+                    auto in_keystat = gear.keystat;
+                    auto ou_keystat = gear.keystat;
+                    auto in_handled = gear.handled;
+                    auto ou_handled = gear.handled;
                     chain.foreach([&](auto& nexthop, auto& status)
                     {
                         if (status == state::live)
                         {
                             sent = true;
-                            gear.handled = handled;
-                            nexthop->base::signal(tier::preview, input::events::keybd::post, gear);
-                            new_handled |= gear.handled;
+                            gear.handled = in_handled; // Split handled state.
+                            gear.keystat = in_keystat; // Split keystat state.
+                            nexthop.base::signal(tier::preview, input::events::keybd::post, gear);
+                            ou_handled |= gear.handled; // Combine handled state.
+                            if (gear.keystat == input::key::interrupted)
+                            {
+                                ou_keystat = gear.keystat;
+                            }
                         }
                     });
-                    gear.handled = new_handled;
-                    if (!sent && node_type != mode::relay) // Send key::post event back. The relays themselves will later send it back.
+                    gear.handled = ou_handled;
+                    gear.keystat = ou_keystat;
+                    if (!sent && node_type != mode::relay) // Send key::post event back. The relays themselves will send it back later.
                     {
-                        auto parent_ptr = boss.base::This();
-                        while ((!gear.handled || gear.keystat == input::key::released) && parent_ptr) // Always pass released key events.
+                        if constexpr (debugmode)
                         {
-                            parent_ptr->base::signal(tier::release, input::events::keybd::post, gear);
-                            parent_ptr = parent_ptr->base::parent();
+                            //auto generic = input::key::kmap::to_string(gear.vkchord, true);
+                            //if (generic == "Alt+Shift+N")
+                            //{
+                            //    auto i = 0;
+                            //}
                         }
+                        pro::keybd::forward_release(boss, gear);
                     }
                 };
                 // all tier::previews going to outside (upstream)
@@ -1902,7 +2271,7 @@ namespace netxs::ui
                             if (status == state::live)
                             {
                                 status = state::idle;
-                                nexthop->base::signal(tier::release, input::events::focus::set::off, seed);
+                                nexthop.base::signal(tier::release, input::events::focus::set::off, seed);
                             }
                         });
                     }
@@ -1927,7 +2296,7 @@ namespace netxs::ui
                         }
                         chain.foreach([&](auto& nexthop, auto& /*status*/)
                         {
-                            nexthop->base::signal(tier::request, input::events::focus::dup, seed);
+                            nexthop.base::signal(tier::request, input::events::focus::dup, seed);
                         });
                     }
                 };
@@ -1935,9 +2304,9 @@ namespace netxs::ui
                 boss.LISTEN(tier::release, input::events::focus::set::on, seed, memo)
                 {
                     auto iter = gears.find(seed.gear_id);
+                    auto first_step = !seed.item; // No focused item yet. We are in the the first riseup iteration (pro::focus::set just called and catched the first plugin<pro::focus> owner). A focus leaf is not necessarily a visual tree leaf.
                     if (iter == gears.end()) // No route to inside.
                     {
-                        auto first_step = !seed.item; // No focused item yet. We are in the the first riseup iteration (pro::focus::set just called and catched the first plugin<pro::focus> owner). A focus leaf is not necessarily a visual tree leaf.
                         if (seed.gear_id && first_step && (iter = gears.find(id_t{}), iter != gears.end())) // Check if the default chain exists.
                         {
                             boss.base::signal(tier::request, input::events::focus::dup, seed);
@@ -1953,7 +2322,7 @@ namespace netxs::ui
                     }
                     auto& chain = iter->second;
                     auto prev_state = chain.active;
-                    notify_focus_state(state::live, chain, seed.gear_id);
+                    notify_focus_state(state::live, chain, seed.gear_id, first_step);
                     if (node_type != mode::relay)
                     {
                         auto allow_focusize = node_type == mode::focused || node_type == mode::focusable;
@@ -1963,7 +2332,7 @@ namespace netxs::ui
                             {
                                 status = state::live;
                                 seed.item = boss.This();
-                                nexthop->base::signal(tier::release, input::events::focus::set::on, seed);
+                                nexthop.base::signal(tier::release, input::events::focus::set::on, seed);
                             }
                         });
                     }
@@ -1992,11 +2361,11 @@ namespace netxs::ui
                                     if (status == state::live)
                                     {
                                         status = state::dead;
-                                        nexthop->base::signal(tier::release, input::events::focus::set::off, seed);
+                                        nexthop.base::signal(tier::release, input::events::focus::set::off, seed);
                                     }
                                 });
                             }
-                            notify_focus_state(state::live, chain, seed.gear_id);
+                            notify_focus_state(state::live, chain, seed.gear_id, true);
                         }
                     }
                     else // Build focus tree (we are in the middle of the focus tree).
@@ -2007,7 +2376,7 @@ namespace netxs::ui
                             auto exists = faux;
                             chain.foreach([&](auto& nexthop, auto& status)
                             {
-                                if (nexthop == seed.item)
+                                if (&nexthop == seed.item.get())
                                 {
                                     status = state::live;
                                     exists = true;
@@ -2015,7 +2384,7 @@ namespace netxs::ui
                                 else
                                 {
                                     status = state::dead;
-                                    nexthop->base::signal(tier::release, input::events::focus::set::off, seed);
+                                    nexthop.base::signal(tier::release, input::events::focus::set::off, seed);
                                 }
                             });
                             if (!exists)
@@ -2077,7 +2446,7 @@ namespace netxs::ui
                         auto last_step = chain.next.size() > 1 || focusable;
                         chain.foreach([&](auto& nexthop, auto& status)
                         {
-                            if (nexthop == seed.item)
+                            if (&nexthop == seed.item.get())
                             {
                                 status = last_step ? state::dead : state::idle;
                             }
@@ -2099,7 +2468,7 @@ namespace netxs::ui
                 boss.LISTEN(tier::request, input::events::focus::add, seed, memo)
                 {
                     auto& chain = get_chain(seed.gear_id);
-                    notify_focus_state(state::live, chain, seed.gear_id);
+                    notify_focus_state(state::live, chain, seed.gear_id, true);
                     if (auto parent = boss.base::parent())
                     {
                         seed.item = boss.This();
@@ -2313,60 +2682,6 @@ namespace netxs::ui
                     });
                     boss.dup_handler(tier::general, input::events::halt.id, dragmemo_button.back());
                 }
-            }
-        };
-
-        // pro: Keyboard events.
-        class keybd
-            : public skill
-        {
-            using skill::boss,
-                  skill::memo;
-
-            std::unordered_map<id_t, time> last_key; // keybd: .
-            si64 instance_id; // keybd: .
-
-        public:
-            keybd(base&&) = delete;
-            keybd(base& boss)
-                : skill{ boss },
-                  instance_id{ datetime::now().time_since_epoch().count() }
-            {
-                boss.LISTEN(tier::general, input::events::die, gear, memo)
-                {
-                    last_key.erase(gear.id);
-                };
-                boss.LISTEN(tier::release, input::events::keybd::any, gear, memo)
-                {
-                    gear.shared_event = gear.touched && gear.touched != instance_id;
-                    auto& timecod = last_key[gear.id];
-                    if (gear.timecod > timecod)
-                    {
-                        timecod = gear.timecod;
-                        if (gear.payload == input::keybd::type::keypress)
-                        {
-                            if (!gear.handled) input::bindings::dispatch(boss, instance_id, gear, tier::keybdrelease, boss.indexer.anykey_event);
-                            if (!gear.handled) input::bindings::dispatch(boss, instance_id, gear, tier::keybdrelease, gear.vkevent);
-                            if (!gear.handled) input::bindings::dispatch(boss, instance_id, gear, tier::keybdrelease, gear.chevent);
-                            if (!gear.handled) input::bindings::dispatch(boss, instance_id, gear, tier::keybdrelease, gear.scevent);
-                        }
-                    }
-                    else
-                    {
-                        gear.set_handled(faux); // faux: Set handled for keybd only.
-                    }
-                };
-                boss.LISTEN(tier::preview, input::events::keybd::any, gear, memo)
-                {
-                    gear.shared_event = gear.touched && gear.touched != instance_id;
-                    if (gear.payload == input::keybd::type::keypress)
-                    {
-                        if (!gear.touched && !gear.handled) input::bindings::dispatch(boss, instance_id, gear, tier::keybdpreview, gear.vkevent);
-                        if (!gear.touched && !gear.handled) input::bindings::dispatch(boss, instance_id, gear, tier::keybdpreview, gear.chevent);
-                        if (!gear.touched && !gear.handled) input::bindings::dispatch(boss, instance_id, gear, tier::keybdpreview, gear.scevent);
-                        if (!gear.touched && !gear.handled) input::bindings::dispatch(boss, instance_id, gear, tier::keybdpreview, boss.indexer.anykey_event);
-                    }
-                };
             }
         };
 
@@ -2645,30 +2960,157 @@ namespace netxs::ui
         {
             using skill::boss,
                   skill::memo;
+        public:
+            // Shadow around window.
+            //
+            // Shadow bits:  0 1 2
+            //               3   4
+            //               5 6 7
+            // 1x1:
+            // 0  0  0   0  0  0   0  0  0 //
+            // 0 >1< 0   0 >2< 0   0 >4< 0 //
+            // 0  0  1   0  1  0   1  0  0 //
+            //         ┌─────────┐         //
+            // 0  0  0 │         │ 0  0  0 //
+            // 0 >8< 1 │         │ 1 >16<0 //
+            // 0  0  0 │  Window │ 0  0  0 //
+            //         └─────────┘         //
+            // 0  0  1   0  1  0   1  0  0 //
+            // 0 >32<0   0 >64<0   0>128<0 //
+            // 0  0  0   0  0  0   0  0  0 //
+            static constexpr auto x3y3 = 1;   // 𜺏𜹕 = 1;
+            static constexpr auto x1y3 = 4;   // 𜹿𜹥 = 4;
+            static constexpr auto x3y1 = 32;  // 𜺏𜹤 = 32;
+            static constexpr auto x1y1 = 128; // 𜺎𜹥 = 128;
 
-            auto draw_shadow(face& canvas)
+            static constexpr auto x2y3 = 2;   // 𜹯𜹥 = 2;
+            static constexpr auto x2y1 = 64;  // 𜺍𜹥 = 64;
+            static constexpr auto x3y2 = 8;   // 𜺏𜹡 = 8;
+            static constexpr auto x1y2 = 16;  // 𜺋𜹥 = 16;
+
+            static constexpr auto x1y1_x3y1 = 160; // 𜺎𜹤 = 160;
+            static constexpr auto x1y3_x3y3 = 5;   // 𜹿𜹕 = 5;
+
+            // 2x2:
+            // 0  0  0   0  0  0   0  0  0   0  0  0 //
+            // 0 >1< 0   0 >3< 0   0 >6< 0   0 >4< 0 //
+            // 0  0  1   0  1  1   1  1  0   1  0  0 //
+            //         ┌───────────────────┐         //
+            // 0  0  0 │                   │ 0  0  0 //
+            // 0 >9< 1 │                   │ 1 >20<0 //
+            // 0  0  1 │                   │ 1  0  0 //
+            //         │                   │         //
+            // 0  0  1 │                   │ 1  0  0 //
+            // 0 >40<1 │                   │ 1>144<0 //
+            // 0  0  0 │            Window │ 0  0  0 //
+            //         └───────────────────┘         //
+            // 0  0  1   0  1  1   1  1  0   1  0  0 //
+            // 0 >32<0   0 >96<0   0>192<0   0>128<0 //
+            // 0  0  0   0  0  0   0  0  0   0  0  0 //
+            static constexpr auto x2y3_x3y3 = 3;   // 𜹯𜹕 = 3;
+            static constexpr auto x1y3_x2y3 = 6;   // 𜹟𜹥 = 6;
+            static constexpr auto x2y1_x3y1 = 96;  // 𜺍𜹤 = 96;
+            static constexpr auto x1y1_x2y1 = 192; // 𜺌𜹥 = 192;
+
+            static constexpr auto x3y2_x3y3 = 9;   // 𜺏𜹑 = 9;
+            static constexpr auto x3y1_x3y2 = 40;  // 𜺏𜹠 = 40;
+            static constexpr auto x1y2_x1y3 = 20;  // 𜹻𜹥 = 20;
+            static constexpr auto x1y1_x1y2 = 144; // 𜺊𜹥 = 144;
+
+            // nxm:
+            // 0  0  0   0  0  0    0  0  0    0  0  0   0  0  0 //
+            // 0 >1< 0   0 >3< 0    0 >7< 0    0 >6< 0   0 >4< 0 //
+            // 0  0  1   0  1  1 ...1  1  1... 1  1  0   1  0  0 //
+            //         ┌───────────────────────────────┐         //
+            // 0  0  0 │                               │ 0  0  0 //
+            // 0 >9< 1 │                               │ 1 >20<0 //
+            // 0  0  1 │                               │ 1  0  0 //
+            //     ... │                               │ ...     //
+            // 0  0  1 │                               │ 1  0  0 //
+            // 0 >41<1 │                               │ 1>148<0 //
+            // 0  0  1 │                               │ 1  0  0 //
+            //     ... │                               │ ...     //
+            // 0  0  1 │                               │ 1  0  0 //
+            // 0 >40<1 │                               │ 1>144<0 //
+            // 0  0  0 │                        Window │ 0  0  0 //
+            //         └───────────────────────────────┘         //
+            // 0  0  1   0  1  1 ...1  1  1... 1  1  0   1  0  0 //
+            // 0 >32<0   0 >96<0    0>224<0    0>192<0   0>128<0 //
+            // 0  0  0   0  0  0    0  0  0    0  0  0   0  0  0 //
+            static constexpr auto x1y3_x2y3_x3y3 = 7;    // 𜹟𜹟 = 7;
+            static constexpr auto x1y1_x2y1_x3y1 = 224;  // 𜺌𜺌 = 224;
+            static constexpr auto x3y1_x3y2_x3y3 = 41;   // 𜺏𜹥 = 41; // 𜷂
+            static constexpr auto x1y1_x1y2_x1y3 = 148;  // 𜹺𜺏 = 148; // 𜷖
+
+            // 𜹸𜺌 = 244
+            // 𜹚𜹟 = 151
+            // 𜺌𜹤 = 233
+            // 𜹟𜹕 = 47
+
+            static auto draw_shadow(rect area, face& canvas)
             {
-                if (skin::globals().shadow_enabled)
+                if (!area) return;
+                auto lt = rect{ area.coor - dot_11, dot_11 };
+                auto rb = rect{ area.coor + area.size, dot_11 };;
+                auto rt = rect{{ rb.coor.x, lt.coor.y }, dot_11 };
+                auto lb = rect{{ lt.coor.x, rb.coor.y }, dot_11 };
+                canvas.fill(lt, cell::shaders::shadow(x3y3));
+                canvas.fill(rt, cell::shaders::shadow(x1y3));
+                canvas.fill(lb, cell::shaders::shadow(x3y1));
+                canvas.fill(rb, cell::shaders::shadow(x1y1));
+                if (area.size.x == 1)
                 {
-                    static auto shadow = netxs::misc::shadow<core>{};
-                    if (!shadow.sync) shadow.generate(skin::globals().shadow_bias,
-                                                      skin::globals().shadow_opacity,
-                                                      skin::globals().shadow_blur * 2,
-                                                      skin::globals().shadow_offset,
-                                                      dot_21,
-                                                      [](cell& c, auto a){ c.alpha(a); });
-                    shadow.render(canvas, canvas.area(), rect{ .size = boss.base::size() }, cell::shaders::blend);
+                    auto x1_top_mid = rect{{ area.coor.x, area.coor.y - 1 }, dot_11 };
+                    auto x1_bot_mid = rect{{ area.coor.x, area.coor.y + area.size.y }, dot_11 };
+                    canvas.fill(x1_top_mid, cell::shaders::shadow(x2y3));
+                    canvas.fill(x1_bot_mid, cell::shaders::shadow(x2y1));
+                }
+                else
+                {
+                    auto x_top_lef = rect{{ area.coor.x, area.coor.y - 1 }, dot_11 };
+                    auto x_top_rig = rect{{ area.coor.x + area.size.x - 1, x_top_lef.coor.y }, dot_11 };
+                    auto x_bot_lef = rect{{ x_top_lef.coor.x, area.coor.y + area.size.y }, dot_11 };
+                    auto x_bot_rig = rect{{ x_top_rig.coor.x, x_bot_lef.coor.y }, dot_11 };
+                    auto x_top_mid = rect{{ area.coor.x + 1, x_top_lef.coor.y }, { std::max(0, area.size.x - 2), 1 }};
+                    auto x_bot_mid = rect{{ x_top_mid.coor.x, x_bot_lef.coor.y }, x_top_mid.size };
+                    canvas.fill(x_top_lef, cell::shaders::shadow(x2y3_x3y3));
+                    canvas.fill(x_top_rig, cell::shaders::shadow(x1y3_x2y3));
+                    canvas.fill(x_bot_lef, cell::shaders::shadow(x2y1_x3y1));
+                    canvas.fill(x_bot_rig, cell::shaders::shadow(x1y1_x2y1));
+                    canvas.fill(x_top_mid, cell::shaders::shadow(x1y3_x2y3_x3y3));
+                    canvas.fill(x_bot_mid, cell::shaders::shadow(x1y1_x2y1_x3y1));
+                }
+                if (area.size.y == 1)
+                {
+                    auto y1_lef_mid = rect{{ area.coor.x - 1, area.coor.y }, dot_11 };
+                    auto y1_rig_mid = rect{{ area.coor.x + area.size.x, area.coor.y }, dot_11 };
+                    canvas.fill(y1_lef_mid, cell::shaders::shadow(x3y2));
+                    canvas.fill(y1_rig_mid, cell::shaders::shadow(x1y2));
+                }
+                else
+                {
+                    auto y_lef_top = rect{{ area.coor.x - 1, area.coor.y }, dot_11 };
+                    auto y_lef_bot = rect{{ y_lef_top.coor.x, area.coor.y + area.size.y - 1 }, dot_11 };
+                    auto y_rig_top = rect{{ area.coor.x + area.size.x, y_lef_top.coor.y }, dot_11 };
+                    auto y_rig_bot = rect{{ y_rig_top.coor.x, y_lef_bot.coor.y }, dot_11 };
+                    auto y_lef_mid = rect{{ y_lef_top.coor.x, area.coor.y + 1 }, { 1, std::max(0, area.size.y - 2) }};
+                    auto y_rig_mid = rect{{ y_rig_top.coor.x, y_lef_mid.coor.y }, y_lef_mid.size };
+                    canvas.fill(y_lef_top, cell::shaders::shadow(x3y2_x3y3));
+                    canvas.fill(y_lef_bot, cell::shaders::shadow(x3y1_x3y2));
+                    canvas.fill(y_rig_top, cell::shaders::shadow(x1y2_x1y3));
+                    canvas.fill(y_rig_bot, cell::shaders::shadow(x1y1_x1y2));
+                    canvas.fill(y_lef_mid, cell::shaders::shadow(x3y1_x3y2_x3y3));
+                    canvas.fill(y_rig_mid, cell::shaders::shadow(x1y1_x1y2_x1y3));
                 }
             }
 
-        public:
             ghost(base&&) = delete;
             ghost(base& boss)
                 : skill{ boss }
             {
-                boss.LISTEN(tier::release, e2::render::background::prerender, parent_canvas, memo)
+                boss.LISTEN(tier::release, e2::postrender, parent_canvas, memo)
                 {
-                    draw_shadow(parent_canvas);
+                    draw_shadow(rect{ .size = boss.base::size() }, parent_canvas);
                 };
                 //test
                 //boss.on(tier::mouserelease, input::key::MouseWheel, [&](hids& gear)
@@ -2870,13 +3312,10 @@ namespace netxs::ui
                         state = m_buttons[i] ? "pressed" : "idle   ";
                     }
 
-                    if constexpr (debugmode)
-                    {
-                        status[prop::k] = utf::concat(netxs::_k0, " ",
-                                                      netxs::_k1, " ",
-                                                      netxs::_k2, " ",
-                                                      netxs::_k3);
-                    }
+                    status[prop::k] = utf::concat(netxs::_k0, " ",
+                                                  netxs::_k1, " ",
+                                                  netxs::_k2, " ",
+                                                  netxs::_k3);
                     status[prop::mouse_wheeldt] = m.wheelfp ? (m.wheelfp < 0 ? ""s : " "s) + std::to_string(m.wheelfp) : " -- "s;
                     status[prop::mouse_wheelsi] = m.wheelsi ? (m.wheelsi < 0 ? ""s : " "s) + std::to_string(m.wheelsi) : m.wheelfp ? " 0 "s : " -- "s;
                     status[prop::mouse_hzwheel] = m.hzwheel ? "active" : "idle  ";
@@ -2902,33 +3341,30 @@ namespace netxs::ui
                                                 : k.payload == input::keybd::type::imeanons ? "IME composition"
                                                 : k.payload == input::keybd::type::imeinput ? "IME input"
                                                 : k.payload == input::keybd::type::kblayout ? "keyboard layout" : "unknown payload";
-                    if (k.vkchord.length())
+                    auto t = text{};
+                    if (k.keystat != input::key::repeated)
                     {
-                        auto t = text{};
-                        if (k.vkchord.size() && k.keystat != input::key::repeated)
-                        {
-                            auto vkchord =     input::key::kmap::to_string(k.vkchord, faux);
-                            auto scchord =     input::key::kmap::to_string(k.scchord, faux);
-                            auto chchord =     input::key::kmap::to_string(k.chchord, faux);
-                            auto gen_vkchord = input::key::kmap::to_string(k.vkchord, true);
-                            auto gen_chchord = input::key::kmap::to_string(k.chchord, true);
-                            //log("Keyboard chords: %%  %%  %%", utf::buffer_to_hex(gear.vkchord), utf::buffer_to_hex(gear.scchord), utf::buffer_to_hex(gear.chchord),
-                            if (vkchord.size()) t += (t.size() ? "  " : "") + (vkchord == gen_vkchord ? vkchord : gen_vkchord + "  " + vkchord);
-                            if (chchord.size()) t += (t.size() ? "  " : "") + (chchord == gen_chchord ? chchord : gen_chchord + "  " + chchord);
-                            if (scchord.size()) t += (t.size() ? "  " : "") + scchord;
-                        }
-                        else if (k.cluster.length()) //todo revise
-                        {
-                            for (byte c : k.cluster)
-                            {
-                                     if (c <  0x20) t += "^" + utf::to_utf_from_code(c + 0x40);
-                                else if (c == 0x7F) t += "\\x7F";
-                                else if (c == 0x20) t += "\\x20";
-                                else                t.push_back(c);
-                            }
-                        }
-                        if (t.size()) status[prop::key_chord] = t;
+                        auto vkchord =     input::key::kmap::to_string(k.vkchord, faux);
+                        auto scchord =     input::key::kmap::to_string(k.scchord, faux);
+                        auto chchord =     input::key::kmap::to_string(k.chchord, faux);
+                        auto gen_vkchord = input::key::kmap::to_string(k.vkchord, true);
+                        auto gen_chchord = input::key::kmap::to_string(k.chchord, true);
+                        //log("Keyboard chords: %%  %%  %%", utf::buffer_to_hex(gear.vkchord), utf::buffer_to_hex(gear.scchord), utf::buffer_to_hex(gear.chchord),
+                        if (vkchord.size()) t += (t.size() ? "  " : "") + (vkchord == gen_vkchord ? vkchord : gen_vkchord + "  " + vkchord);
+                        if (chchord.size()) t += (t.size() ? "  " : "") + (chchord == gen_chchord ? chchord : gen_chchord + "  " + chchord);
+                        if (scchord.size()) t += (t.size() ? "  " : "") + scchord;
                     }
+                    else if (k.cluster.length()) //todo revise
+                    {
+                        for (byte c : k.cluster)
+                        {
+                                 if (c <  0x20) t += "^" + utf::to_utf_from_code(c + 0x40);
+                            else if (c == 0x7F) t += "\\x7F";
+                            else if (c == 0x20) t += "\\x20";
+                            else                t.push_back(c);
+                        }
+                    }
+                    if (t.size()) status[prop::key_chord] = t;
                     boss.base::deface();
                 };
             }
@@ -3166,12 +3602,7 @@ namespace netxs::ui
 
         form()
             : base{ ui::tui_domain() }
-        {
-            LISTEN(tier::anycast, e2::form::upon::started, root_ptr)
-            {
-                base::update_scripting_context(); // Update scripting context on every reattachement.
-            };
-        }
+        { }
     };
 
     // controls: Splitter.
@@ -3298,7 +3729,7 @@ namespace netxs::ui
             LISTEN(tier::preview, e2::form::layout::swarp, warp)
             {
                 adaptive = true; // Adjust the grip ratio on coming resize.
-                this->bell::passover();
+                bell::passover();
             };
             LISTEN(tier::release, e2::render::any, parent_canvas)
             {
@@ -3414,7 +3845,7 @@ namespace netxs::ui
                     auto split = xpose(griparea.coor + delta).x;
                     auto limit = xpose(base::size() - griparea.size).x;
                     fraction = netxs::divround(max_ratio * split, limit);
-                    this->base::reflow();
+                    base::reflow();
                 };
             }
             item_ptr->base::signal(tier::release, e2::form::upon::vtree::attached, This());
@@ -3768,6 +4199,8 @@ namespace netxs::ui
     class veer
         : public form<veer>
     {
+        bool inform_all;
+
     protected:
         // veer: .
         void deform(rect& new_area) override
@@ -3781,16 +4214,28 @@ namespace netxs::ui
         // veer: .
         void inform(rect new_area) override
         {
-            if (base::subset.size())
-            if (auto object = base::subset.back())
+            if (inform_all)
             {
-                object->base::notify(new_area);
+                for (auto object : base::subset)
+                {
+                    object->base::notify(new_area);
+                }
+            }
+            else
+            {
+                if (base::subset.size())
+                if (auto object = base::subset.back())
+                {
+                    object->base::notify(new_area);
+                }
             }
         }
 
     public:
         static constexpr auto classname = basename::veer;
-        veer()
+
+        veer(bool inform_all = faux)
+            : inform_all{ inform_all }
         {
             LISTEN(tier::release, e2::render::any, parent_canvas)
             {
@@ -3939,7 +4384,7 @@ namespace netxs::ui
             }
             base::resize(twod{ initial_width, 0 });
             base::reflow();
-            return this->This();
+            return postfx::This();
         }
         // post: .
         auto& get_source() const
@@ -3996,9 +4441,45 @@ namespace netxs::ui
             return twod{ !!(Axes & axes::X_only), !!(Axes & axes::Y_only) };
         }
         // rail: .
-        bool empty() //todo VS2019 requires bool
+        auto empty()
         {
             return base::subset.empty() || !base::subset.back();
+        }
+        // rail: .
+        void move_to_box(rack& info)
+        {
+            auto viewport_area = base::area();
+            auto offset = dot_00;
+            base::global(offset);
+            viewport_area.coor = -(offset + base::intpad.corner());
+            auto focused_area = info.window;
+            auto delta = dot_00;
+            for (auto xy : { axis::X, axis::Y })
+            {
+                if (viewport_area.coor[xy] > focused_area.coor[xy])
+                {
+                    delta[xy] = viewport_area.coor[xy] - focused_area.coor[xy];
+                }
+                else
+                {
+                    auto trimmed_size = std::min(focused_area.size[xy], viewport_area.size[xy]);
+                    auto focused_last = focused_area.coor[xy] + trimmed_size;
+                    auto viewport_last = viewport_area.coor[xy] + viewport_area.size[xy];
+                    if (focused_last > viewport_last)
+                    {
+                        delta[xy] = viewport_last - focused_last;
+                    }
+                }
+            }
+            if (delta)
+            {
+                info.window.coor += delta;
+                scroll(delta);
+            }
+            if (auto parent_ptr = base::parent())
+            {
+                parent_ptr->base::riseup(tier::preview, e2::form::upon::scroll::to_box, info);
+            }
         }
 
     protected:
@@ -4030,7 +4511,7 @@ namespace netxs::ui
             LISTEN(tier::preview, e2::form::upon::scroll::any, info) // Receive scroll parameters from external sources.
             {
                 auto delta = dot_00;
-                switch (this->bell::protos())
+                switch (bell::protos())
                 {
                     case e2::form::upon::scroll::bycoor::v.id: delta = { scinfo.window.coor - info.window.coor };        break;
                     case e2::form::upon::scroll::bycoor::x.id: delta = { scinfo.window.coor.x - info.window.coor.x, 0 }; break;
@@ -4050,6 +4531,7 @@ namespace netxs::ui
                     case e2::form::upon::scroll::cancel::v.id: cancel<X, true>(); cancel<Y, true>();                     break;
                     case e2::form::upon::scroll::cancel::x.id: cancel<X, true>();                                        break;
                     case e2::form::upon::scroll::cancel::y.id: cancel<Y, true>();                                        break;
+                    case e2::form::upon::scroll::to_box.id:    move_to_box(info); return;
                     default: break;
                 }
                 if (delta) scroll(delta);
@@ -4181,7 +4663,7 @@ namespace netxs::ui
                 master->LISTEN(tier::release, e2::form::upon::scroll::bycoor::any, master_scinfo, fasten)
                 {
                     auto backup_scinfo = master_scinfo;
-                    this->base::signal(tier::preview, e2::form::upon::scroll::bycoor::_<Axis>, backup_scinfo);
+                    base::signal(tier::preview, e2::form::upon::scroll::bycoor::_<Axis>, backup_scinfo);
                 };
             }
             else fasten.clear();
@@ -4348,7 +4830,7 @@ namespace netxs::ui
                 scinfo.region = block;
                 scinfo.window.coor =-coord; // Viewport.
                 scinfo.window.size = frame; //
-                this->base::signal(tier::release, e2::form::upon::scroll::bycoor::any, scinfo);
+                base::signal(tier::release, e2::form::upon::scroll::bycoor::any, scinfo);
             };
             return object;
         }
@@ -4361,7 +4843,7 @@ namespace netxs::ui
                 base::remove(object);
                 scinfo.region = {};
                 scinfo.window.coor = {};
-                this->base::signal(tier::release, e2::form::upon::scroll::bycoor::any, scinfo); // Reset dependent scrollbars.
+                base::signal(tier::release, e2::form::upon::scroll::bycoor::any, scinfo); // Reset dependent scrollbars.
                 fasten.clear();
             }
             else base::clear();
@@ -4386,22 +4868,26 @@ namespace netxs::ui
 
     namespace drawfx
     {
-        static constexpr auto xlight = [](auto& boss, auto& canvas, auto handle, auto object_len, auto handle_len, auto region_len, auto wide)
+        static constexpr auto visible = [](auto master_len, auto master_box, auto master_pos)
         {
-            if (object_len && handle_len != region_len) // Show only if it is oversized.
+            return master_pos || master_box < master_len; // Show scrollbars only if the master is larger than the viewport or is not at the origin.
+        };
+        static constexpr auto xlight = [](auto& boss, auto& canvas, auto scrollbar_grip, auto master_len, auto master_box, auto master_pos, auto wide)
+        {
+            if (ui::drawfx::visible(master_len, master_box, master_pos))
             {
                 if (wide) // Draw full scrollbar on mouse hover
                 {
                     canvas.fill([&](cell& c){ c.link(boss.bell::id).xlight(); });
                 }
-                canvas.fill(handle, [&](cell& c){ c.link(boss.bell::id).xlight(); });
+                canvas.fill(scrollbar_grip, [&](cell& c){ c.link(boss.bell::id).xlight(); });
             }
         };
-        static constexpr auto underline = [](auto& /*boss*/, auto& canvas, auto handle, auto object_len, auto handle_len, auto region_len, auto /*wide*/)
+        static constexpr auto underline = [](auto& /*boss*/, auto& canvas, auto scrollbar_grip, auto master_len, auto master_box, auto master_pos, auto /*wide*/)
         {
-            if (object_len && handle_len != region_len) // Show only if it is oversized.
+            if (ui::drawfx::visible(master_len, master_box, master_pos))
             {
-                canvas.fill(handle, cell::shaders::underlight);
+                canvas.fill(scrollbar_grip, cell::shaders::underlight);
             }
         };
     }
@@ -4430,26 +4916,33 @@ namespace netxs::ui
             si32& master_len = master_inf.region     [Axis]; // math: Master len.
             si32& master_pos = master_inf.window.coor[Axis]; // math: Master viewport pos.
             si32& master_box = master_inf.window.size[Axis]; // math: Master viewport len.
-            si32  scroll_len = 0; // math: Scrollbar len.
-            si32  scroll_pos = 0; // math: Scrollbar grip pos.
-            si32  scroll_box = 0; // math: Scrollbar grip len.
-            si32  m          = 0; // math: Master max pos.
-            si32  s          = 0; // math: Scroll max pos.
-            fp64  r          = 1; // math: Scroll/master len ratio.
+            si32  scroll_len = 1; // math: Scrollbar cellular len.
+            si32  scroll_pos = 0; // math: Scrollbar grip cellular position.
+            si32  scroll_box = 0; // math: Scrollbar grip cellular len.
+            fp64  scroll_air = 0; // math: Scrollbar grip exact position.
+            si32  m          = 0; // math: Master max cellular pos.
+            si32  s          = 0; // math: Scroll max cellular pos.
+            fp64  r          = 1; // math: Scroll/master length ratio.
 
             si32  cursor_pos = 0; // math: Mouse cursor position.
+            bool  captured = faux; // math: .
+            fp64  grip_origin = 0;
 
+            // math: Adjust the scroll grip cellular position.
+            void sync_grip_cellular_pos()
+            {
+                scroll_pos = std::min((si32)std::round(master_pos * r), scroll_len - 1); // Don't place the grip behind the scrollbar.
+                if (scroll_pos == s && master_pos < m) scroll_pos = std::max(0, s - 1); // Place the grip one step back from the bottom unless master_pos is at the bottom.
+                if (scroll_pos == 0 && master_pos > 0) scroll_pos = std::min(1, s); // Never place the grip on top unless master_pos is on top.
+            }
             // math: Calc scroll to master metrics.
             void s_to_m()
             {
-                auto scroll_center = scroll_pos + scroll_box / 2.0;
-                auto master_center = scroll_len ? scroll_center / r
-                                                : 0;
-                master_pos = (si32)std::round(master_center - master_box / 2.0);
-
+                master_pos = (si32)std::round(scroll_air / r);
                 // Reset to extreme positions.
-                if (scroll_pos == 0 && master_pos > 0) master_pos = 0;
-                if (scroll_pos == s && master_pos < m) master_pos = m;
+                     if (scroll_air == 0 && master_pos > 0) master_pos = 0;
+                else if (scroll_air == s && master_pos < m) master_pos = m;
+                sync_grip_cellular_pos();
             }
             // math: Calc master to scroll metrics.
             void m_to_s()
@@ -4457,37 +4950,45 @@ namespace netxs::ui
                 if (master_box == 0) return;
                 if (master_len == 0) master_len = master_box;
                 r = (fp64)scroll_len / master_len;
-                auto master_middle = master_pos + master_box / 2.0;
-                auto scroll_middle = master_middle * r;
-                scroll_box = std::max(1, (si32)(master_box * r));
-                scroll_pos = (si32)std::round(scroll_middle - scroll_box / 2.0);
-
-                // Don't place the grip behind the scrollbar.
-                if (scroll_pos >= scroll_len) scroll_pos = scroll_len - 1;
-
-                // Extreme positions are always closed last.
+                scroll_box = std::min(scroll_len, (si32)std::ceil(master_box * r)); // Do std::ceil(master_box) to eliminate gaps between consecutive grip positions when paging.
+                if (scroll_box == scroll_len && scroll_len < master_len)            //
+                {
+                    scroll_box = std::max(1, scroll_box - 1);
+                }
                 s = scroll_len - scroll_box;
                 m = master_len - master_box;
-
-                if (scroll_len > 2) // Two-row hight is not suitable for this type of aligning.
-                {
-                    if (scroll_pos == 0 && master_pos > 0) scroll_pos = 1;
-                    if (scroll_pos == s && master_pos < m) scroll_pos = s - 1;
-                }
+                r = m ? (fp64)std::max(1, s) / m : 1; // Recalc the ratio because the box sizes are not proportional due to std::max(std::ceil()).
+                if (!captured) scroll_air = master_pos * r;
+                sync_grip_cellular_pos();
             }
             void update(rack const& scinfo)
             {
-                master_inf = scinfo;
-                m_to_s();
+                if (master_inf != scinfo)
+                {
+                    master_inf = scinfo;
+                    m_to_s();
+                }
             }
             void resize(twod new_size)
             {
-                scroll_len = new_size[Axis];
+                scroll_len = std::max(1, new_size[Axis]);
                 m_to_s();
             }
-            void stepby(si32 delta)
+            void stepby(fp2d delta)
             {
-                scroll_pos = std::clamp(scroll_pos + delta, 0, s);
+                static constexpr auto Sixa = !Axis; // Orthogonal axis.
+                auto d1 = std::abs(delta[Axis]);
+                auto d2 = std::abs(delta[Sixa]);
+                if (d1 >= d2) scroll_air = grip_origin + delta[Axis];
+                else          scroll_air = grip_origin + delta[Sixa] * r; // Allows precise (1:1) scrolling using the orthogonal axis.
+                s_to_m();
+            }
+            void stepbyline(si32 delta)
+            {
+                auto step = delta * r;
+                auto prev_scroll_air = scroll_air;
+                scroll_air = std::clamp(scroll_air + step, 0.0, (fp64)s);
+                grip_origin += scroll_air - prev_scroll_air;
                 s_to_m();
             }
             void commit(rect& handle)
@@ -4531,11 +5032,12 @@ namespace netxs::ui
         math calc; // grip: Scrollbar calculator.
         bool on_pager = faux; // grip: .
         fp2d drag_origin; // grip: Drag origin.
+        fp2d gear_coord; // grip: Gear coord tracker.
 
         template<auto Event>
         void send()
         {
-            if (auto master = this->boss.lock())
+            if (auto master = boss.lock())
             {
                 master->base::signal(tier::preview, Event, calc.master_inf);
             }
@@ -4546,26 +5048,6 @@ namespace netxs::ui
             auto lims = Axis == axis::X ? twod{ -1, width }
                                         : twod{ width, -1 };
             base::limits(lims, lims);
-        }
-        void giveup(hids& gear)
-        {
-            if (on_pager)
-            {
-                gear.dismiss();
-            }
-            else
-            {
-                if (gear.captured(bell::id))
-                {
-                    if (gear.cause == input::key::RightDragCancel)
-                    {
-                        send<e2::form::upon::scroll::cancel::_<Axis>>();
-                    }
-                    base::deface();
-                    gear.setfree();
-                    gear.dismiss();
-                }
-            }
         }
         void pager(si32 dir)
         {
@@ -4603,12 +5085,37 @@ namespace netxs::ui
             base::on(tier::mouserelease, input::key::MouseWheel, [&](hids& gear)
             {
                 if (gear.meta(hids::anyCtrl)) return; // Ctrl+Wheel is reserved for zooming.
-                if (gear.whlsi) pager(gear.whlsi > 0 ? 1 : -1);
+                if (gear.whlsi)
+                {
+                    auto delta = gear.whlsi > 0 ? 1 : -1;
+                    if (gear.captured(bell::id)) // Allow precise scrolling of text line by line using the mouse wheel while holding down the mouse button.
+                    {
+                        calc.stepbyline(-delta);
+                        send<e2::form::upon::scroll::bycoor::_<Axis>>();
+                    }
+                    else
+                    {
+                        pager(delta);
+                    }
+                }
                 gear.dismiss();
             });
             base::on(tier::mouserelease, input::key::MouseMove, [&](hids& gear)
             {
-                calc.cursor_pos = twod{ gear.coord }[Axis];
+                if (gear.captured(bell::id))
+                {
+                    if (on_pager)
+                    {
+                        calc.cursor_pos = twod{ gear.coord }[Axis];
+                    }
+                    else if (gear_coord(gear.coord))
+                    {
+                        auto delta = gear.coord - drag_origin;
+                        calc.stepby(delta);
+                        send<e2::form::upon::scroll::bycoor::_<Axis>>();
+                    }
+                    gear.dismiss();
+                }
             });
             base::on(tier::mouserelease, input::key::LeftDoubleClick, [&](hids& gear)
             {
@@ -4616,15 +5123,22 @@ namespace netxs::ui
             });
             base::on(tier::mouserelease, input::key::MouseDown, [&](hids& gear)
             {
-                if (!on_pager)
-                if (gear.cause == input::key::LeftDown || gear.cause == input::key::RightDown)
-                if (auto dir = calc.inside(twod{ gear.coord }[Axis]))
+                if (!gear.captured(bell::id) && gear.capture(bell::id))
                 {
-                    if (gear.capture(bell::id))
+                    auto dir = calc.inside(twod{ gear.coord }[Axis]);
+                    if (dir == 0) // Inside the grip.
+                    {
+                        drag_origin = gear.coord;
+                        gear_coord = gear.coord;
+                        calc.m_to_s();
+                        calc.grip_origin = calc.scroll_air;
+                        calc.captured = true;
+                    }
+                    else // Outside the grip.
                     {
                         on_pager = true;
+                        calc.cursor_pos = twod{ gear.coord }[Axis];
                         pager_repeat();
-                        gear.dismiss();
                         timer.actify(activity::pager_first, skin::globals().repeat_delay, [&](auto)
                         {
                             if (pager_repeat())
@@ -4638,89 +5152,35 @@ namespace netxs::ui
                         });
                     }
                 }
+                gear.dismiss();
             });
             base::on(tier::mouserelease, input::key::MouseUp, [&](hids& gear)
             {
-                if (on_pager && gear.captured(bell::id))
+                if (gear.captured(bell::id) && gear.pressed_count == 0)
                 {
-                    if (gear.cause == input::key::LeftUp || gear.cause == input::key::RightUp)
+                    if (on_pager)
                     {
-                        gear.setfree();
-                        gear.dismiss();
                         on_pager = faux;
                         timer.pacify(activity::pager_first);
                         timer.pacify(activity::pager_next);
                     }
+                    calc.captured = faux;
+                    gear.setfree();
+                    gear.dismiss();
+                    base::deface();
                 }
             });
-            base::on(tier::mouserelease, input::key::RightUp, [&](hids& gear)
+            LISTEN(tier::general, input::events::halt, gear)
             {
-                //if (!gear.captured(bell::id)) //todo why?
+                if (gear.captured(bell::id))
                 {
-                    send<e2::form::upon::scroll::cancel::_<Axis>>();
+                    calc.captured = faux;
+                    on_pager = faux;
+                    base::deface();
+                    gear.setfree();
                     gear.dismiss();
                 }
-            });
-            base::on(tier::mouserelease, input::key::MouseDragStart, [&](hids& gear)
-            {
-                if (on_pager)
-                {
-                    gear.dismiss();
-                }
-                else
-                {
-                    if (gear.capture(bell::id))
-                    {
-                        drag_origin = gear.coord;
-                        gear.dismiss();
-                    }
-                }
-            });
-            base::on(tier::mouserelease, input::key::MouseDragPull, [&](hids& gear)
-            {
-                if (on_pager)
-                {
-                    gear.dismiss();
-                }
-                else
-                {
-                    if (gear.captured(bell::id))
-                    {
-                        if (auto delta = (twod{ gear.coord } - twod{ drag_origin })[Axis])
-                        {
-                            drag_origin = gear.coord;
-                            calc.stepby(delta);
-                            send<e2::form::upon::scroll::bycoor::_<Axis>>();
-                            gear.dismiss();
-                        }
-                    }
-                }
-            });
-            base::on(tier::mouserelease, input::key::MouseDragCancel, [&](hids& gear)
-            {
-                giveup(gear);
-            });
-            bell::dup_handler(tier::general, input::events::halt.id);
-            base::on(tier::mouserelease, input::key::MouseDragStop, [&](hids& gear)
-            {
-                if (on_pager)
-                {
-                    gear.dismiss();
-                }
-                else
-                {
-                    if (gear.captured(bell::id))
-                    {
-                        if (gear.cause == input::key::RightDragStop)
-                        {
-                            send<e2::form::upon::scroll::cancel::_<Axis>>();
-                        }
-                        base::deface();
-                        gear.setfree();
-                        gear.dismiss();
-                    }
-                }
-            });
+            };
             LISTEN(tier::release, e2::form::state::mouse, hovered)
             {
                 auto apply = [&](auto active)
@@ -4759,16 +5219,12 @@ namespace netxs::ui
             //});
             LISTEN(tier::release, e2::render::any, parent_canvas)
             {
-                auto region = parent_canvas.clip();
-                auto object = parent_canvas.full();
-                auto handle = region;
-                calc.commit(handle);
-                auto& handle_len = handle.size[Axis];
-                auto& region_len = region.size[Axis];
-                auto& object_len = object.size[Axis];
-                handle.trimby(region);
-                handle_len = std::max(1, handle_len);
-                drawfx(*this, parent_canvas, handle, object_len, handle_len, region_len, wide);
+                auto visible_region = parent_canvas.clip();
+                auto scrollbar_rect = parent_canvas.full();
+                auto scrollbar_grip = scrollbar_rect;
+                calc.commit(scrollbar_grip);
+                scrollbar_grip.trimby(visible_region);
+                drawfx(*this, parent_canvas, scrollbar_grip, calc.master_len, calc.master_box, calc.master_pos, wide);
             };
         }
         grip(sptr boss_ptr)

@@ -571,11 +571,11 @@ namespace netxs::ui
             : core{ std::forward<core>(s) }
         { }
 
-        auto length() const                                     { return size().x;                         }
-        auto shadow() const                                     { return shot{ *this };                    }
-        auto substr(si32 at, si32 width = netxs::si32max) const { return shadow().substr(at, width);       }
-        void trimto(si32 max_size)                              { if (length() > max_size) crop(max_size); }
-        void resize(si32 oversize)                              { if (oversize > length()) crop(oversize); }
+        auto length() const                                     { return size().x;                            }
+        auto shadow() const                                     { return shot{ *this };                       }
+        auto substr(si32 at, si32 width = netxs::si32max) const { return shadow().substr(at, width);          }
+        void trimto(si32 max_size, cell const& c = {})          { if (length() > max_size) crop(max_size, c); }
+        void resize(si32 oversize, cell const& c = {})          { if (oversize > length()) crop(oversize, c); }
         auto take_piece(si32 at, si32 width = netxs::si32max) const
         {
             if (width == netxs::si32max) width = length() - at;
@@ -643,10 +643,10 @@ namespace netxs::ui
             while (dst != end) *dst++ = blank;
         }
         template<class Span, class Shader>
-        void splice(si32 at, Span const& fragment, Shader fuse)
+        void splice(si32 at, Span const& fragment, Shader fuse, cell const& c = {})
         {
             auto len = fragment.length();
-            rich::resize(len + at);
+            rich::resize(len + at, c);
             auto ptr = begin();
             auto dst = ptr + at;
             auto end = dst + len;
@@ -888,10 +888,10 @@ namespace netxs::ui
         }
         // rich: Splice proto with auto grow.
         template<bool Copy = faux, class Span, class Shader>
-        void splice(si32 at, si32 count, Span const& proto, Shader fuse)
+        void splice(si32 at, si32 count, Span const& proto, Shader fuse, cell const& c = {})
         {
             if (count <= 0) return;
-            rich::resize(at + count);
+            rich::resize(at + count, c);
             auto end = begin() + at;
             auto dst = end + count;
             auto src = proto.end();
@@ -1793,6 +1793,13 @@ namespace netxs::ui
         auto& operator  = (view utf8) { clear(); ansi::parse(utf8, this); reindex(); return *this; }
         auto& operator += (view utf8) {          ansi::parse(utf8, this); reindex(); return *this; }
         page(view utf8)               {          ansi::parse(utf8, this); reindex();               }
+        page(view utf8, cell c)
+        {
+            parser::brush.reset(c);
+            batch.front()->parser::brush.reset(c);
+            ansi::parse(utf8, this);
+            reindex();
+        }
         page() = default;
         page(page&& p)
             : parser{        },
@@ -2079,6 +2086,7 @@ namespace netxs::ui
                 data += b ? set : off;
             }
             auto unc(argb ) { }
+            auto dim(si32 ) { }
             auto und(si32 unline)
             {
                 static constexpr auto off = "\\ul0 "sv;
@@ -2108,6 +2116,7 @@ namespace netxs::ui
             }
             auto ovr(bool) { } // not supported
             auto blk(bool) { } // not supported
+            auto hid(bool) { } // not supported
         };
 
         auto to_rich(text font = {}) const
@@ -2239,12 +2248,14 @@ namespace netxs::ui
             auto bgc(argb ) { }
             auto bld(bool ) { }
             auto itc(bool ) { }
+            auto dim(si32 ) { }
             auto und(si32 ) { }
             auto unc(argb ) { }
             auto inv(bool ) { }
             auto stk(bool ) { }
             auto ovr(bool ) { }
             auto blk(bool ) { }
+            auto hid(bool ) { }
             auto cursor0(si32 ) { }
         };
 
@@ -2321,11 +2332,13 @@ namespace netxs::ui
             auto bld(bool ) { }
             auto itc(bool ) { }
             auto und(si32 ) { }
+            auto dim(si32 ) { }
             auto unc(argb ) { }
             auto inv(bool ) { }
             auto stk(bool ) { }
             auto ovr(bool ) { }
             auto blk(bool ) { }
+            auto hid(bool ) { }
             auto cursor0(si32 ) { }
         };
 
@@ -2413,7 +2426,7 @@ namespace netxs::ui
         {
             auto publish = [&](auto& combo)
             {
-                combo.coord = this->flow::print<true, Split>(combo, *this, printfx);
+                combo.coord = flow::print<true, Split>(combo, *this, printfx);
             };
             textpage.stream(publish);
         }
@@ -2466,7 +2479,7 @@ namespace netxs::ui
                 textpage.stream(find);
             }
         }
-        auto calc_page_height(page& object, twod& size)
+        auto get_page_size(page& object, twod& size, bool update_all)
         {
             auto cp = dot_00;
             flow::reset();
@@ -2477,7 +2490,14 @@ namespace netxs::ui
             };
             object.stream(publish);
             auto& cover = flow::minmax();
-            size.y = cover.size.y;
+            if (update_all)
+            {
+                size = cover.size;
+            }
+            else
+            {
+                size.y = cover.size.y;
+            }
             return cp;
         }
         // face: Reflow text page on the canvas and hold position
@@ -2624,6 +2644,14 @@ namespace netxs::ui
         face& cub(si32 n = 1) { flow::dx(-n); return *this; } // face: Cursor backward.
         face& cnl(si32 n = 1) { flow::dy( n); return *this; } // face: Cursor next line.
         face& cpl(si32 n = 1) { flow::dy(-n); return *this; } // face: Cursor previous line.
+        // face: Set margins.
+        face& mgn(dent n)
+        {
+            auto area = core::area();
+            auto cropped_area = rect{ area.coor + std::max(dot_00, n.corner()), area.size - n };
+            flow::full(cropped_area);
+            return *this;
+        }
 
         face& ocp(twod p) { flow::oc( p); return *this; } // face: Cursor 1-based absolute position.
         face& ocx(si32 x) { flow::ox( x); return *this; } // face: Cursor 1-based horizontal absolute.

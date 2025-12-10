@@ -10,6 +10,9 @@ namespace netxs
     using span = std::chrono::steady_clock::duration;
     using time = std::chrono::time_point<std::chrono::steady_clock>;
     using namespace std::chrono_literals;
+
+    static constexpr auto maxspan = span::max();
+    static constexpr auto maxtime = time{ maxspan };
 }
 
 namespace netxs::datetime
@@ -17,13 +20,13 @@ namespace netxs::datetime
     // quartz: Round a chrono time moment in degree (def: milliseconds)
     //         units since epoch.
     template<class T, class degree = std::chrono::milliseconds>
-    T round(time t)
+    constexpr T round(time t)
     {
         return netxs::saturate_cast<T>(std::chrono::duration_cast<degree>(t.time_since_epoch()).count());
     }
     // quartz: Round a chrono time period in degree (def: milliseconds).
     template<class T, class degree = std::chrono::milliseconds>
-    T round(span t)
+    constexpr T round(span t)
     {
         return netxs::saturate_cast<T>(std::chrono::duration_cast<degree>(t).count());
     }
@@ -47,11 +50,12 @@ namespace netxs::datetime
     auto breakdown(span t)
     {
         auto days         = datetime::round<ui32, std::chrono::        days>(t);
-        auto hours        = datetime::round<ui32, std::chrono::       hours>(t -= std::chrono::   days{ days    });
-        auto minutes      = datetime::round<ui32, std::chrono::     minutes>(t -= std::chrono::  hours{ hours   });
-        auto seconds      = datetime::round<ui32, std::chrono::     seconds>(t -= std::chrono::minutes{ minutes });
-        auto milliseconds = datetime::round<ui32, std::chrono::milliseconds>(t -= std::chrono::seconds{ seconds });
-        return std::tuple{ days, hours, minutes, seconds, milliseconds };
+        auto hours        = datetime::round<ui32, std::chrono::       hours>(t -= std::chrono::        days{ days    });
+        auto minutes      = datetime::round<ui32, std::chrono::     minutes>(t -= std::chrono::       hours{ hours   });
+        auto seconds      = datetime::round<ui32, std::chrono::     seconds>(t -= std::chrono::     minutes{ minutes });
+        auto milliseconds = datetime::round<ui32, std::chrono::milliseconds>(t -= std::chrono::     seconds{ seconds });
+        auto microseconds = datetime::round<ui32, std::chrono::microseconds>(t -= std::chrono::milliseconds{ milliseconds });
+        return std::tuple{ days, hours, minutes, seconds, milliseconds, microseconds };
     }
     auto breakdown(time t)
     {

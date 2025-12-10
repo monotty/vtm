@@ -225,6 +225,11 @@ namespace netxs
             chan.a = (byte)std::clamp(chan.a + k * 255.f, 0.f, 255.f);
             return *this;
         }
+        // argb: Sum alpha channels.
+        static void alpha_mix(si32 src, byte& dst)
+        {
+            dst = (byte)std::clamp(src + dst, 0, 255);
+        }
         // argb: Return alpha channel.
         auto alpha() const
         {
@@ -253,8 +258,7 @@ namespace netxs
         auto to_256cube() const
         {
             auto clr = 0;
-            if (chan.r == chan.g
-             && chan.r == chan.b)
+            if (chan.r == chan.g && chan.r == chan.b)
             {
                 clr = 232 + ((chan.r * 24) >> 8);
             }
@@ -514,6 +518,14 @@ namespace netxs
             chan.r = chan.r < k ? 0x00 : chan.r - k;
             chan.g = chan.g < k ? 0x00 : chan.g - k;
             chan.b = chan.b < k ? 0x00 : chan.b - k;
+            return *this;
+        }
+        // argb: Faint color.
+        auto faint()
+        {
+            chan.r >>= 1;
+            chan.g >>= 1;
+            chan.b >>= 1;
             return *this;
         }
         // argb: Lighten the color.
@@ -839,6 +851,11 @@ namespace netxs
             }();
             return lookup(cache, std::span{ argb::vtm16.data(), 8 });
         }
+        // argb: Change endianness to LE.
+        friend auto letoh(argb r)
+        {
+            return argb{ netxs::letoh(r.token) };
+        }
     };
 
     // canvas: Generic RGBA.
@@ -1139,7 +1156,7 @@ namespace netxs
                 }
                 return crop;
             }
-            bool is_space() const //todo VS2019 complains on auto
+            auto is_space() const
             {
                 return (token & netxs::letoh((ui64)0xFF00)) <= netxs::letoh((ui64)whitespace << 8); // (byte)(bytes[1]) <= whitespace;
             }
@@ -1170,30 +1187,33 @@ namespace netxs
             struct pxtype
             {
                 static constexpr auto none   = 0;
-                static constexpr auto colors = 1; // argb colors pair (cursor/grid/whatever).
-                static constexpr auto bitmap = 2; // Attached argb bitmap reference: First 32 bit: bitmap index. Last 32 bit: offset inside bitmap.
-                static constexpr auto reserv = 3;
+                static constexpr auto bitmap = 1; // Attached argb bitmap reference: 32 bit: bitmap index.
+                static constexpr auto reserv = 2;
             };
 
             // Shared attributes.
-            static constexpr auto bolded_mask = (ui32)0b00000000'00000000'00000000'00000001; // bolded : 1;
-            static constexpr auto italic_mask = (ui32)0b00000000'00000000'00000000'00000010; // italic : 1;
-            static constexpr auto invert_mask = (ui32)0b00000000'00000000'00000000'00000100; // invert : 1;
-            static constexpr auto overln_mask = (ui32)0b00000000'00000000'00000000'00001000; // overln : 1;
-            static constexpr auto strike_mask = (ui32)0b00000000'00000000'00000000'00010000; // strike : 1;
-            static constexpr auto unline_mask = (ui32)0b00000000'00000000'00000000'11100000; // unline : 3; // 0: none, 1: line, 2: biline, 3: wavy, 4: dotted, 5: dashed, 6 - 7: unknown.
-            static constexpr auto ucolor_mask = (ui32)0b00000000'00000000'11111111'00000000; // ucolor : 8; // Underline 256-color 6x6x6-cube index. Alpha not used - it is shared with fgc alpha. If zero - sync with fgc.
-            static constexpr auto cursor_mask = (ui32)0b00000000'00000011'00000000'00000000; // cursor : 2; // 0: None, 1: Underline, 2: Block, 3: I-bar. cell::px stores cursor fg/bg if cursor is set.
-            static constexpr auto hplink_mask = (ui32)0b00000000'00000100'00000000'00000000; // hyperlink : 1; // cell::px strores string hash.
-            static constexpr auto blinks_mask = (ui32)0b00000000'00001000'00000000'00000000; // blinks : 1;
-            static constexpr auto bitmap_mask = (ui32)0b00000000'00110000'00000000'00000000; // bitmap : 2; // body::pxtype: Cursor losts its colors when it covers bitmap.
-            static constexpr auto fusion_mask = (ui32)0b00000000'11000000'00000000'00000000; // fusion : 2; // todo The outlines of object boundaries must be set when rendering each window (pro::shape).
+            static constexpr auto bolded_mask = (ui64)0b00000000'00000000'00000000'00000000'00000000'00000000'00000000'00000001; // bolded : 1;
+            static constexpr auto italic_mask = (ui64)0b00000000'00000000'00000000'00000000'00000000'00000000'00000000'00000010; // italic : 1;
+            static constexpr auto invert_mask = (ui64)0b00000000'00000000'00000000'00000000'00000000'00000000'00000000'00000100; // invert : 1;
+            static constexpr auto overln_mask = (ui64)0b00000000'00000000'00000000'00000000'00000000'00000000'00000000'00001000; // overln : 1;
+            static constexpr auto strike_mask = (ui64)0b00000000'00000000'00000000'00000000'00000000'00000000'00000000'00010000; // strike : 1;
+            static constexpr auto unline_mask = (ui64)0b00000000'00000000'00000000'00000000'00000000'00000000'00000000'11100000; // unline : 3; // 0: none, 1: line, 2: biline, 3: wavy, 4: dotted, 5: dashed, 6 - 7: unknown.
+            static constexpr auto ucolor_mask = (ui64)0b00000000'00000000'00000000'00000000'00000000'00000000'11111111'00000000; // ucolor : 8; // Underline 256-color 6x6x6-cube index. Alpha not used - it is shared with fgc alpha. If zero - sync with fgc.
+            static constexpr auto cursor_mask = (ui64)0b00000000'00000000'00000000'00000000'00000000'00000011'00000000'00000000; // cursor : 2; // 0: None, 1: Underline, 2: Block, 3: I-bar.
+            static constexpr auto hplink_mask = (ui64)0b00000000'00000000'00000000'00000000'00000000'00000100'00000000'00000000; // hyperlink : 1; // cell::px strores string hash.
+            static constexpr auto blinks_mask = (ui64)0b00000000'00000000'00000000'00000000'00000000'00001000'00000000'00000000; // blinks : 1;
+            static constexpr auto bitmap_mask = (ui64)0b00000000'00000000'00000000'00000000'00000000'00110000'00000000'00000000; // bitmap : 2; // body::pxtype: Cursor losts its colors when it covers bitmap.
+            static constexpr auto fusion_mask = (ui64)0b00000000'00000000'00000000'00000000'00000000'11000000'00000000'00000000; // fusion : 2; // todo The outlines of object boundaries must be set when rendering each window (pro::shape).
+            static constexpr auto shadow_mask = (ui64)0b00000000'00000000'00000000'00000000'11111111'00000000'00000000'00000000; // shadow : 8; // Shadow bits.
+            static constexpr auto hidden_mask = (ui64)0b00000000'00000000'00000000'00000001'00000000'00000000'00000000'00000000; // shadow : 8; // Hidden character.
             // Unique attributes. From 24th bit.
-            static constexpr auto mosaic_mask = (ui32)0b11111111'00000000'00000000'00000000; // ui32 mosaic : 8; // High 3 bits -> y-fragment (0-4 utf::matrix::ky), low 5 bits -> x-fragment (0-16 utf::matrix::kx). // Ref:  https://gitlab.freedesktop.org/terminal-wg/specifications/-/issues/23
+            static constexpr auto mosaic_mask = (ui64)0b00000000'00000000'11111111'00000000'00000000'00000000'00000000'00000000; // ui32 mosaic : 8; // High 3 bits -> y-fragment (0-4 utf::matrix::ky), low 5 bits -> x-fragment (0-16 utf::matrix::kx). // Ref:  https://gitlab.freedesktop.org/terminal-wg/specifications/-/issues/23
+            static constexpr auto curbgc_mask = (ui64)0b00000000'11111111'00000000'00000000'00000000'00000000'00000000'00000000; // bgcclr : 8; // Cursor 256-color 6x6x6-cube index. Alpha not used.
+            static constexpr auto curfgc_mask = (ui64)0b11111111'00000000'00000000'00000000'00000000'00000000'00000000'00000000; // fgcclr : 8; // Cursor 256-color 6x6x6-cube index. Alpha not used.
 
             static constexpr auto x_bits = utf::matrix::x_bits; // Character geometry x fragment selector bits (for mosaic_mask).
             static constexpr auto y_bits = utf::matrix::y_bits; // Character geometry y fragment selector bits offset (for mosaic_mask).
-            static constexpr auto shared_bits = (ui32)((1 << netxs::field_offset<mosaic_mask>()) - 1);
+            static constexpr auto shared_bits = ((ui64)1 << netxs::field_offset<mosaic_mask>()) - 1;
 
             // Fusion: Background interpolation current c0 with neighbor c1 and c2 cells:
             //    c0 c1
@@ -1213,19 +1233,19 @@ namespace netxs
             // append prev: U+200C ZERO WIDTH NON-JOINER
             // append prev: U+00AD SOFT HYPHEN
 
-            ui32 token;
+            ui64 token;
 
             constexpr body()
-                : token{ 0 }
+                : token{ }
             { }
             constexpr body(body const& b)
                 : token{ b.token }
             { }
             constexpr body(si32 mosaic)
-                : token{ (ui32)mosaic << netxs::field_offset<mosaic_mask>() }
+                : token{ (ui64)(ui32)mosaic << netxs::field_offset<mosaic_mask>() }
             { }
             constexpr body(body const& b, si32 mosaic)
-                : token{ (b.token & ~mosaic_mask) | ((ui32)mosaic << netxs::field_offset<mosaic_mask>()) }
+                : token{ (b.token & ~mosaic_mask) | ((ui64)(ui32)mosaic << netxs::field_offset<mosaic_mask>()) }
             { }
 
             constexpr body& operator = (body const&) = default;
@@ -1243,7 +1263,15 @@ namespace netxs
             }
             void meta(body const& b)
             {
-                token = (token & ~body::shared_bits) | (b.token & body::shared_bits); // Keep mosaic.
+                token = (token & body::mosaic_mask) | (b.token & ~body::mosaic_mask); // Keep mosaic.
+            }
+            void meta_shadow(body const& b)
+            {
+                token = (token & (body::mosaic_mask | body::shadow_mask)) | (b.token & ~body::mosaic_mask); // Keep mosaic and OR'ing shadow.
+            }
+            void meta_shadow_matrix(body const& b)
+            {
+                token = (token & body::shadow_mask) | b.token; // Update meta with OR'ing shadow.
             }
             template<svga Mode = svga::vtrgb, bool UseSGR = true, class T>
             void get(body& base, T& dest) const
@@ -1256,6 +1284,7 @@ namespace netxs
                         if constexpr (Mode == svga::vt_2D)
                         {
                             if (auto cursor = token & cursor_mask; cursor != (base.token & cursor_mask)) dest.cursor0((si32)(cursor >> netxs::field_offset<cursor_mask>()));
+                            if (auto shadow = token & shadow_mask; shadow != (base.token & shadow_mask)) dest.dim(    (si32)(shadow >> netxs::field_offset<shadow_mask>()));
                             //if (auto hplink = token & hplink_mask; hplink != (base.token & hplink_mask)) dest.hplink0((si32)(hplink >> netxs::field_offset<hplink_mask>()));
                             //if (auto fusion = token & fusion_mask; fusion != (base.token & fusion_mask)) dest.fusion0((si32)(fusion >> netxs::field_offset<fusion_mask>()));
                             //todo sync px
@@ -1269,6 +1298,7 @@ namespace netxs
                             if (auto overln = token & overln_mask; overln != (base.token & overln_mask)) dest.ovr(!!overln);
                             if (auto strike = token & strike_mask; strike != (base.token & strike_mask)) dest.stk(!!strike);
                             if (auto blinks = token & blinks_mask; blinks != (base.token & blinks_mask)) dest.blk(!!blinks);
+                            if (auto hidden = token & hidden_mask; hidden != (base.token & hidden_mask)) dest.hid(!!hidden);
                             if (auto unline = token & unline_mask; unline != (base.token & unline_mask)) dest.und((si32)(unline >> netxs::field_offset<unline_mask>()));
                             if (auto ucolor = token & ucolor_mask; ucolor != (base.token & ucolor_mask)) dest.unc((si32)(ucolor >> netxs::field_offset<ucolor_mask>()));
                         }
@@ -1289,23 +1319,34 @@ namespace netxs
                 token ^= invert_mask;
             }
 
-            void bld(bool b)         { token &= ~bolded_mask; token |= ((ui32)b << netxs::field_offset<bolded_mask>()); }
-            void itc(bool b)         { token &= ~italic_mask; token |= ((ui32)b << netxs::field_offset<italic_mask>()); }
-            void inv(bool b)         { token &= ~invert_mask; token |= ((ui32)b << netxs::field_offset<invert_mask>()); }
-            void ovr(bool b)         { token &= ~overln_mask; token |= ((ui32)b << netxs::field_offset<overln_mask>()); }
-            void stk(bool b)         { token &= ~strike_mask; token |= ((ui32)b << netxs::field_offset<strike_mask>()); }
-            void blk(bool b)         { token &= ~blinks_mask; token |= ((ui32)b << netxs::field_offset<blinks_mask>()); }
-            void und(si32 n)         { token &= ~unline_mask; token |= ((ui32)n << netxs::field_offset<unline_mask>()); }
-            void unc(si32 c)         { token &= ~ucolor_mask; token |= ((ui32)c << netxs::field_offset<ucolor_mask>()); }
-            void cur(si32 s)         { token &= ~cursor_mask; token |= ((ui32)s << netxs::field_offset<cursor_mask>()); }
-            void mosaic(si32 m)      { token &= ~mosaic_mask; token |= (ui32)(m << netxs::field_offset<mosaic_mask>()); }
-            void bitmap(si32 r)      { token &= ~bitmap_mask; token |= (ui32)(r << netxs::field_offset<bitmap_mask>()); }
-            void  xy(ui32 m)         { token &= ~mosaic_mask; token |= m; }
-            void raw(ui32 r)         { token &= ~bitmap_mask; token |= r; }
+            void bld(bool b)         { token &= ~bolded_mask; token |= ((ui64)b << netxs::field_offset<bolded_mask>()); }
+            void itc(bool b)         { token &= ~italic_mask; token |= ((ui64)b << netxs::field_offset<italic_mask>()); }
+            void inv(bool b)         { token &= ~invert_mask; token |= ((ui64)b << netxs::field_offset<invert_mask>()); }
+            void ovr(bool b)         { token &= ~overln_mask; token |= ((ui64)b << netxs::field_offset<overln_mask>()); }
+            void stk(bool b)         { token &= ~strike_mask; token |= ((ui64)b << netxs::field_offset<strike_mask>()); }
+            void blk(bool b)         { token &= ~blinks_mask; token |= ((ui64)b << netxs::field_offset<blinks_mask>()); }
+            void hid(bool b)         { token &= ~hidden_mask; token |= ((ui64)b << netxs::field_offset<hidden_mask>()); }
+            void dim(si32 n)         { token &= ~shadow_mask; token |= ((ui64)(ui32)n << netxs::field_offset<shadow_mask>()); }
+            void und(si32 n)         { token &= ~unline_mask; token |= ((ui64)(ui32)n << netxs::field_offset<unline_mask>()); }
+            void unc(si32 c)         { token &= ~ucolor_mask; token |= ((ui64)(ui32)c << netxs::field_offset<ucolor_mask>()); }
+            void cur(si32 s)         { token &= ~cursor_mask; token |= ((ui64)(ui32)s << netxs::field_offset<cursor_mask>()); }
+            void mosaic(si32 m)      { token &= ~mosaic_mask; token |= ((ui64)(ui32)m << netxs::field_offset<mosaic_mask>()); }
+            void bitmap(si32 r)      { token &= ~bitmap_mask; token |= ((ui64)(ui32)r << netxs::field_offset<bitmap_mask>()); }
+            void  xy(ui64 m)         { token &= ~mosaic_mask; token |= m; }
+            void raw(ui64 r)         { token &= ~bitmap_mask; token |= r; }
             void  xy(si32 x, si32 y) { mosaic(x + (y << y_bits)); }
-            void cursor0(ui32 c)     { token &= ~cursor_mask; token |= (ui32)(c << netxs::field_offset<cursor_mask>()); }
-            //void hplink0(ui32 c) { token &= ~hplink_mask; token |= (ui32)(c << netxs::field_offset<hplink_mask>()); }
-            //void fusion0(ui32 c) { token &= ~fusion_mask; token |= (ui32)(c << netxs::field_offset<fusion_mask>()); }
+            void fuse_dim(si32 n)    { token |= (ui64)(ui32)n << netxs::field_offset<shadow_mask>(); }
+            void cursor0(si32 c)     { token &= ~cursor_mask; token |= ((ui64)(ui32)c << netxs::field_offset<cursor_mask>()); }
+            void cursor_color(argb bgc, argb fgc)
+            {
+                auto bg = bgc.to_256cube();
+                auto fg = fgc.to_256cube();
+                token &= ~(curbgc_mask | curfgc_mask);
+                token |= ((ui64)bg << netxs::field_offset<curbgc_mask>());
+                token |= ((ui64)fg << netxs::field_offset<curfgc_mask>());
+            }
+            //void hplink0(ui64 c) { token &= ~hplink_mask; token |= (ui64)(c << netxs::field_offset<hplink_mask>()); }
+            //void fusion0(ui64 c) { token &= ~fusion_mask; token |= (ui64)(c << netxs::field_offset<fusion_mask>()); }
 
             bool bld()    const { return !!(token & bolded_mask); }
             bool itc()    const { return !!(token & italic_mask); }
@@ -1313,16 +1354,26 @@ namespace netxs
             bool ovr()    const { return !!(token & overln_mask); }
             bool stk()    const { return !!(token & strike_mask); }
             bool blk()    const { return !!(token & blinks_mask); }
+            bool hid()    const { return !!(token & hidden_mask); }
             si32 und()    const { return (si32)((token & unline_mask) >> netxs::field_offset<unline_mask>()); }
+            si32 dim()    const { return (si32)((token & shadow_mask) >> netxs::field_offset<shadow_mask>()); }
             si32 unc()    const { return (si32)((token & ucolor_mask) >> netxs::field_offset<ucolor_mask>()); }
             si32 cur()    const { return (si32)((token & cursor_mask) >> netxs::field_offset<cursor_mask>()); }
             //si32 cursor0() const { return (token & cursor_mask); }
             //si32 hplink0() const { return (token & hplink_mask); }
             //si32 fusion0() const { return (token & fusion_mask); }
-            ui32  xy()    const { return (token & mosaic_mask); }
-            ui32 raw()    const { return (token & bitmap_mask); }
+            ui64  xy()    const { return (token & mosaic_mask); }
+            ui64 raw()    const { return (token & bitmap_mask); }
             si32 mosaic() const { return (si32)((token & mosaic_mask) >> netxs::field_offset<mosaic_mask>()); }
             si32 bitmap() const { return (si32)((token & bitmap_mask) >> netxs::field_offset<bitmap_mask>()); }
+            auto cursor_color() const
+            {
+                auto bgi = (byte)((token & curbgc_mask) >> netxs::field_offset<curbgc_mask>());
+                auto fgi = (byte)((token & curfgc_mask) >> netxs::field_offset<curfgc_mask>());
+                auto bgc = bgi ? argb{ argb::vt256[bgi] } : argb{};
+                auto fgc = fgi ? argb{ argb::vt256[fgi] } : argb{};
+                return std::pair{ bgc, fgc };
+            }
         };
         struct clrs
         {
@@ -1423,7 +1474,7 @@ namespace netxs
         };
         struct pict
         {
-            ui64 token;
+            ui32 token;
             constexpr pict()
                 : token{ 0 }
             { }
@@ -1444,9 +1495,9 @@ namespace netxs
 
         clrs uv; // 8U, cell: Fg and bg colors.
         glyf gc; // 8U, cell: Grapheme cluster.
-        body st; // 4U, cell: Style attributes.
+        body st; // 8U, cell: Style attributes.
         id_t id; // 4U, cell: Link ID.
-        pict px; // 8U, cell: Reference to the raw bitmap attached to the cell.
+        pict px; // 4U, cell: Reference to the raw bitmap attached to the cell.
 
         cell()
             : id{ 0 }
@@ -1506,6 +1557,10 @@ namespace netxs
 
         operator bool () const { return st.xy(); } // cell: Return true if cell contains printable character.
 
+        auto is_empty() const // cell: Return true if cell is absolutely empty.
+        {
+            return uv.bg.token == 0 && uv.fg.token == 0 && gc.token == 0 && st.token == 0 && id == 0 && px.token == 0;
+        }
         auto same_txt(cell const& c) const // cell: Compare clusters.
         {
             return gc == c.gc;
@@ -1539,10 +1594,27 @@ namespace netxs
             }
             if (c.st.xy())
             {
-                st = c.st;
                 gc = c.gc;
+                if (c.uv.bg.token == 0) // OR'ing the shadow if bg is completely transparent.
+                {
+                    st.meta_shadow_matrix(c.st);
+                }
+                else
+                {
+                    st = c.st;
+                }
             }
-            else st.meta(c.st);
+            else
+            {
+                if (c.uv.bg.token == 0) // OR'ing the shadow if bg is completely transparent.
+                {
+                    st.meta_shadow(c.st);
+                }
+                else
+                {
+                    st.meta(c.st);
+                }
+            }
             return *this;
         }
         // cell: Blend two cells if text part != '\0'.
@@ -1755,18 +1827,43 @@ namespace netxs
             return w > 1 && w == /*x*/(st.mosaic() & cell::body::x_bits);
         }
         // cell: Convert to text. Ignore right half. Convert binary clusters (eg: ^C -> 0x03).
+        template<bool Select_11_only = faux>
         void scan(text& dest) const
         {
             auto [w, h, x, y] = whxy();
-            if (w == 0 || h != 1 || x != 1) dest += whitespace;
+            if constexpr (Select_11_only)
+            {
+                if (x == 1 && y == 1)
+                {
+                    auto shadow = gc.get();
+                    if (shadow.size() == 2 && shadow.front() == '^')
+                    {
+                        dest += shadow[1] & (' ' - 1);
+                    }
+                    else
+                    {
+                        dest += shadow;
+                    }
+                }
+            }
             else
             {
-                auto shadow = gc.get();
-                if (shadow.size() == 2 && shadow.front() == '^')
+                if (w == 0 || h != 1 || x != 1)
                 {
-                    dest += shadow[1] & (' ' - 1);
+                    dest += whitespace;
                 }
-                else dest += shadow;
+                else
+                {
+                    auto shadow = gc.get();
+                    if (shadow.size() == 2 && shadow.front() == '^')
+                    {
+                        dest += shadow[1] & (' ' - 1);
+                    }
+                    else
+                    {
+                        dest += shadow;
+                    }
+                }
             }
         }
         // cell: Convert non-printable chars to escaped.
@@ -1814,11 +1911,23 @@ namespace netxs
             st.reverse();
         }
         // cell: Desaturate and dim fg color.
-        void dim()
+        void disabled()
         {
             uv.fg.grayscale();
-            uv.fg.shadow(80);
+            uv.fg.shadow(78);
             uv.fg.chan.a = 0xff;
+        }
+        auto& dim(si32 n)
+        {
+            if (n == -1)
+            {
+                uv.fg.faint();
+            }
+            else
+            {
+                st.dim(std::clamp(n, 0, 255));
+            }
+            return *this;
         }
         // cell: Is the cell not transparent?
         bool is_alpha_blendable() const
@@ -1859,17 +1968,27 @@ namespace netxs
         auto& fga(si32 k)        { uv.fg.chan.a = (byte)k; return *this; } // cell: Set foreground alpha/transparency.
         auto& alpha(si32 k)      { uv.bg.chan.a = (byte)k;
                                    uv.fg.chan.a = (byte)k; return *this; } // cell: Set alpha/transparency (background and foreground).
-        auto& bld(bool b)        { st.bld(b);              return *this; } // cell: Set bold attribute.
+        // cell: Set/Reset bold attribute. //todo ? SGR22: If b=faux and st.bld()=faux then un-dim fg color.
+        auto& bld(bool b)
+        {
+            //if (st.bld() == faux && b == faux) // Un-dim fg color.
+            //{
+            //    uv.fg.bright(2);
+            //}
+            st.bld(b);
+            return *this;
+        }
         auto& itc(bool b)        { st.itc(b);              return *this; } // cell: Set italic attribute.
         auto& und(si32 n)        { st.und(n);              return *this; } // cell: Set underline attribute.
         auto& unc(argb c)        { st.unc(c.to_256cube()); return *this; } // cell: Set underline color.
         auto& unc(si32 c)        { st.unc(c);              return *this; } // cell: Set underline color.
         auto& cur(si32 s)        { st.cur(s);              return *this; } // cell: Set cursor style.
-        auto& img(ui64 p)        { px.token = p;           return *this; } // cell: Set attached bitmap.
+        auto& img(ui32 p)        { px.token = p;           return *this; } // cell: Set attached bitmap.
         auto& ovr(bool b)        { st.ovr(b);              return *this; } // cell: Set overline attribute.
         auto& inv(bool b)        { st.inv(b);              return *this; } // cell: Set invert attribute.
         auto& stk(bool b)        { st.stk(b);              return *this; } // cell: Set strikethrough attribute.
         auto& blk(bool b)        { st.blk(b);              return *this; } // cell: Set blink attribute.
+        auto& hid(bool b)        { st.hid(b);              return *this; } // cell: Set hidden attribute.
         auto& rtl(bool b)        { gc.rtl(b);              return *this; } // cell: Set RTL attribute.
         auto& mtx(twod p)        { gc.mtx(p.x, p.y);       return *this; } // cell: Set glyph matrix.
         auto& xy(si32 x, si32 y) { st.xy(x, y);            return *this; } // cell: Set glyph fragment.
@@ -1944,7 +2063,7 @@ namespace netxs
         auto  len() const  { return gc.len();      } // cell: Return grapheme cluster cell storage length (in bytes).
         auto  tkn() const  { return gc.token;      } // cell: Return grapheme cluster token.
         bool  jgc() const  { return gc.jgc();      } // cell: Check the grapheme cluster registration (foreign jumbo clusters).
-        ui32   xy() const  { return st.xy();       } // cell: Return matrix fragment metadata.
+        ui64   xy() const  { return st.xy();       } // cell: Return matrix fragment metadata.
         template<svga Mode = svga::vtrgb>
         auto  txt() const  { return gc.get<Mode>(); } // cell: Return grapheme cluster.
         auto& egc()        { return gc;            } // cell: Get grapheme cluster object.
@@ -1967,6 +2086,8 @@ namespace netxs
         auto  inv() const  { return st.inv();      } // cell: Return negative attribute.
         auto  stk() const  { return st.stk();      } // cell: Return strikethrough attribute.
         auto  blk() const  { return st.blk();      } // cell: Return blink attribute.
+        auto  hid() const  { return st.hid();      } // cell: Return hidden attribute.
+        auto  dim() const  { return st.dim();      } // cell: Return shadow attribute.
         auto& stl()        { return st.token;      } // cell: Return style token.
         auto& stl() const  { return st.token;      } // cell: Return style token.
         auto link() const  { return id;            } // cell: Return object ID.
@@ -1993,17 +2114,12 @@ namespace netxs
         auto set_cursor(si32 style, cell color = {})
         {
             st.cur(style);
-            if (st.bitmap() != body::pxtype::bitmap && (color.uv.bg.token || color.uv.fg.token))
-            {
-                st.bitmap(body::pxtype::colors);
-                px.token = ((ui64)color.uv.bg.token << 32) | (ui64)color.uv.fg.token;
-            }
+            st.cursor_color(color.uv.bg, color.uv.fg);
         }
         auto cursor_color() const
         {
-            auto colored = st.bitmap() == body::pxtype::colors;
-            return colored ? std::pair{ argb{ (ui32)(px.token >> 32) }, argb{ (ui32)(px.token & 0xFFFF'FFFF) }}
-                           : std::pair{ argb{}, argb{} };
+            //todo support for multiple cursor inside the cell
+            return st.cursor_color();
         }
         // cell: Return whitespace cell.
         cell spc() const
@@ -2121,6 +2237,11 @@ namespace netxs
                 template<class C> constexpr inline auto operator () (C brush) const { return func<C>(brush); }
                 template<class D, class S>  inline void operator () (D& dst, S& src) const { dst.alpha_sum(src); }
             };
+            struct alphamix_t : public brush_t<alphamix_t>
+            {
+                template<class C> constexpr inline auto operator () (C brush) const { return func<C>(brush); }
+                template<class D, class S>  inline void operator () (D& dst, S& src) const { argb::alpha_mix(src, dst); }
+            };
             struct full_t : public brush_t<full_t>
             {
                 template<class C> constexpr inline auto operator () (C brush) const { return func<C>(brush); }
@@ -2208,7 +2329,7 @@ namespace netxs
                 {
                     return disabled_t{};
                 }
-                template<class D> inline void operator () (D& dst) const { dst.dim(); }
+                template<class D> inline void operator () (D& dst) const { dst.disabled(); }
             };
             struct transparent_t : public brush_t<transparent_t>
             {
@@ -2227,6 +2348,15 @@ namespace netxs
                 { }
                 template<class D, class S>  inline void operator () (D& dst, S& src) const { dst.fuse(src); dst.bga(alpha); }
                 template<class D>           inline void operator () (D& dst)         const { dst.bga(alpha); }
+            };
+            struct shadow_t
+            {
+                si32 shadow_index;
+                constexpr shadow_t(si32 shadow_index)
+                    : shadow_index{ std::clamp(shadow_index, 0, 255) }
+                { }
+                template<class D, class S>  inline void operator () (D& dst, S& src) const { dst.fuse(src); dst.st.fuse_dim(shadow_index); }
+                template<class D>           inline void operator () (D& dst)         const { dst.st.fuse_dim(shadow_index); }
             };
             struct color_t
             {
@@ -2307,6 +2437,7 @@ namespace netxs
             static constexpr auto transparent(si32     a) { return transparent_t{ a     }; }
             static constexpr auto     xlucent(si32     a) { return     xlucent_t{ a     }; }
             static constexpr auto      onlyid(id_t newid) { return      onlyid_t{ newid }; }
+            static constexpr auto      shadow(si32 index) { return      shadow_t{ index }; }
             static constexpr auto   contrast =   contrast_t{};
             static constexpr auto   fusefull =   fusefull_t{};
             static constexpr auto    overlay =    overlay_t{};
@@ -2315,6 +2446,7 @@ namespace netxs
             static constexpr auto   blendpma =   blendpma_t{};
             static constexpr auto      blend =      blend_t{};
             static constexpr auto      alpha =      alpha_t{};
+            static constexpr auto   alphamix =   alphamix_t{};
             static constexpr auto       lite =       lite_t{};
             static constexpr auto       fuse =       fuse_t{};
             static constexpr auto       flat =       flat_t{};
@@ -2336,6 +2468,7 @@ namespace netxs
             auto [cursor_bgc, cursor_fgc] = cursor_color();
             switch (st.cur())
             {
+                case text_cursor::I_bar: // Some terminals do not support colored underlining.
                 case text_cursor::block:
                     if (cursor_bgc.chan.a == 0)
                     {
@@ -2346,11 +2479,10 @@ namespace netxs
                     else
                     {
                         auto b = cursor_bgc;
-                        auto f = cursor_fgc.chan.a ? cursor_fgc : cell::shaders::contrast.invert(b);
+                        auto f = cursor_fgc.chan.a && cursor_fgc != cursor_bgc ? cursor_fgc : cell::shaders::contrast.invert(b);
                         inv(faux).fgc(f).bgc(b);
                     }
                     break;
-                case text_cursor::I_bar:
                 case text_cursor::underline:
                     if (cursor_bgc.chan.a == 0)
                     {
@@ -2459,7 +2591,7 @@ namespace netxs
                     }
                 }
             }
-            // shadow: Render rectanguler shadow for window rect.
+            // shadow: Render a rectangular shadow for the window rectangle.
             auto render(auto&& canvas, auto clip, auto window, auto fx)
             {
                 auto dst = rect{ window.coor - over / 2, window.size + over };
@@ -2630,7 +2762,7 @@ namespace netxs
         {
             netxs::onrect(canvas, canvas.area(), fx);
         }
-        void cage(auto&& canvas, rect area, dent border, auto fx) // core: Draw the cage around specified area.
+        void cage(auto&& canvas, rect area, dent border, auto fx) // core: Draw cage inside the specified area.
         {
             auto temp = area;
             temp.size.y = std::max(0, border.t); // Top
@@ -2830,15 +2962,17 @@ namespace netxs
         {
             netxs::onrect(*this, region, fx);
         }
+        template<bool Select_11_only = true>
         void utf8(netxs::text& crop) // core: Convert to raw utf-8 text. Ignore right halves.
         {
-            each([&](cell& c){ c.scan(crop); });
+            each([&](cell& c){ c.scan<Select_11_only>(crop); });
         }
+        template<bool Select_11_only = true>
         auto utf8() // core: Convert to raw utf-8 text. Ignore right halves.
         {
             auto crop = netxs::text{};
             crop.reserve(canvas.size());
-            each([&](cell& c){ c.scan(crop); });
+            each([&](cell& c){ c.scan<Select_11_only>(crop); });
             return crop;
         }
         auto copy(body& target) const // core: Copy only body of the canvas to the specified body bitmap.

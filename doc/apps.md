@@ -17,10 +17,16 @@
 
 ### Features
 
-- Non-wrapped text output with horizontal scrolling support.
+- Non-wrapped text output with horizontal scrolling.
+- Terminal control using Lua scripts via APC.
+- Special (Exclusive) keyboard mode for terminal window to transfer all keyboard data to the terminal as is.
 - Configurable scrollback buffer size (100k lines by default, limited by `max_int32` and system RAM).
+- Independent text-only and color-only output.
 - Search for text in the scrollback buffer.
 - Linear and rectangular text selection for copying and searching.
+- True color with alpha transparency.
+- Full [VT2D](character_geometry.md) support.
+- TUI Shadows as SGR attribute.
 - Support for several formats of copying the selected text:
   - Plain text
   - RTF
@@ -36,23 +42,283 @@
   - Enforced ENABLE_PROCESSED_OUTPUT and ENABLE_VIRTUAL_TERMINAL_PROCESSING modes.
   - Disabled ENABLE_QUICK_EDIT_MODE mode.
   - Per process (not per process name) Windows Command Prompt (cmd.exe) input history, aka "Line input" or "Cooked read".
+  - Floating point (pixel-wise) mouse reporting.
 - Stdin/stdout logging.
+
+### True color with alpha transparency
+
+The built-in terminal is capable of outputting alpha transparent (from 0 to 255, in the RGBA sense) text and thus making "holes" in the GUI terminal window. Transparency can be set for both the text background and the foreground using the SGR attributes `48:2` and `38:2`:
+
+  - `ESC` `[` `48` `:` `2` `:` [ `:` ] `red` `:` `green` `:` `blue` [ `:alpha` ] `m`
+  - `ESC` `[` `38` `:` `2` `:` [ `:` ] `red` `:` `green` `:` `blue` [ `:alpha` ] `m`
+
+Note: If you need correct alpha blending, you should specify [premultiplied-alpha](https://en.wikipedia.org/wiki/Alpha_compositing#Straight_versus_premultiplied) color values. (We use straight-alpha color values to overbright UI elements such as scrollbars and resize grips to make it visible regardless of the underlying colors).
+
+For example, outputting a pixel-art image with transparency (pwsh):
+
+```pwsh
+" `e[48:2:0:0:0:255m`e[38:2:0:0:0:255m   `e[38:2:4:0:0:4m▄`e[38:2:20:0:0:20m▄`e[48:2:3:0:0:3m`e[38:2:51:0:0:51m▄`e[48:2:9:0:0:9m`e[38:2:95:0:0:95m▄`e[48:2:11:0:0:11m`e[38:2:104:0:0:104m▄`e[48:2:8:0:0:8m`e[38:2:83:0:0:83m▄`e[48:2:2:0:0:2m`e[38:2:38:0:0:38m▄`e[48:2:0:0:0:255m`e[38:2:14:0:0:14m▄`e[38:2:3:0:0:3m▄`e[38:2:15:0:0:15m▄`e[48:2:2:0:0:2m`e[38:2:39:0:0:39m▄`e[48:2:8:0:0:8m`e[38:2:84:0:0:84m▄`e[48:2:10:0:0:10m`e[38:2:104:0:0:104m▄`e[48:2:9:0:0:9m`e[38:2:93:0:0:93m▄`e[48:2:3:0:0:3m`e[38:2:50:0:0:50m▄`e[48:2:0:0:0:255m`e[38:2:19:0:0:19m▄`e[38:2:4:0:0:4m▄`e[38:2:0:0:0:255m   ";`
+"  `e[38:2:5:0:0:5m▄`e[48:2:8:0:0:8m`e[38:2:57:0:0:57m▄`e[48:2:54:0:0:54m`e[38:2:193:0:0:193m▄`e[48:2:157:0:0:157m`e[38:2:243:0:0:243m▄`e[48:2:224:0:0:224m`e[38:2:254:0:0:254m▄`e[48:2:237:0:0:237m`e[38:2:255:0:0:255m▄`e[48:2:238:0:0:238m▄`e[48:2:234:0:0:234m▄`e[48:2:211:0:0:211m`e[38:2:252:0:0:252m▄`e[48:2:125:0:0:125m`e[38:2:239:0:0:239m▄`e[48:2:49:0:0:49m`e[38:2:219:0:0:219m▄`e[48:2:128:0:0:128m`e[38:2:240:0:0:240m▄`e[48:2:212:0:0:212m`e[38:2:253:0:0:253m▄`e[48:2:234:0:0:234m`e[38:2:255:0:0:255m▄`e[48:2:238:0:0:238m▄`e[48:2:237:0:0:237m▄`e[48:2:224:0:0:224m`e[38:2:254:0:0:254m▄`e[48:2:153:0:0:153m`e[38:2:242:0:0:242m▄`e[48:2:50:0:0:50m`e[38:2:192:0:0:192m▄`e[48:2:7:0:0:7m`e[38:2:54:0:0:54m▄`e[48:2:0:0:0:255m`e[38:2:4:0:0:4m▄`e[38:2:0:0:0:255m ";`
+" `e[48:2:1:0:0:1m`e[38:2:5:0:0:5m▄`e[48:2:23:0:0:23m`e[38:2:66:0:0:66m▄`e[48:2:168:0:0:168m`e[38:2:228:0:0:228m▄`e[48:2:244:0:0:244m`e[38:2:254:0:0:254m▄`e[48:2:255:0:0:255m`e[38:2:255:0:0:255m       `e[48:2:253:0:0:253m▄`e[48:2:255:0:0:255m       `e[48:2:243:0:0:243m`e[38:2:254:0:0:254m▄`e[48:2:162:0:0:162m`e[38:2:226:0:0:226m▄`e[48:2:22:0:0:22m`e[38:2:58:0:0:58m▄`e[48:2:0:0:0:255m`e[38:2:4:0:0:4m▄`e[38:2:0:0:0:255m";`
+" `e[48:2:11:0:0:11m`e[38:2:12:0:0:12m▄`e[48:2:108:0:0:108m`e[38:2:119:0:0:119m▄`e[48:2:239:0:0:239m`e[38:2:240:0:0:240m▄`e[48:2:255:0:0:255m`e[38:2:255:0:0:255m                 `e[48:2:238:0:0:238m`e[38:2:239:0:0:239m▄`e[48:2:102:0:0:102m`e[38:2:107:0:0:107m▄`e[48:2:10:0:0:10m`e[38:2:11:0:0:11m▄`e[48:2:0:0:0:255m`e[38:2:0:0:0:255m";`
+" `e[48:2:9:0:0:9m`e[38:2:3:0:0:3m▄`e[48:2:95:0:0:95m`e[38:2:44:0:0:44m▄`e[48:2:236:0:0:236m`e[38:2:213:0:0:213m▄`e[48:2:255:0:0:255m`e[38:2:253:0:0:253m▄`e[38:2:255:0:0:255m               `e[38:2:252:0:0:252m▄`e[48:2:235:0:0:235m`e[38:2:210:0:0:210m▄`e[48:2:88:0:0:88m`e[38:2:40:0:0:40m▄`e[48:2:8:0:0:8m`e[38:2:2:0:0:2m▄`e[48:2:0:0:0:255m`e[38:2:0:0:0:255m";`
+"  `e[48:2:15:0:0:15m`e[38:2:1:0:0:1m▄`e[48:2:124:0:0:124m`e[38:2:26:0:0:26m▄`e[48:2:232:0:0:232m`e[38:2:144:0:0:144m▄`e[48:2:254:0:0:254m`e[38:2:235:0:0:235m▄`e[48:2:255:0:0:255m`e[38:2:254:0:0:254m▄`e[38:2:255:0:0:255m           `e[38:2:254:0:0:254m▄`e[48:2:254:0:0:254m`e[38:2:235:0:0:235m▄`e[48:2:232:0:0:232m`e[38:2:144:0:0:144m▄`e[48:2:117:0:0:117m`e[38:2:25:0:0:25m▄`e[48:2:14:0:0:14m`e[38:2:1:0:0:1m▄`e[48:2:0:0:0:255m`e[38:2:0:0:0:255m ";`
+"   `e[48:2:2:0:0:2m▄`e[48:2:29:0:0:29m`e[38:2:2:0:0:2m▄`e[48:2:144:0:0:144m`e[38:2:29:0:0:29m▄`e[48:2:235:0:0:235m`e[38:2:144:0:0:144m▄`e[48:2:254:0:0:254m`e[38:2:235:0:0:235m▄`e[48:2:255:0:0:255m`e[38:2:254:0:0:254m▄`e[38:2:255:0:0:255m       `e[38:2:254:0:0:254m▄`e[48:2:254:0:0:254m`e[38:2:233:0:0:233m▄`e[48:2:234:0:0:234m`e[38:2:140:0:0:140m▄`e[48:2:144:0:0:144m`e[38:2:28:0:0:28m▄`e[48:2:29:0:0:29m`e[38:2:2:0:0:2m▄`e[48:2:2:0:0:2m`e[38:2:0:0:0:255m▄`e[48:2:0:0:0:255m  ";`
+"     `e[48:2:2:0:0:2m▄`e[48:2:29:0:0:29m`e[38:2:2:0:0:2m▄`e[48:2:144:0:0:144m`e[38:2:28:0:0:28m▄`e[48:2:234:0:0:234m`e[38:2:137:0:0:137m▄`e[48:2:254:0:0:254m`e[38:2:232:0:0:232m▄`e[48:2:255:0:0:255m`e[38:2:253:0:0:253m▄`e[38:2:255:0:0:255m   `e[38:2:253:0:0:253m▄`e[48:2:253:0:0:253m`e[38:2:227:0:0:227m▄`e[48:2:230:0:0:230m`e[38:2:119:0:0:119m▄`e[48:2:130:0:0:130m`e[38:2:24:0:0:24m▄`e[48:2:26:0:0:26m`e[38:2:2:0:0:2m▄`e[48:2:2:0:0:2m`e[38:2:0:0:0:255m▄`e[48:2:0:0:0:255m    ";`
+"       `e[48:2:2:0:0:2m▄`e[48:2:25:0:0:25m`e[38:2:1:0:0:1m▄`e[48:2:126:0:0:126m`e[38:2:23:0:0:23m▄`e[48:2:229:0:0:229m`e[38:2:116:0:0:116m▄`e[48:2:253:0:0:253m`e[38:2:227:0:0:227m▄`e[48:2:255:0:0:255m`e[38:2:251:0:0:251m▄`e[48:2:253:0:0:253m`e[38:2:226:0:0:226m▄`e[48:2:226:0:0:226m`e[38:2:111:0:0:111m▄`e[48:2:112:0:0:112m`e[38:2:20:0:0:20m▄`e[48:2:21:0:0:21m`e[38:2:1:0:0:1m▄`e[48:2:1:0:0:1m`e[38:2:0:0:0:255m▄`e[48:2:0:0:0:255m      ";`
+"         `e[48:2:1:0:0:1m▄`e[48:2:21:0:0:21m`e[38:2:1:0:0:1m▄`e[48:2:110:0:0:110m`e[38:2:15:0:0:15m▄`e[48:2:205:0:0:205m`e[38:2:48:0:0:48m▄`e[48:2:110:0:0:110m`e[38:2:15:0:0:15m▄`e[48:2:20:0:0:20m`e[38:2:1:0:0:1m▄`e[48:2:1:0:0:1m`e[38:2:0:0:0:255m▄`e[48:2:0:0:0:255m        ";`
+"            `e[48:2:3:0:0:3m▄`e[48:2:0:0:0:255m           ";`
+"`e[m ";
+
+```
+
+### Independent text-only and color-only output
+
+#### Text-only output
+
+Outputting plain text over other colored text while preserving all SGR attributes allows changing the text inside cells without having to re-specify the color and other SGR attributes for the output string (there may be a large number of attributes, and the one who prints may not even support it). This significantly simplifies and speeds up the output of intensively updated colored text blocks. This is achieved by using the so-called "transparent" color. The "transparent" color could be enabled by setting the following values for the background color: red=255, green=255, blue=255, alpha=0.
+
+For example, replacing the string `Hello` with `World` inside a colored text line:
+```bash
+printf "\e[44;31m Hello \e[m Mono text\r\e[48:2::255:255:255:0m World\e[m\n"
+```
+
+#### Color-only output
+
+Printing SGR attributes without text over existing content allows to colorize existing on-screen blocks without having to re-print the text itself. Keeping the existing text on-screen is achieved by using the required number of null characters as the output string. When outputting a null character, the vtm terminal keeps the current character in the cell, updating only the SGR attributes.
+
+For example, color only the word ` Hello ` inside a monochrome string:
+```bash
+printf " Hello Test\r\e[44;31m\0\0\0\0\0\0\0\e[m\n"
+```
+
+### Terminal control using Lua scripts via APC
+
+The built-in terminal is capable of executing Lua scripts received via APC (Application Program Command) vt-sequences. The format of the vt-sequence is as follows:
+
+```
+ESC _ lua: <script body> ESC \
+```
+or
+```
+ESC _ lua: <script body> BEL
+```
+where:
+- `ESC_`: APC vt-sequence prefix.
+- `lua:`: case-insensitive APC payload marker.
+- `<script body>`: Lua script body.
+- `ESC\` or `BEL`: APC vt-sequence terminator.
+
+Usage examples:
+- `bash`:
+  ```
+  # Print the current scrollback buffer limits
+  printf "\e_lua: local n,m,q=vtm.terminal.ScrollbackSize(); vtm.terminal.PrintLn('size=', n, ' growstep=', m, ' maxsize=', q)\e\\"
+
+  # Set the scrollback buffer limit to 10K lines
+  printf "\e_lua: vtm.terminal.ScrollbackSize(10000)\a"
+
+  # Maximize the terminal window
+  printf "\e_lua: vtm.applet.Maximize()\e\\"
+  ```
+
+A complete list of available script functions can be found in [settings.md](settings.md#event-sources).
+
+Note: The terminal parser may incorrectly detect the boundaries of a control sequence if the script body contains an explicit ESC character. In such cases, it is necessary to use character combinations that represent ESC implicitly, such as `\e`, `\u{1b}`, `\x1b`.
+
+Example in bash:
+```bash
+printf "\e_lua: vtm.terminal.PrintLn('\\e[44mHello!\\e[m')\a"
+printf "\e_lua: vtm.terminal.PrintLn('\\\u{1b}[44mHello!\\\u{1b}[m')\a"
+printf "\e_lua: vtm.terminal.PrintLn('\\x1b[44mHello!\\x1b[m')\a"
+```
+
+### Special keyboard mode for terminal window to transfer all keyboard input to the terminal as is
+
+The special (visible in the UI as Exclusive) terminal window mode allows all keyboard input to be passed through directly to the terminal, suppressing the existing UI keyboard bindings. This makes it possible for the terminal application to reuse any key combinations assigned to the terminal window, the vtm desktop, or another external UI object. The list of default key bindings is available in [`user-interface.md`](user-interface.md).
 
 ### Private control sequences
 
-Name         | Sequence                         | Description
--------------|----------------------------------|------------
-`CCC_SBS`    | `CSI` 24 : n : m : q `p`         | Set scrollback buffer limits:<br>`n` Initial buffer size<br>`m` Grow step<br>`q` Grow limit
-`CCC_SGR`    | `CSI` 28 : Pm `p`                | Set terminal background using SGR attributes (one attribute per call):<br>`Pm` Colon-separated list of attributes, 0 — reset all attributes, _default is 0_
-`CCC_SEL`    | `CSI` 29 : n `p`                 | Set text selection mode:<br>`n = 0` Selection is off<br>`n = 1` Select and copy as plaintext (default)<br>`n = 2` Select and copy as ANSI/VT text<br>`n = 3` Select and copy as RTF-document<br>`n = 4` Select and copy as HTML-code<br>`n = 5` Select and copy as protected plaintext (suppressed preview, [details](https://learn.microsoft.com/en-us/windows/win32/dataxchg/clipboard-formats#cloud-clipboard-and-clipboard-history-formats))
-`CCC_PAD`    | `CSI` 30 : n `p`                 | Set scrollback buffer left and right side padding:<br>`n` Width in cells, _max = 255, default is 0_
-`CCC_RST`    | `CSI` 1 `p`                      | Reset all parameters to default
-`CCC_TBS`    | `CSI` 5 : n `p`                  | Set tab length in cells:<br>`n` Length in cells, _max = 256, default is 8_
-`CCC_JET`    | `CSI` 11 : n `p`                 | Set text alignment, _default is Left_:<br>`n = 0`<br>`n = 1` Left<br>`n = 2` Right<br>`n = 3` Center
-`CCC_WRP`    | `CSI` 12 : n `p`                 | Set text autowrap mode, _default is On_:<br>`n = 0`<br>`n = 1` On<br>`n = 2` Off (_enables horizontal scrolling_)
-`CCC_RTL`    | `CSI` 13 : n `p`                 | Set text right-to-left mode, _default is Off_:<br>`n = 0`<br>`n = 1` On<br>`n = 2` Off
+Note: Since `CSI p` sequences are used by other terminals, all private vt-sequences must be replaced with alternative ones using Lua scripting via APC.
 
-Note: It is possible to combine multiple command into a single sequence using a semicolon. For example, the following sequence disables line wrapping, enables text selection, and sets background to blue: `\e[12:2;29:1;28:44p` or `\e[12:2;29:1;28:48:2:0:0:255p`.
+APC sequence                                                   | Deprecated sequence                | Description
+---------------------------------------------------------------|------------------------------------|------------
+`ESC _ lua: vtm.terminal.ScrollbackSize(` n `,` m `,` q `) ST` | `ESC [ 24 :` n `:` m `:` q `p`     | Set scrollback buffer parameters:<br>`n` Initial buffer size<br>`m` Grow step<br>`q` Grow limit
+`ESC _ lua: vtm.terminal.Print('\x1b[#{\x1b[0;` m `m'); vtm.terminal.SetBackground(); vtm.terminal.Print('\x1b[#}') ST` | `ESC [ 28 :` m `p` | Set terminal background SGR attribute:<br>`m` SGR attribute (attribute m may include subarguments separated by colons), 0 - reset all attributes, _default is 0_
+`ESC _ lua: vtm.terminal.ClipboardFormat(` n `) ST`            | `ESC [ 29 :` n `p`                 | Set text selection mode:<br>`n = 0` Selection is off<br>`n = 1` Select and copy as plaintext (default)<br>`n = 2` Select and copy as ANSI/VT text<br>`n = 3` Select and copy as RTF-document<br>`n = 4` Select and copy as HTML-code<br>`n = 5` Select and copy as protected plaintext (suppressed preview, [details](https://learn.microsoft.com/en-us/windows/win32/dataxchg/clipboard-formats#cloud-clipboard-and-clipboard-history-formats))
+`ESC _ lua: vtm.terminal.ScrollbackPadding(` n `) ST`          | `ESC [ 30 :` n `p`                 | Set scrollback buffer left and right side padding:<br>`n` Width in cells, _max = 255, default is 0_
+`ESC _ lua: vtm.terminal.ResetAttributes() ST`                 | `ESC [ 1 p`                        | Reset all parameters to default
+`ESC _ lua: vtm.terminal.TabLength(` n `) ST`                  | `ESC [ 5 :` n `p`                  | Set tab length in cells:<br>`n` Length in cells, _max = 256, default is 8_
+`ESC _ lua: vtm.terminal.LineAlignMode(` n - 1 `) ST`          | `ESC [ 11 :` n `p`                 | Set text alignment, _default is Left_:<br>`n = 0`<br>`n = 1` Left<br>`n = 2` Right<br>`n = 3` Center
+`ESC _ lua: vtm.terminal.LineWrapMode(` 0(off) or 1(on) `) ST` | `ESC [ 12 :` n `p`                 | Set text autowrap mode, _default is On_:<br>`n = 0`<br>`n = 1` On<br>`n = 2` Off (_enables horizontal scrolling_)
+`ESC _ lua: vtm.terminal.RightToLeft(` 0(off) or 1(on) `) ST`  | `ESC [ 13 :` n `p`                 | Set text right-to-left mode, _default is Off_:<br>`n = 0`<br>`n = 1` On<br>`n = 2` Off
+
+### TUI Shadows as SGR attribute
+
+The built-in terminal supports for in-cell UI shadows, specified using a colon-separated subparameter of the SGR 2 (faint) attribute.
+
+- `ESC [ 2 :` n `m`  
+  where n=0-255 is a bit field to specify shadows inside the cell.
+
+The subparameter is a decimal integer from 0 to 255, the value of which corresponds to the state of the bits representing cells around the cell: In the center is the shaded cell, and around it are the shading cells.  The presence of shading cells corresponds to a bit value of 1, the absence - to a bit value of 0.
+
+Every bit "drops the shadow" inside the "central" cell:
+```
+Shadow bits:  0  1  2
+              3 >n< 4
+              5  6  7
+```
+
+The bits are enumerated from the upper left corner row by row excluding the central shaded cell. Eight bits are used, hence the range of subparameter values 0-255 inclusive. This approach allows shadows to be combined with each other simply by performing a binary OR operation.
+
+Shadows persist as an SGR attribute and are visible in GUI mode:
+
+#### Examples
+
+- Shadows around the single cell:
+  ```
+   0  0  0   0  0  0   0  0  0
+   0 >1< 0   0 >2< 0   0 >4< 0
+   0  0  1   0  1  0   1  0  0
+           ┌─────────┐        
+   0  0  0 │         │ 0  0  0
+   0 >8< 1 │  1x1    │ 1 >16<0
+   0  0  0 │  1 cell │ 0  0  0
+           └─────────┘        
+   0  0  1   0  1  0   1  0  0
+   0 >32<0   0 >64<0   0>128<0
+   0  0  0   0  0  0   0  0  0
+    ```
+- Shadows (outer and inner) around the 3x1 text block (pwsh)
+  ```pwsh
+  "`e[107;30m";`
+  "`e[2:1m `e[2:3m `e[2:7m `e[2:6m `e[2:4m ";`
+  "`e[2:8m `e[2:0m A `e[2:16m ";`
+  "`e[2:32m `e[2:96m `e[2:224m `e[2:192m `e[2:128m ";`
+  " `e[2:247m `e[2:231mA`e[2:239m `e[2:0m ";`
+  "     `e[m"
+  
+  ```
+  ![image](https://github.com/user-attachments/assets/4c485864-7e50-4356-ad77-da65f2a5764e)
+- Shadow crossing (pwsh)
+  ```pwsh
+  "`e[107;30m";`
+  "     `e[2:1m `e[2:3m `e[2:6m `e[2:4m `e[2:0m    `e[2:1m `e[2:3m `e[2:6m `e[2:4m `e[2:0m     ";`
+  "  `e[2:1m `e[2:3m `e[2:7m `e[2:47m `e[2:7m `e[2:7m `e[2:151m `e[2:7m `e[2:7m `e[2:7m `e[2:7m `e[2:47m `e[2:0m  `e[2:151m `e[2:7m `e[2:6m `e[2:4m `e[2:0m  ";`
+  "  `e[2:8m `e[2:0m          `e[2:41m `e[2:0m  `e[2:148m `e[2:0m  `e[2:16m `e[2:0m  ";`
+  "  `e[2:32m `e[2:96m `e[2:224m `e[2:233m `e[2:224m `e[2:224m `e[2:244m `e[2:224m `e[2:224m `e[2:224m `e[2:224m `e[2:233m `e[2:0m  `e[2:244m `e[2:224m `e[2:192m `e[2:128m `e[2:0m  ";`
+  "     `e[2:41m `e[2:0m  `e[2:148m `e[2:0m    `e[2:41m `e[2:0m  `e[2:148m `e[2:0m     ";`
+  "  `e[2:1m `e[2:3m `e[2:7m `e[2:47m `e[2:0m  `e[2:151m `e[2:7m `e[2:7m `e[2:7m `e[2:7m `e[2:47m `e[2:7m `e[2:7m `e[2:151m `e[2:7m `e[2:6m `e[2:4m `e[2:0m  ";`
+  "  `e[2:8m `e[2:0m  `e[2:41m `e[2:0m  `e[2:148m `e[2:0m          `e[2:16m `e[2:0m  ";`
+  "  `e[2:32m `e[2:96m `e[2:224m `e[2:233m `e[2:0m  `e[2:244m `e[2:224m `e[2:224m `e[2:224m `e[2:224m `e[2:233m `e[2:224m `e[2:224m `e[2:244m `e[2:224m `e[2:192m `e[2:128m `e[2:0m  ";`
+  "     `e[2:32m `e[2:96m `e[2:192m `e[2:128m `e[2:0m    `e[2:32m `e[2:96m `e[2:192m `e[2:128m `e[2:0m     `e[m";`
+  
+  ```
+  ![image](https://github.com/user-attachments/assets/87f269a7-1e22-4a52-928b-870a607ae259)
+
+### VT2D support
+
+The built-in terminal supports Unicode Character geometry modifiers (VT2D). See [Unicode Character Geometry Modifiers](character_geometry.md) for details.
+
+Example 1. Output a 3x1 (31_00) character:
+  - `pwsh`
+    ```pwsh
+    "👩‍👩‍👧‍👧`u{D009F}"
+    ```
+  - `bash`
+    ```bash
+    printf "👩‍👩‍👧‍👧\UD009F\n"
+    ```
+Example 2. Output a 6x2 character (by stacking two 6x1 fragments 62_01 and 62_02 on top of each other):
+  - `pwsh`
+    ```pwsh
+    "👩‍👩‍👧‍👧`u{D0279}`n👩‍👩‍👧‍👧`u{D0312}"
+    ```
+  - `bash`
+    ```bash
+    printf "👩‍👩‍👧‍👧\UD0279\n👩‍👩‍👧‍👧\UD0312\n"
+    ```
+Example 3. Output a solid 9x3 character:
+  - `pwsh`
+    ```pwsh
+    "👩‍👩‍👧‍👧`u{D03C3}"
+    ```
+  - `bash`
+    ```bash
+    printf "👩‍👩‍👧‍👧\UD03C3\n"
+    ```
+Example 4. Output the longest word in the Hindi language 16x1 (G1_00):
+  - `pwsh`
+    ```pwsh
+    "`u{2}विश्वविज्ञानकोशनिर्माणसमिति`u{D0121}"
+    ```
+  - `bash`
+    ```bash
+    printf "\U2विश्वविज्ञानकोशनिर्माणसमिति\UD0121\n"
+    ```
+Screenshot:  
+  ![image](images/vtm_character_geometry_modifiers_screenshot.png)
+
+### Floating point (pixel-wise) mouse reporting
+
+On Windows, when using the Win32 Console API, vtm reports mouse events with fractional mouse coordinates. Pixel-wise or fractional coordinates are 32-bit floating-point numbers that represent the position of the mouse cursor relative to the console's grid of text cells. Screen pixel coordinates can be calculated by multiplying the fractional coordinates by the cell size.
+Fractional mouse coordinates are critical to UX. In particular, this directly relates to the sensitivity of scrollbars, where moving the mouse pointer even one pixel can cause content to scroll several lines.
+
+Example:
+```c++
+#include <iostream>
+#include <vector>
+#include <windows.h>
+
+static constexpr auto custom_type = 0b1000'0000'0000'0000;
+static constexpr auto fp2d_mouse = 3;
+struct fp2d_mouse_input : MENU_EVENT_RECORD // MENU_EVENT_RECORD structure extension.
+{
+    //DWORD EventType   = MENU_EVENT;
+    //DWORD dwCommandId = custom_type | fp2d_mouse;
+    float x; // Floating point mouse x coord.
+    float y; // Floating point mouse y coord.
+};
+int main()
+{
+    auto inp = ::GetStdHandle(STD_INPUT_HANDLE);
+    ::SetConsoleMode(inp, ENABLE_EXTENDED_FLAGS | ENABLE_MOUSE_INPUT);
+    auto r = INPUT_RECORD{};
+    auto count = DWORD{};
+    auto x = std::numeric_limits<float>::quiet_NaN();
+    auto y = std::numeric_limits<float>::quiet_NaN();
+    auto mouse_out = false;
+    std::cout << "Press any mouse button to exit\n";
+    while (true)
+    {
+        ::ReadConsoleInputW(inp, &r, 1, &count);
+        if (r.EventType == MENU_EVENT)
+        {
+            if (r.Event.MenuEvent.dwCommandId == (custom_type | fp2d_mouse)) // The floating point coordinates message always precedes the classic mouse report.
+            {
+                x = reinterpret_cast<fp2d_mouse_input*>(&r.Event.MenuEvent)->x;
+                y = reinterpret_cast<fp2d_mouse_input*>(&r.Event.MenuEvent)->y;
+                mouse_out = std::isnan(x); // NaN is a sign that the mouse has gone away or is disconnected.
+                if (mouse_out) std::cout << "The mouse has left the window\n";
+            }
+        }
+        else if (r.EventType == MOUSE_EVENT && !mouse_out)
+        {
+            if (r.Event.MouseEvent.dwButtonState) return 0;
+            if (std::isnan(x)) // Classical behavior.
+            {
+                std::cout << "MOUSE_EVENT coord: " << r.Event.MouseEvent.dwMousePosition.X << "," << r.Event.MouseEvent.dwMousePosition.Y << "\n";
+            }
+            else // Floating point mouse coordinates.
+            {
+                std::cout << "MOUSE_EVENT coord: " << x << "," << y << "\n";
+            }
+        }
+    }
+}
+```
+
+### Window menu
 
 It is possible to create your own terminal window menu from scratch by configuring own menu items in the `<config/terminal/menu/>` subsection of the configuration file. See (`doc/settings.md#event-scripting`)[https://github.com/directvt/vtm/blob/master/doc/settings.md#event-scripting] for details.
 
@@ -102,12 +368,13 @@ Hotkey                       | Description
 ### Configuration example
 
 ```xml
+<OnLeftClick on="LeftClick"/>
 <config>
     <terminal>
         <menu item*>
             <item label="  " tooltip=" just empty menu item "/>
             <item id="test_button" label=" Repeatable button " tooltip=" test ">
-                <script on="MouseDown" on="Enter" on="Space">  <!-- Script to colorize the pressed label (by any mouse button) and printing 'Test' while it is pressed. -->
+                <script on="MouseDown">  <!-- Script to colorize the pressed label (by any mouse button) and printing 'Test' while it is pressed. -->
                     if (not vtm.gear.IsKeyRepeated()) then    -- First run - colorize label and activate the mouse button to repeat.
                         vtm.test_button.Label("\e[44m Repeatable button \e[m")
                         vtm.test_button.Deface()
@@ -115,38 +382,36 @@ Hotkey                       | Description
                     end
                     vtm.terminal.Print('Test\\n')
                 </script>
-                <script on="MouseUp" on="-Enter" on="-Space">  <!-- Script to restore default label state. -->
+                <script on="MouseUp">  <!-- Script to restore default label state. -->
                     vtm.test_button.Label(" Repeatable button ")    -- Restore default colors.
                     vtm.test_button.Deface()
                 </script>
             </item>
-            <item label="  Restart  ">      <script=TerminalRestart                    on="LeftClick"/></item>
-            <item label="  End  ">          <script=TerminalScrollViewportToEnd        on="LeftClick"/></item>
-            <item label="  Top  ">          <script=TerminalScrollViewportToTop        on="LeftClick"/></item>
-            <item label="  PgLeft  ">       <script=TerminalScrollViewportOnePageLeft  on="LeftClick"/></item>
-            <item label="  PgRight  ">      <script=TerminalScrollViewportOnePageRight on="LeftClick"/></item>
-            <item label="  PgUp  ">         <script=TerminalScrollViewportOnePageUp    on="LeftClick"/></item>
-            <item label="  PgDn  ">         <script=TerminalScrollViewportOnePageDown  on="LeftClick"/></item>
-            <item label="  CharLeft  ">     <script=TerminalScrollViewportOneCellLeft  on="LeftClick"/></item>
-            <item label="  CharRight  ">    <script=TerminalScrollViewportOneCellRight on="LeftClick"/></item>
-            <item label="  LineUp  ">       <script=TerminalScrollViewportOneLineUp    on="LeftClick"/></item>
-            <item label="  LineDn  ">       <script=TerminalScrollViewportOneLineDown  on="LeftClick"/></item>
-            <item label="  PrnScr  ">       <script=TerminalCopyViewport               on="LeftClick"/></item>
-            <item label="  Deselect  ">     <script=TerminalSelectionCancel            on="LeftClick"/></item>
-            <item label="  SelectionForm  "><script=TerminalSelectionForm              on="LeftClick"/></item>
-            <item label="  Copy  ">         <script=TerminalCopySelection              on="LeftClick"/></item>
-            <item label="  Paste  ">        <script=TerminalClipboardPaste             on="LeftClick"/></item>
-            <item label="  Wipe  ">         <script=TerminalClipboardWipe              on="LeftClick"/></item>
-            <item label="  Undo  ">         <script=TerminalUndo                       on="LeftClick"/></item>
-            <item label="  Redo  ">         <script=TerminalRedo                       on="LeftClick"/></item>
-
-            <item label="  Quit  ">         <script=CloseApplet                        on="LeftClick"/></item>
-            <item label="  Fullscreen  ">   <script=FullscreenApplet                   on="LeftClick"/></item>
-            <item label="  Maximize  ">     <script=MaximizeApplet                     on="LeftClick"/></item>
-            <item label="  Minimize  ">     <script=MinimizeApplet                     on="LeftClick"/></item>
-
+            <item label="  Restart  "       script=OnLeftClick | TerminalRestart                    />
+            <item label="  End  "           script=OnLeftClick | TerminalScrollViewportToEnd        />
+            <item label="  Top  "           script=OnLeftClick | TerminalScrollViewportToTop        />
+            <item label="  PgLeft  "        script=OnLeftClick | TerminalScrollViewportOnePageLeft  />
+            <item label="  PgRight  "       script=OnLeftClick | TerminalScrollViewportOnePageRight />
+            <item label="  PgUp  "          script=OnLeftClick | TerminalScrollViewportOnePageUp    />
+            <item label="  PgDn  "          script=OnLeftClick | TerminalScrollViewportOnePageDown  />
+            <item label="  CharLeft  "      script=OnLeftClick | TerminalScrollViewportOneCellLeft  />
+            <item label="  CharRight  "     script=OnLeftClick | TerminalScrollViewportOneCellRight />
+            <item label="  LineUp  "        script=OnLeftClick | TerminalScrollViewportOneLineUp    />
+            <item label="  LineDn  "        script=OnLeftClick | TerminalScrollViewportOneLineDown  />
+            <item label="  PrnScr  "        script=OnLeftClick | TerminalCopyViewport               />
+            <item label="  Deselect  "      script=OnLeftClick | TerminalSelectionCancel            />
+            <item label="  SelectionForm  " script=OnLeftClick | TerminalSelectionForm              />
+            <item label="  Copy  "          script=OnLeftClick | TerminalCopySelection              />
+            <item label="  Paste  "         script=OnLeftClick | TerminalClipboardPaste             />
+            <item label="  Wipe  "          script=OnLeftClick | TerminalClipboardWipe              />
+            <item label="  Undo  "          script=OnLeftClick | TerminalUndo                       />
+            <item label="  Redo  "          script=OnLeftClick | TerminalRedo                       />
+            <item label="  Quit  "          script=OnLeftClick | CloseApplet                        />
+            <item label="  Fullscreen  "    script=OnLeftClick | FullscreenApplet                   />
+            <item label="  Maximize  "      script=OnLeftClick | MaximizeApplet                     />
+            <item label="  Minimize  "      script=OnLeftClick | MinimizeApplet                     />
             <item label="  CwdSync  ">
-                <script=TerminalCwdSync on="LeftClick"/>
+                <script=OnLeftClick | TerminalCwdSync/>
                 <script>  <!-- A binding to update the menu item label at runtime. -->
                     <on="preview: terminal::events::toggle::cwdsync" source="terminal"/>
                     local state=vtm()                   -- Use event arguments to get the current state.
@@ -155,16 +420,9 @@ Hotkey                       | Description
                     vtm.item.Deface()
                 </script>
             </item>
-
-            <item label="  Hello, World! " tooltip=" Simulate keypresses ">
-                <script=TerminalSendKey on="LeftClick"/>
-            </item>
-            <item label="  Push Me  " tooltip=" test ">
-                <script="vtm.terminal.Print('\\x1b[37mPush Me\\x1b[m')" on="LeftClick"/>
-            </item>
-
-            <item label="  One-Shot  ">
-                <script=TerminalSelectionOneShot on="LeftClick"/>
+            <item label="  Hello, World! " tooltip=" Simulate keypresses " script=OnLeftClick | TerminalSendKey/>
+            <item label="  Push Me  "      tooltip=" test "                script="vtm.terminal.Print('\\x1b[37mPush Me\\x1b[m')" | OnLeftClick/>
+            <item label="  One-Shot  " script=OnLeftClick | TerminalSelectionOneShot>
                 <tooltip>
                     " One-shot toggle to select and copy text \n"
                     " while mouse tracking is active.         "
@@ -174,24 +432,24 @@ Hotkey                       | Description
     </terminal>
     <events>  <!-- The required key combination sequence can be generated on the Info page, accessible by clicking on the label in the lower right corner of the vtm desktop. The 'key*' statement here is to clear all previous bindings and start a new list. -->
         <terminal script*>  <!-- Terminal bindings. -->
-            <script=ExclusiveKeyboardMode              on="preview: Alt+Shift+B"/>
-            <script="vtm.gear.SetHandled()"            on="Esc"/> <!-- Do nothing. We use the Esc key as a modifier. Its press+release events will only be sent after the key is physically released, and only if no other keys were pressed along with Esc. -->
-            <script                                    on="-Esc">  --  Clear selection if it is and send Esc press and release events.
+            <script=ExclusiveKeyboardMode   on="preview: Alt+Shift+B"/>
+            <script="vtm.gear.SetHandled()" on="Esc"/> <!-- Do nothing. We use the Esc key as a modifier. Its press+release events will only be sent after the key is physically released, and only if no other keys were pressed along with Esc. -->
+            <script                         on="-Esc">  --  Clear selection if it is and send Esc press and release events.
                 vtm.terminal.ClearSelection()
                 vtm.terminal.KeyEvent({ virtcod=0x1b, scancod=1, keystat=1, cluster='\\u{1b}' }, { virtcod=0x1b, scancod=1, keystat=0 })
             </script>
-            <script=TerminalFindNext                   on="Alt+RightArrow"       />
-            <script=TerminalFindPrev                   on="Alt+LeftArrow"        />
-            <script=TerminalScrollViewportOnePageUp    on="Shift+Ctrl+PageUp"    />
-            <script=TerminalScrollViewportOnePageDown  on="Shift+Ctrl+PageDown"  />
-            <script=TerminalScrollViewportOnePageLeft  on="Shift+Alt+LeftArrow"  />
-            <script=TerminalScrollViewportOnePageRight on="Shift+Alt+RightArrow" />
-            <script=TerminalScrollViewportOneLineUp    on="Shift+Ctrl+UpArrow"   />
-            <script=TerminalScrollViewportOneLineDown  on="Shift+Ctrl+DownArrow" />
-            <script=TerminalScrollViewportOneCellLeft  on="Shift+Ctrl+LeftArrow" />
-            <script=TerminalScrollViewportOneCellRight on="Shift+Ctrl+RightArrow"/>
-            <script=TerminalScrollViewportToTop        on="Shift+Ctrl+Home"      />
-            <script=TerminalScrollViewportToEnd        on="Shift+Ctrl+End"       />
+            <script=IgnoreAltbuf | TerminalFindNext                   on="Alt+RightArrow"       />
+            <script=IgnoreAltbuf | TerminalFindPrev                   on="Alt+LeftArrow"        />
+            <script=IgnoreAltbuf | TerminalScrollViewportOnePageUp    on="Shift+Ctrl+PageUp"    />
+            <script=IgnoreAltbuf | TerminalScrollViewportOnePageDown  on="Shift+Ctrl+PageDown"  />
+            <script=IgnoreAltbuf | TerminalScrollViewportOnePageLeft  on="Shift+Alt+LeftArrow"  />
+            <script=IgnoreAltbuf | TerminalScrollViewportOnePageRight on="Shift+Alt+RightArrow" />
+            <script=IgnoreAltbuf | TerminalScrollViewportOneLineUp    on="Shift+Ctrl+UpArrow"   />
+            <script=IgnoreAltbuf | TerminalScrollViewportOneLineDown  on="Shift+Ctrl+DownArrow" />
+            <script=IgnoreAltbuf | TerminalScrollViewportOneCellLeft  on="Shift+Ctrl+LeftArrow" />
+            <script=IgnoreAltbuf | TerminalScrollViewportOneCellRight on="Shift+Ctrl+RightArrow"/>
+            <script=IgnoreAltbuf | TerminalScrollViewportToTop        on="Shift+Ctrl+Home"      />
+            <script=IgnoreAltbuf | TerminalScrollViewportToEnd        on="Shift+Ctrl+End"       />
             <script=TerminalSendKey                    on=""                     />
             <script=TerminalReset                      on=""                     />
             <script=TerminalClearScrollback            on=""                     />
@@ -200,7 +458,7 @@ Hotkey                       | Description
             <script=TerminalClipboardPaste             on="preview:Shift+Insert" />
             <script=TerminalClipboardWipe              on=""                     />
             <script=TerminalClipboardFormat            on=""                     />
-            <script=TerminalSelectionRect              on=""                     />
+            <script=TerminalSelectionForm              on=""                     />
             <script=TerminalSelectionOneShot           on=""                     />
             <script=TerminalUndo                       on=""                     />
             <script=TerminalRedo                       on=""                     />
@@ -252,17 +510,23 @@ Tiling Window Manager is a window container that organizes the workspace into mu
 ### Configuration example
 
 ```xml
+<OnLeftClick on="LeftClick"/>
+<Menu>
+    <Defaults>
+        <autohide=false/>  <!-- Auto hide window menu items on mouse leave. -->
+        <slim=true/>       <!-- Make the window menu one cell high (slim=true) or three cells high (slim=false). -->
+    </Defaults>
+</Menu>
 <config>
     <tile>
         <menu item*>
-            <autohide=menu/autohide/>
-            <slim=menu/slim/>
-            <item label="  " tooltip=" AlwaysOnTop off ">
-                <script=AlwaysOnTopApplet on="LeftClick"/> <!-- The default event source is the parent object, i.e. source="item" (aka vtm.item). -->
+            <autohide=/Menu/Defaults/autohide/>
+            <slim=/Menu/Defaults/slim/>
+            <item label="  " tooltip=" AlwaysOnTop off " script=OnLeftClick | AlwaysOnTopApplet> <!-- The default event source is the parent object, i.e. source="item" (aka vtm.item). -->
                 <script>  <!-- A binding to update the menu item label at runtime. -->
                     <on="release: e2::form::prop::zorder" source="applet"/>
                     local is_topmost=vtm()                   -- Use event arguments to get the current state.
-                    -- local is_topmost=vtm.applet.ZOrder()  -- or ask the object iteslf for the current state.
+                    -- local is_topmost=vtm.applet.ZOrder()  -- or ask the object itself for the current state.
                     vtm.item.Label(is_topmost==1 and "\\x1b[38:2:0:255:0m▀ \\x1b[m" or "  ")
                     vtm.item.Tooltip(is_topmost==1 and " AlwaysOnTop on " or " AlwaysOnTop off ")
                     vtm.item.Deface()
@@ -275,18 +539,18 @@ Tiling Window Manager is a window container that organizes the workspace into mu
                     " The app to run can be set by RightClick on the taskbar. "
                 </tooltip>
             </item>
-            <item label="  :::  " tooltip=" Select all panes "                                    ><script=TileSelectAllPanes     on="LeftClick"/></item>
-            <item label="   │   " tooltip=" Split active panes horizontally "                     ><script=TileSplitHorizontally  on="LeftClick"/></item>
-            <item label="  ──  "  tooltip=" Split active panes vertically "                       ><script=TileSplitVertically    on="LeftClick"/></item>
-            <item label="  ┌┘  "  tooltip=" Change split orientation "                            ><script=TileSplitOrientation   on="LeftClick"/></item>
-            <item label="  <->  " tooltip=" Swap two or more panes "                              ><script=TileSwapPanes          on="LeftClick"/></item>
-            <item label="  >|<  " tooltip=" Equalize split ratio "                                ><script=TileEqualizeSplitRatio on="LeftClick"/></item>
-            <item label='  "…"  ' tooltip=" Set tiling window manager title using clipboard data "><script=TileSetManagerTitle    on="LeftClick"/></item>
-            <item label="  ×  "   tooltip=" Close active application "                            ><script=TileClosePane          on="LeftClick"/></item>
-            <!-- <item label="  <  "   tooltip=" Focus the previous pane or the split grip "><script=TileFocusPrev      on="LeftClick"/></item> -->
-            <!-- <item label="  >  "   tooltip=" Focus the next pane or the split grip "    ><script=TileFocusNext      on="LeftClick"/></item> -->
-            <!-- <item label="  <-  "  tooltip=" Focus the previous pane "                  ><script=TileFocusPrevPane  on="LeftClick"/></item> -->
-            <!-- <item label="  ->  "  tooltip=" Focus the next pane "                      ><script=TileFocusNextPane  on="LeftClick"/></item> -->
+            <item label="  :::  " tooltip=" Select all panes "                                     script=OnLeftClick | TileSelectAllPanes     />
+            <item label="   │   " tooltip=" Split active panes horizontally "                      script=OnLeftClick | TileSplitHorizontally  />
+            <item label="  ──  "  tooltip=" Split active panes vertically "                        script=OnLeftClick | TileSplitVertically    />
+            <item label="  ┌┘  "  tooltip=" Change split orientation "                             script=OnLeftClick | TileSplitOrientation   />
+            <item label="  <->  " tooltip=" Swap two or more panes "                               script=OnLeftClick | TileSwapPanes          />
+            <item label="  >|<  " tooltip=" Equalize split ratio "                                 script=OnLeftClick | TileEqualizeSplitRatio />
+            <item label='  "…"  ' tooltip=" Set tiling window manager title using clipboard data " script=OnLeftClick | TileSetManagerTitle    />
+            <item label="  ×  "   tooltip=" Close active application "                             script=OnLeftClick | TileClosePane          />
+            <!-- <item label="  <  "   tooltip=" Focus the previous pane or the split grip " script=OnLeftClick | TileFocusPrev    /> -->
+            <!-- <item label="  >  "   tooltip=" Focus the next pane or the split grip "     script=OnLeftClick | TileFocusNext    /> -->
+            <!-- <item label="  <-  "  tooltip=" Focus the previous pane "                   script=OnLeftClick | TileFocusPrevPane/> -->
+            <!-- <item label="  ->  "  tooltip=" Focus the next pane "                       script=OnLeftClick | TileFocusNextPane/> -->
         </menu>
     </tile>
     <events>

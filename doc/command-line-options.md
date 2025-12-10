@@ -8,12 +8,12 @@
 vtm [ -c <file> ][ -q ][ -p <id> ][ -s | -d | -m ][ -x <cmds> ]
 vtm [ -c <file> ][ -q ][ -t | -g ][ -r [ <type> ]][ <args...> ]
 vtm [ -c <file> ]  -l
-vtm -i | -u | -v | -?
+vtm -i | -u | -a [mode] | -v | -?
 
 <script relay via piped redirection> | vtm [ -p <id> ]
 ```
 
-> By default, vtm runs Desktop Client, running an additional instance with Desktop Server in background if it is not running.
+> Without options, vtm runs Desktop Client, running an additional instance with Desktop Server in background if it is not running.
 
 Option                  | Description
 ------------------------|-------------------------------------------------------
@@ -22,9 +22,10 @@ Option                  | Description
 `-l`, `--listconfig`    | Print configuration.
 `-t`, `--tui`           | Force TUI mode.
 `-g`, `--gui`           | Force GUI mode.
-`-i`, `--install`       | Perform system-wide installation. Allow Desktop Server to run in user context in Session 0 on Windows.<br>Placing Desktop Server in Session 0 allows console applications to run independently of the user's GUI login session. Note: This prevents GUI applications from running from the vtm desktop environment. See "Session 0 Isolation" on the Web for details.
-`-u`, `--uninstall`     | Perform system-wide deinstallation.
-`-0`, `--session0`      | Use Session 0 to run Desktop Server in background.
+`-i`, `--install`       | Perform system-wide installation. Allow Desktop Server to run in user context in Session 0 on Windows.<br>Placing Desktop Server in Session 0 allows console applications to run independently of the user's GUI login session. Note: This prevents GUI applications from running from the vtm desktop environment. See "Session 0 Isolation" on the Web for details.<br>Elevated privileges required.
+`-u`, `--uninstall`     | Perform system-wide deinstallation.<br>Elevated privileges required.
+`-0`, `--session0`      | Use Session 0 to run Desktop Server in background. For Windows only.
+`-a`, `--mouse [mode]`  | Set/reset persistent access to mouse devices for all users on Linux platform (excluding Android).<br>Run `sudo vtm --mouse 0` to reset access.<br>Elevated privileges required.
 `-q`, `--quiet`         | Disable logging.
 `-x`, `--script <cmds>` | Specifies script commands to be run by the desktop when ready.
 `-c`, `--config <file>` | Specifies a settings file to load or plain xml-data to merge.
@@ -38,6 +39,8 @@ Option                  | Description
 `--env <var=val>`       | Set environment variable.
 `--cwd <path>`          | Set current working directory.
 
+#### Inline configuration
+
 The plain xml-data could be specified in place of `<file>` in `--config <file>` option:
 - `command-line`:
   ```cmd
@@ -47,6 +50,18 @@ The plain xml-data could be specified in place of `<file>` in `--config <file>` 
 - `command-line`:
   ```cmd
   vtm -c "<config/terminal/scrollback size=1000000/>" -r term
+  ```
+
+#### Linux VGA Console (in-kernel console)
+
+In order to use a mouse or touchpad in Linux VGA Console, you must grant the user access to mouse/pointing devices. By default, only privileged users and users of the `input` group have access. To grant all users permanent access to all pointing devices, use the command:
+
+- ```
+  sudo vtm --mouse
+  ```
+To reset permanent access, use the command:
+- ```
+  sudo vtm --mouse 0
   ```
 
 ### Desktop Applets

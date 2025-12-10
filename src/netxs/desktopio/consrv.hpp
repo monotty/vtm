@@ -23,7 +23,7 @@ struct consrv
     virtual fd_t watch() = 0;
     virtual bool send(view utf8) = 0;
     virtual void keybd(input::hids& gear, bool decckm) = 0;
-    virtual void mouse(input::hids& gear, bool moved, twod coord, input::mouse::prot encod, input::mouse::mode state) = 0;
+    virtual void mouse(input::hids& gear, bool moved, fp2d coord, input::mouse::prot encod, input::mouse::mode state) = 0;
     virtual void paste(view block) = 0;
     virtual void focus(bool state) = 0;
     virtual void winsz(twod newsz) = 0;
@@ -147,7 +147,10 @@ struct consrv
             waitexit = std::thread{ [&, trailer]
             {
                 auto pid = proc_pid; // MSVC don't capture it.
-                io::select(prochndl, [&terminal, pid]{ if (terminal.io_log) log("%%Process %pid% terminated", prompt::vtty, pid); });
+                io::select(netxs::maxspan, noop{}, prochndl, [&terminal, pid]
+                {
+                    if (terminal.io_log) log("%%Process %pid% terminated", prompt::vtty, pid);
+                });
                 trailer();
                 if (terminal.io_log) log("%%Process %pid% waiter ended", prompt::vtty, pid);
             }};
@@ -688,7 +691,7 @@ struct impl : consrv
             auto iter = src_map.find(utf::to_lower(crop));
             if (iter == src_map.end()) return;
 
-            auto tail = utf::trim_back(rest, "\r\n");
+            auto tail = utf::pop_back_chars(rest, "\r\n");
             auto args = utf::split<true>(rest, ' ');
             auto data = qiew{ iter->second };
             auto result = text{};
@@ -959,16 +962,22 @@ struct impl : consrv
         void style(si32 format)
         {
             auto lock = std::lock_guard{ locker };
-            auto data = INPUT_RECORD{ .EventType = MENU_EVENT };
-            data.Event.MenuEvent.dwCommandId = nt::console::event::custom | nt::console::event::style;
-            stream.emplace_back(data);
-            data.Event.MenuEvent.dwCommandId = nt::console::event::custom | format;
-            stream.emplace_back(data);
+            auto data = nt::console::style_input{ .format = format };
+            stream.emplace_back(*reinterpret_cast<INPUT_RECORD*>(&data));
             ondata.reset();
             signal.notify_one();
         }
-        void mouse(input::hids& gear, twod coord)
+        void mouse(input::hids& gear, fp2d coord)
         {
+            if (gear.mouse_disabled || std::isnan(coord.x)) // Forward a mouse halt event.
+            {
+                auto lock = std::lock_guard{ locker };
+                auto r2 = nt::console::fp2d_mouse_input{ .coord = { fp32nan, fp32nan} };
+                stream.emplace_back(*reinterpret_cast<INPUT_RECORD*>(&r2));
+                ondata.reset();
+                signal.notify_one();
+                return;
+            }
             auto state = os::nt::ms_kbstate(gear.ctlstat);
             auto bttns = gear.m_sys.buttons & 0b00011111;
             auto moved = gear.m_sys.buttons == gear.m_sav.buttons && gear.m_sys.wheelfp == 0.f; // No events means mouse move. MSFT: "MOUSE_EVENT_RECORD::dwEventFlags: If this value is zero, it indicates a mouse button being pressed or released". Far Manager relies on this.
@@ -982,7 +991,7 @@ struct impl : consrv
                 {
                     auto& s = dclick[i];
                     auto fired = gear.m_sys.timecod;
-                    if (fired - s.fired < gear.delay && s.coord == coord) // Set the double-click flag if the delay has not expired and the mouse is in the same position.
+                    if (fired - s.fired < gear.delay && s.coord == twod{ coord }) // Set the double-click flag if the delay has not expired and the mouse is in the same cell.
                     {
                         flags |= DOUBLE_CLICK;
                         s.fired = {};
@@ -1003,6 +1012,8 @@ struct impl : consrv
                 if (gear.m_sys.hzwheel) flags |= MOUSE_HWHEELED;
             }
             auto lock = std::lock_guard{ locker };
+            auto r2 = nt::console::fp2d_mouse_input{ .coord = coord };
+            stream.emplace_back(*reinterpret_cast<INPUT_RECORD*>(&r2));
             stream.emplace_back(INPUT_RECORD
             {
                 .EventType = MOUSE_EVENT,
@@ -1012,8 +1023,8 @@ struct impl : consrv
                     {
                         .dwMousePosition =
                         {
-                            .X = (si16)std::clamp<si32>(coord.x, si16min, si16max),
-                            .Y = (si16)std::clamp<si32>(coord.y, si16min, si16max),
+                            .X = (si16)std::clamp<si32>((si32)coord.x, si16min, si16max),
+                            .Y = (si16)std::clamp<si32>((si32)coord.y, si16min, si16max),
                         },
                         .dwButtonState     = (DWORD)bttns,
                         .dwControlKeyState = state,
@@ -1070,7 +1081,10 @@ struct impl : consrv
             if (toWIDE.empty()) toWIDE.push_back(0);
             auto c = toWIDE.front();
 
-            auto ctrls = os::nt::ms_kbstate(gear.ctlstat) | (gear.extflag ? ENHANCED_KEY : 0);
+            auto altgr_not_released = gear.ctlstat & input::hids::AltGr && (gear.keystat != input::key::released || gear.keycode != input::key::RightAlt);
+            auto ctrls = os::nt::ms_kbstate(gear.ctlstat)
+                       | (gear.extflag ? ENHANCED_KEY : 0)
+                       | (altgr_not_released ? LEFT_CTRL_PRESSED : 0);
             if (toWIDE.size() > 1) // Surrogate pair special case (not a clipboard paste, see generate(wiew wstr, ui32 s = 0)).
             {
                 if (gear.keystat)
@@ -1089,7 +1103,18 @@ struct impl : consrv
                     auto yield = gear.interpret(decckm);
                     if (yield.size()) generate(yield);
                 }
-                else generate(c, ctrls, gear.virtcod, gear.keystat, gear.scancod);
+                else
+                {
+                    if (gear.ctlstat & input::hids::AltGr && gear.keycode == input::key::RightAlt) // Generate fake LeftCtrl events on AltGr activity.
+                    {
+                        auto lctrl = input::key::map::data(input::key::LeftCtrl);
+                        auto pre_ctrls = ctrls;
+                        if (gear.keystat == input::key::pressed ) pre_ctrls &= ~(RIGHT_ALT_PRESSED | ENHANCED_KEY); // AltGr is not pressed yet.
+                        else                                      pre_ctrls = (pre_ctrls & ~ENHANCED_KEY) | RIGHT_ALT_PRESSED; // AltGr is still pressed.
+                        generate(c, pre_ctrls, lctrl.vkey, gear.keystat, lctrl.scan); // Restore the LeftCtrl+RightAlt state for AltGr.
+                    }
+                    generate(c, ctrls, gear.virtcod, gear.keystat, gear.scancod);
+                }
             }
 
             if (c == ansi::c0_etx)
@@ -1168,6 +1193,15 @@ struct impl : consrv
 
             do
             {
+                if (worker.queue.size() > 1) // Do not interfere with other event waiters.
+                {
+                    cooked.ustr.clear();
+                    //if (cooked.ustr.empty())
+                    //{
+                    //    cooked.ustr.push_back('\0');
+                    //}
+                    break;
+                }
                 auto coor = line.caret;
                 auto last = line.length();
                 auto pops = 0_sz;
@@ -1497,7 +1531,18 @@ struct impl : consrv
                         }
                     }
                 }
-                stream.clear(); // Don't try to catch the next events (we are too fast for IME input; ~1ms between events from IME).
+                if (worker.queue.size() == 1) // Clear the queue if we are the one requester.
+                {
+                    stream.clear(); // Don't try to catch the next events (we are too fast for IME input; ~1ms between events from IME).
+                }
+                else // Do not interfere with other event waiters.
+                {
+                    if (cooked.ustr.empty())
+                    {
+                        cooked.ustr.push_back('\0');
+                    }
+                    break;
+                }
             }
             while (cooked.ustr.empty() && ((void)signal.wait(lock, [&]{ return stream.size() || closed || cancel; }), !closed && !cancel));
 
@@ -1668,6 +1713,8 @@ struct impl : consrv
         auto readevents(Payload& packet, cdrw& answer)
         {
             if (!server.size_check(packet.echosz, answer.sendoffset())) return;
+            // Test unstable stdin.
+            //os::sleep(150ms);
             auto avail = packet.echosz - answer.sendoffset();
             auto limit = avail / (ui32)sizeof(recbuf.front());
             if (server.io_log) log("\tuser limit: ", limit);
@@ -1675,8 +1722,9 @@ struct impl : consrv
             if (packet.input.utf16)
             {
                 recbuf.clear();
-                recbuf.reserve(count());
-                auto tail = head + std::min(limit, count());
+                auto mx = count();//std::min(2u, (ui32)count());
+                recbuf.reserve(mx);
+                auto tail = head + std::min(limit, mx);
                 while (head != tail)
                 {
                     recbuf.emplace_back(*head++);
@@ -2300,8 +2348,12 @@ struct impl : consrv
         {
             if (handle_ptr->link == &uiterm.target)
             {
-                     if (uiterm.target == &uiterm.normal) unsync |= proc(uiterm.normal);
-                else if (uiterm.target == &uiterm.altbuf) unsync |= proc(uiterm.altbuf);
+                if (uiterm.target == &uiterm.normal) unsync |= proc(uiterm.normal);
+                else
+                {
+                    auto& target_buffer = *(decltype(uiterm.altbuf)*)uiterm.target;
+                    unsync |= proc(target_buffer);
+                }
                 return true;
             }
             else
@@ -3794,6 +3846,7 @@ struct impl : consrv
             auto handle_ptr = (hndl*)packet.target;
             if (handle_ptr->link == &uiterm.target) // Restore original buffer mode.
             {
+                log("\t  restore original buffer mode to ", altmod ? "'altbuf'" : "'normal'");
                 auto& console = *uiterm.target;
                 if (altmod) uiterm.reset_to_altbuf(console);
                 else        uiterm.reset_to_normal(console);
@@ -3801,10 +3854,12 @@ struct impl : consrv
             else // Switch to additional buffer.
             {
                 auto window_ptr = select_buffer(packet.target);
+                log("\t  switch to additional buffer (%%)", window_ptr);
                 if (!window_ptr) return;
                 if (uiterm.target == &uiterm.normal || uiterm.target == &uiterm.altbuf) // Save/update original buffer mode.
                 {
                     altmod = uiterm.target == &uiterm.altbuf;
+                    log("\t  prev mode was ", altmod ? "'altbuf'" : "'normal'");
                 }
                 auto& console = *window_ptr;
                 uiterm.reset_to_altbuf(console);
@@ -4914,7 +4969,7 @@ struct impl : consrv
             uiterm.mtrack.setmode(input::mouse::prot::w32);
         }
     }
-    void mouse(input::hids& gear, bool /*moved*/, twod coord, input::mouse::prot /*encod*/,
+    void mouse(input::hids& gear, bool /*moved*/, fp2d coord, input::mouse::prot /*encod*/,
                  input::mouse::mode /*state*/) { events.mouse(gear, coord);        }
     void keybd(input::hids& gear, bool decckm) { events.keybd(gear, decckm);       }
     void paste(view block)                     { events.paste(block);              }
@@ -5133,7 +5188,7 @@ struct consrv : ipc::stdcon
     {
         //todo win32-input-mode
     }
-    void mouse(input::hids& /*gear*/, bool /*moved*/, twod /*coord*/, input::mouse::prot /*encod*/, input::mouse::mode /*state*/)
+    void mouse(input::hids& /*gear*/, bool /*moved*/, fp2d /*coord*/, input::mouse::prot /*encod*/, input::mouse::mode /*state*/)
     {
         //todo win32-input-mode
     }

@@ -23,26 +23,29 @@
   </tr>
 </thead>
 <tbody>
-  <tr>
-    <th>Ctrl-Alt ¹ (Alt+Shift+B on non-Windows platforms)</th>
-    <td colspan="9">Toggle alternate keyboard mode</td>
-  </tr>
-  <tr>
-    <th>Alt+Shift+N ¹</th>
-    <td colspan="9">Run app</td>
-  </tr>
-  <tr>
-    <th>F10 ¹</th>
-    <td colspan="9">Disconnect all users and shutdown if there are no apps running</td>
-  </tr>
-  <tr>
-    <th>Shift+F7 ¹</th>
-    <td colspan="9">Leave current session</td>
-  </tr>
-  <tr>
-    <th>Ctrl+PageUp/PageDown ¹</th>
-    <td colspan="9">Switch focus between running apps</td>
-  </tr>
+  <tr><th>Esc+F1 ¹ (Alt+Z on non-Windows platforms)</th>      <td colspan="9">Focus taskbar</td></tr>
+
+  <tr><th>Esc | Alt</th>                                      <td colspan="3">Unfocus taskbar</td><td colspan="6"></td></tr>
+  <tr><th>LeftArrow</th>                                      <td colspan="3">Focus left item</td><td colspan="6"></td></tr>
+  <tr><th>RightArrow</th>                                     <td colspan="3">Focus right item</td><td colspan="6"></td></tr>
+  <tr><th>UpArrow</th>                                        <td colspan="3">Focus the previous item</td><td colspan="6"></td></tr>
+  <tr><th>DownArrow</th>                                      <td colspan="3">Focus the next item</td><td colspan="6"></td></tr>
+  <tr><th>PageUp</th>                                         <td colspan="3">Move focus half a page up</td><td colspan="6"></td></tr>
+  <tr><th>PageDown</th>                                       <td colspan="3">Move focus half a page down</td><td colspan="6"></td></tr>
+  <tr><th>Shift+Tab</th>                                      <td colspan="3">Focus the previous item group</td><td colspan="6"></td></tr>
+  <tr><th>Tab</th>                                            <td colspan="3">Focus the next item group</td><td colspan="6"></td></tr>
+  <tr><th>Home</th>                                           <td colspan="3">Move focus to the top</td><td colspan="6"></td></tr>
+  <tr><th>End</th>                                            <td colspan="3">Move focus to the bottom</td><td colspan="6"></td></tr>
+  <tr><th>Ctrl+LeftArrow</th>                                 <td colspan="3">Decrease taskbar width</td><td colspan="6"></td></tr>
+  <tr><th>Ctrl+RightArrow</th>                                <td colspan="3">Increase taskbar width</td><td colspan="6"></td></tr>
+  <tr><th>Space | Enter</th>                                  <td colspan="3">Activate focused item</td><td colspan="6"></td></tr>
+
+  <tr><th>Esc+I</th>                                          <td colspan="9">Open Info-page</td></tr>
+  <tr><th>Ctrl-Alt (Alt+Shift+B on non-Windows platforms)</th><td colspan="9">Toggle exclusive keyboard mode</td></tr>
+  <tr><th>Alt+Shift+N</th>                                    <td colspan="9">Run app</td></tr>
+  <tr><th>F10</th>                                            <td colspan="9">Disconnect all users and shutdown if there are no apps running</td></tr>
+  <tr><th>Shift+F7</th>                                       <td colspan="9">Leave current session</td></tr>
+  <tr><th>Ctrl+PageUp/PageDown</th>                           <td colspan="9">Switch focus between running apps</td></tr>
   <tr>
     <th>LeftClick</th>
     <td>Run app</td>
@@ -136,25 +139,10 @@
     <td colspan="1">Zoom window</td>
     <td colspan="2"></td>
   </tr>
-  <tr>
-    <th>Alt+LeftDrag</th>
-    <td colspan="9">Switch boxed/linear selection mode</td>
-  </tr>
-  <tr>
-    <th>Ctrl+RightDrag or Ctrl+MiddleDrag</th>
-    <td colspan="9">Copy selected area to clipboard, OSC 52</td>
-  </tr>
-  <tr>
-    <th>Wheel</th>
-    <td colspan="7">Vertical scrolling</td>
-    <td colspan="2"></td>
-  </tr>
-  <tr>
-    <th>Shift+Wheel or Alt+Wheel</th>
-    <td colspan="7">Horizontal scrolling</td>
-    <td colspan="2"></td>
-  </tr>
-  <tr><th>Esc+F1</th>                                             <td colspan="3"></td><td colspan="7">Open Info-page</td></tr>
+  <tr><th>Alt+LeftDrag</th>                                       <td colspan="9">Switch boxed/linear selection mode</td></tr>
+  <tr><th>Ctrl+RightDrag or Ctrl+MiddleDrag</th>                  <td colspan="9">Copy selected area to clipboard, OSC 52</td></tr>
+  <tr><th>Wheel</th>                                              <td colspan="7">Vertical scrolling</td><td colspan="2"></td></tr>
+  <tr><th>Shift+Wheel or Alt+Wheel</th>                           <td colspan="7">Horizontal scrolling</td><td colspan="2"></td></tr>
   <tr><th>Esc+F10</th>                                            <td colspan="3"></td><td colspan="7">Restore window</td></tr>
   <tr><th>Esc+F11</th>                                            <td colspan="3"></td><td colspan="7">Maximize window</td></tr>
   <tr><th>Esc+F12</th>                                            <td colspan="3"></td><td colspan="7">Maximize window to full screen</td></tr>
@@ -289,5 +277,5 @@
 
 ---
 
-¹ — Key bindings can be customized using settings.  
-² — In fullscreen mode, the GUI window reserves a 1px high area at the top for forwarding mouse events.
+¹ - Key bindings can be customized using settings.  
+² - In fullscreen mode, the GUI window reserves a 1px high area at the top for forwarding mouse events.
